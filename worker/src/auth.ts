@@ -4,26 +4,7 @@ import { Env } from "./types";
 export const createAuth = (env: Env) =>
   betterAuth({
     baseURL: env.FRONTEND_URL,
-    database: {
-      dialect: {
-        async exec(query: string) {
-          const result = await env.DB.exec(query);
-          return { rows: [] };
-        },
-        async query(query: string, params?: unknown[]) {
-          const stmt = env.DB.prepare(query);
-          const bound = params?.length ? stmt.bind(...params) : stmt;
-          const result = await bound.all();
-          return { rows: result.results as Record<string, unknown>[] };
-        },
-        async run(query: string, params?: unknown[]) {
-          const stmt = env.DB.prepare(query);
-          const bound = params?.length ? stmt.bind(...params) : stmt;
-          await bound.run();
-        },
-      },
-      type: "sqlite",
-    },
+    database: env.DB,
     secret: env.BETTER_AUTH_SECRET,
     socialProviders: {
       google: {
