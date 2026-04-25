@@ -2,15 +2,22 @@ CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   email TEXT NOT NULL UNIQUE,
+  email_verified INTEGER NOT NULL DEFAULT 0,
   avatar_url TEXT,
   role TEXT NOT NULL DEFAULT 'member',
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS sessions_auth (
   id TEXT PRIMARY KEY,
+  token TEXT NOT NULL UNIQUE,
   user_id TEXT NOT NULL,
-  expires_at INTEGER NOT NULL,
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  ip_address TEXT,
+  user_agent TEXT,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 

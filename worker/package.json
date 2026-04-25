@@ -5,8 +5,9 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "db:migrate": "wrangler d1 execute badminton-db --local --file=src/db/schema.sql",
-    "db:migrate:prod": "wrangler d1 execute badminton-db --remote --file=src/db/schema.sql"
+    "db:migrate": "wrangler d1 execute caulong --local --file=src/db/schema.sql",
+    "db:migrate:prod": "wrangler d1 execute caulong --remote --file=src/db/schema.sql",
+    "db:patch:auth": "wrangler d1 execute caulong --remote --file=src/db/patch-auth-schema.sql"
   },
   "dependencies": {
     "better-auth": "^1.2.7",
