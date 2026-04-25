@@ -1,0 +1,14 @@
+{
+  "name": "badminton-manager",
+  "private": true,
+  "version": "1.0.0",
+  "packageManager": "pnpm@9.0.0",
+  "scripts": {
+    "dev": "concurrently \"pnpm --filter worker dev\" \"pnpm --filter frontend dev\"",
+    "build": "pnpm --filter frontend build",
+    "deploy": "pnpm --filter worker deploy"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}

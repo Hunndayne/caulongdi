@@ -1,0 +1,9 @@
+node_modules/
+.pnpm-store/
+dist/
+.wrangler/
+*.local
+.env
+.env.*
+!.env.example
+.claude
