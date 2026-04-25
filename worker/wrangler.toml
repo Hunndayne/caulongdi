@@ -12,5 +12,5 @@ run_worker_first = ["/api/*"]
 
 [[d1_databases]]
 binding = "DB"
-database_name = "badminton-db"
-database_id = "YOUR_DATABASE_ID"
+database_name = "caulong"
+database_id = "fd228f62-6000-4178-ab1b-5ae43e46c42d"
