@@ -20,7 +20,7 @@ app.use(
 );
 
 app.on(["GET", "POST"], "/api/auth/**", (c) => {
-  const auth = createAuth(c.env);
+  const auth = createAuth(c.env, c.req.raw);
   return auth.handler(c.req.raw);
 });
 
@@ -29,7 +29,7 @@ app.use("/api/*", async (c, next) => {
   // Skip auth routes
   if (c.req.path.startsWith("/api/auth/")) return next();
 
-  const auth = createAuth(c.env);
+  const auth = createAuth(c.env, c.req.raw);
   const session = await auth.api.getSession({ headers: c.req.raw.headers });
   if (!session) return c.json({ error: "Unauthorized" }, 401);
 
