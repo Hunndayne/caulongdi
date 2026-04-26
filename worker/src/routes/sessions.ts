@@ -51,26 +51,18 @@ async function isGroupAdmin(c: any, groupId?: string | null) {
   return row?.role === "admin";
 }
 
-async function ensureGroupMember(c: any, groupId?: string | null) {
-  if (!groupId) return;
-  try {
-    await c.env.DB.prepare(`
-      INSERT OR IGNORE INTO group_members (group_id, user_id, role, created_at)
-      VALUES (?, ?, 'member', ?)
-    `)
-      .bind(groupId, c.get("userId"), new Date().toISOString())
-      .run();
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (!isMissingGroupSchema(error) && !message.includes("FOREIGN KEY constraint failed")) {
-      throw error;
-    }
-  }
+async function canAccessSession(c: any, session: SessionRow) {
+  if (!session.group_id) return true;
+  if (c.get("userRole") === "admin") return true;
+  return isGroupMember(c, session.group_id);
 }
 
 async function canManageSession(c: any, session: SessionRow) {
   if (c.get("userRole") === "admin") return true;
-  if (session.created_by && session.created_by === c.get("userId")) return true;
+  if (session.created_by && session.created_by === c.get("userId")) {
+    if (!session.group_id) return true;
+    return isGroupMember(c, session.group_id);
+  }
   return isGroupAdmin(c, session.group_id);
 }
 
@@ -95,13 +87,46 @@ sessions.get("/", async (c) => {
     }
   }
 
-  const rows = await c.env.DB.prepare(`
+  try {
+    if (c.get("userRole") === "admin") {
+      const rows = await c.env.DB.prepare(`
+        SELECT s.*,
+          (SELECT COUNT(*) FROM session_members sm WHERE sm.session_id = s.id AND sm.attended = 1) as attendee_count,
+          (SELECT COALESCE(SUM(amount), 0) FROM costs co WHERE co.session_id = s.id) as total_cost
+        FROM sessions s
+        ORDER BY s.date DESC, s.start_time DESC
+      `).all();
+      return c.json(rows.results);
+    }
+
+    const rows = await c.env.DB.prepare(`
       SELECT s.*,
         (SELECT COUNT(*) FROM session_members sm WHERE sm.session_id = s.id AND sm.attended = 1) as attendee_count,
         (SELECT COALESCE(SUM(amount), 0) FROM costs co WHERE co.session_id = s.id) as total_cost
       FROM sessions s
+      WHERE s.group_id IS NULL
+         OR EXISTS (
+           SELECT 1
+           FROM group_members gm
+           WHERE gm.group_id = s.group_id
+             AND gm.user_id = ?
+         )
       ORDER BY s.date DESC, s.start_time DESC
-    `).all();
+    `)
+      .bind(c.get("userId"))
+      .all();
+    return c.json(rows.results);
+  } catch (error) {
+    if (!isMissingGroupSchema(error)) throw error;
+  }
+
+  const rows = await c.env.DB.prepare(`
+    SELECT s.*,
+      (SELECT COUNT(*) FROM session_members sm WHERE sm.session_id = s.id AND sm.attended = 1) as attendee_count,
+      (SELECT COALESCE(SUM(amount), 0) FROM costs co WHERE co.session_id = s.id) as total_cost
+    FROM sessions s
+    ORDER BY s.date DESC, s.start_time DESC
+  `).all();
   return c.json(rows.results);
 });
 
@@ -146,8 +171,9 @@ sessions.post("/", async (c) => {
 
 sessions.get("/:id", async (c) => {
   const { id } = c.req.param();
-  const session = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first();
+  const session = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first<SessionRow>();
   if (!session) return c.json({ error: "Not found" }, 404);
+  if (!(await canAccessSession(c, session))) return c.json({ error: "Forbidden" }, 403);
 
   const members = await c.env.DB.prepare(`
     SELECT m.*, sm.attended FROM members m
@@ -206,7 +232,7 @@ sessions.post("/:id/join", async (c) => {
     .first<SessionRow>();
   if (!session) return c.json({ error: "Not found" }, 404);
   if (session.status !== "upcoming") return c.json({ error: "Session is not open for joining" }, 400);
-  await ensureGroupMember(c, session.group_id);
+  if (!(await canAccessSession(c, session))) return c.json({ error: "Forbidden" }, 403);
 
   const userId = c.get("userId");
   const user = await c.env.DB.prepare("SELECT id, name, email FROM users WHERE id = ?")
@@ -214,20 +240,44 @@ sessions.post("/:id/join", async (c) => {
     .first<{ id: string; name: string; email: string }>();
   if (!user) return c.json({ error: "User not found" }, 404);
 
-  const existingMember = await c.env.DB.prepare("SELECT id FROM members WHERE user_id = ?")
-    .bind(userId)
-    .first<{ id: string }>();
+  let existingMember: { id: string; group_id?: string | null } | null = null;
+  if (session.group_id) {
+    existingMember = await c.env.DB.prepare(`
+      SELECT id, group_id
+      FROM members
+      WHERE user_id = ?
+        AND (group_id = ? OR group_id IS NULL)
+      ORDER BY CASE WHEN group_id = ? THEN 0 ELSE 1 END
+      LIMIT 1
+    `)
+      .bind(userId, session.group_id, session.group_id)
+      .first<{ id: string; group_id?: string | null }>();
+  } else {
+    existingMember = await c.env.DB.prepare(`
+      SELECT id, group_id
+      FROM members
+      WHERE user_id = ?
+        AND group_id IS NULL
+      LIMIT 1
+    `)
+      .bind(userId)
+      .first<{ id: string; group_id?: string | null }>();
+  }
 
   const memberId = existingMember?.id ?? nanoid();
   if (existingMember) {
-    await c.env.DB.prepare("UPDATE members SET name = ?, phone = ?, is_active = 1 WHERE id = ?")
-      .bind(user.name || user.email, null, memberId)
+    await c.env.DB.prepare(`
+      UPDATE members
+      SET name = ?, phone = ?, is_active = 1, group_id = COALESCE(group_id, ?)
+      WHERE id = ?
+    `)
+      .bind(user.name || user.email, null, session.group_id ?? null, memberId)
       .run();
   } else {
     await c.env.DB.prepare(
-      "INSERT INTO members (id, user_id, name, phone, avatar_color, is_active, created_at) VALUES (?, ?, ?, ?, ?, 1, ?)"
+      "INSERT INTO members (id, group_id, user_id, name, phone, avatar_color, is_active, created_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?)"
     )
-      .bind(memberId, userId, user.name || user.email, null, colorForUser(userId), new Date().toISOString())
+      .bind(memberId, session.group_id ?? null, userId, user.name || user.email, null, colorForUser(userId), new Date().toISOString())
       .run();
   }
 
@@ -243,15 +293,38 @@ sessions.post("/:id/join", async (c) => {
 
 sessions.delete("/:id/join", async (c) => {
   const { id } = c.req.param();
-  const session = await c.env.DB.prepare("SELECT status FROM sessions WHERE id = ?")
+  const session = await c.env.DB.prepare("SELECT status, group_id FROM sessions WHERE id = ?")
     .bind(id)
-    .first<{ status: string }>();
+    .first<{ status: string; group_id?: string | null }>();
   if (!session) return c.json({ error: "Not found" }, 404);
   if (session.status !== "upcoming") return c.json({ error: "Session is not open for changes" }, 400);
+  if (session.group_id && !(await canAccessSession(c, { ...session, id, status: session.status } as SessionRow))) {
+    return c.json({ error: "Forbidden" }, 403);
+  }
 
-  const member = await c.env.DB.prepare("SELECT id FROM members WHERE user_id = ?")
-    .bind(c.get("userId"))
-    .first<{ id: string }>();
+  const member = await c.env.DB.prepare(`
+    SELECT m.id
+    FROM members m
+    WHERE m.user_id = ?
+      AND (
+        (? IS NULL AND m.group_id IS NULL)
+        OR m.group_id = ?
+      )
+    ORDER BY CASE WHEN m.group_id = ? THEN 0 ELSE 1 END
+    LIMIT 1
+  `)
+    .bind(c.get("userId"), session.group_id ?? null, session.group_id ?? null, session.group_id ?? null)
+    .first<{ id: string }>()
+    || await c.env.DB.prepare(`
+      SELECT m.id
+      FROM session_members sm
+      JOIN members m ON m.id = sm.member_id
+      WHERE sm.session_id = ?
+        AND m.user_id = ?
+      LIMIT 1
+    `)
+      .bind(id, c.get("userId"))
+      .first<{ id: string }>();
   if (!member) return c.json({ success: true });
 
   await c.env.DB.batch([

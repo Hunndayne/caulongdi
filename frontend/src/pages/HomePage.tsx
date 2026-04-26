@@ -124,7 +124,7 @@ export default function HomePage() {
 
   useEffect(() => {
     fetch(activeGroupId);
-    api.getStats()
+    api.getStats(activeGroupId)
       .then((s) => {
         setMyStats(s.memberStats[0] ?? null);
       })

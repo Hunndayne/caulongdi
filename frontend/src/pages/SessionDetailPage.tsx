@@ -7,6 +7,7 @@ import { useMembersStore } from "@/stores/membersStore";
 import { useSession } from "@/lib/auth-client";
 import { isAdminUser } from "@/lib/permissions";
 import { api } from "@/api/client";
+import { useGroupsStore } from "@/stores/groupsStore";
 import { Avatar } from "@/components/shared/Avatar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -30,6 +31,8 @@ export default function SessionDetailPage() {
   const { data: authSession } = useSession();
   const { currentSession, loading, fetchOne, refresh, remove } = useSessionsStore();
   const { members, fetch: fetchMembers } = useMembersStore();
+  const groups = useGroupsStore((state) => state.groups);
+  const fetchGroups = useGroupsStore((state) => state.fetch);
   const [tab, setTab] = useState<Tab>("Check-in");
   const [costForm, setCostForm] = useState({ label: "", amount: "", type: "court" });
   const [addingCost, setAddingCost] = useState(false);
@@ -37,23 +40,37 @@ export default function SessionDetailPage() {
   const [joining, setJoining] = useState(false);
   const [copied, setCopied] = useState(false);
   const [shareCopied, setShareCopied] = useState(false);
-  const isAdmin = isAdminUser(authSession?.user);
+  const currentUserId = (authSession?.user as { id?: string } | undefined)?.id;
+  const groupRole = currentSession?.group_id ? groups.find((group) => group.id === currentSession.group_id)?.role : undefined;
+  const canManageSession = Boolean(
+    isAdminUser(authSession?.user) ||
+      (currentUserId && currentSession?.created_by === currentUserId) ||
+      groupRole === "admin"
+  );
 
   useEffect(() => {
-    if (id) { fetchOne(id); fetchMembers(); }
-  }, [id]);
+    fetchGroups();
+  }, [fetchGroups]);
+
+  useEffect(() => {
+    if (id) fetchOne(id);
+  }, [id, fetchOne]);
+
+  useEffect(() => {
+    if (!currentSession) return;
+    fetchMembers(currentSession.group_id);
+  }, [currentSession, fetchMembers]);
 
   const s = currentSession;
   if (loading && !s) return <div className="text-center py-16 text-gray-400">Đang tải...</div>;
   if (!s) return <div className="text-center py-16 text-gray-400">Không tìm thấy buổi chơi</div>;
 
   const checkedInIds = new Set(s.members.map((m) => m.id));
-  const currentUserId = (authSession?.user as { id?: string } | undefined)?.id;
   const myMember = currentUserId ? s.members.find((m) => m.user_id === currentUserId) : undefined;
   const hasJoined = Boolean(myMember);
 
   const toggleMember = async (memberId: string) => {
-    if (!isAdmin) return;
+    if (!canManageSession) return;
     const newIds = checkedInIds.has(memberId)
       ? [...checkedInIds].filter((x) => x !== memberId)
       : [...checkedInIds, memberId];
@@ -71,7 +88,7 @@ export default function SessionDetailPage() {
         await api.joinSession(s.id);
       }
       await refresh(s.id);
-      await fetchMembers();
+      await fetchMembers(s.group_id);
     } catch (e: any) {
       alert(e.message);
     } finally {
@@ -169,7 +186,7 @@ export default function SessionDetailPage() {
           <Badge variant={s.status === "upcoming" ? "green" : "gray"}>
             {s.status === "upcoming" ? "Sắp tới" : "Hoàn thành"}
           </Badge>
-          {isAdmin && (
+          {canManageSession && (
             <Button variant="ghost" size="icon" onClick={handleDeleteSession} className="text-red-500">
               <Trash2 size={16} />
             </Button>
@@ -178,7 +195,7 @@ export default function SessionDetailPage() {
       </div>
 
       {/* Status toggle */}
-      {isAdmin && s.status === "upcoming" && (
+      {canManageSession && s.status === "upcoming" && (
         <button onClick={handleMarkComplete}
           className="w-full bg-green-50 border border-green-200 text-green-700 text-sm font-medium rounded-xl py-2 mb-4 hover:bg-green-100 transition-colors">
           Đánh dấu hoàn thành
@@ -218,10 +235,10 @@ export default function SessionDetailPage() {
             <span className="text-sm text-gray-500">{s.members.length} người tham gia</span>
           </div>
           <div className="space-y-2">
-            {(isAdmin ? members.filter((m) => m.is_active) : s.members).map((m) => {
+            {(canManageSession ? members.filter((m) => m.is_active) : s.members).map((m) => {
               const checked = checkedInIds.has(m.id);
               return (
-                <button key={m.id} onClick={() => toggleMember(m.id)} disabled={!isAdmin}
+                <button key={m.id} onClick={() => toggleMember(m.id)} disabled={!canManageSession}
                   className={`w-full flex items-center gap-3 p-3 rounded-xl border transition-colors ${checked ? "bg-green-50 border-green-200" : "bg-white border-gray-100"}`}>
                   <Avatar name={m.name} color={m.avatar_color} size="sm" />
                   <span className="flex-1 text-left font-medium text-gray-900">{m.name}</span>
@@ -238,7 +255,7 @@ export default function SessionDetailPage() {
       {/* Tab: Chi phí */}
       {tab === "Chi phí" && (
         <div className="space-y-4">
-          {isAdmin && (
+          {canManageSession && (
             <div className="bg-gray-50 rounded-xl p-4 space-y-3">
               <div className="grid grid-cols-2 gap-2">
                 <select value={costForm.type} onChange={(e) => setCostForm((f) => ({ ...f, type: e.target.value, label: COST_TYPES.find(t => t.value === e.target.value)?.label ?? "" }))}
@@ -267,7 +284,7 @@ export default function SessionDetailPage() {
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="font-semibold text-gray-900">{formatCurrency(c.amount)}</span>
-                    {isAdmin && (
+                    {canManageSession && (
                       <Button variant="ghost" size="icon" onClick={() => handleDeleteCost(c.id)} className="text-red-400 hover:text-red-600">
                         <Trash2 size={14} />
                       </Button>
@@ -282,7 +299,7 @@ export default function SessionDetailPage() {
             </div>
           )}
 
-          {isAdmin && s.costs.length > 0 && s.members.length > 0 && (
+          {canManageSession && s.costs.length > 0 && s.members.length > 0 && (
             <Button variant="outline" className="w-full" onClick={handleRecalculate} disabled={recalculating}>
               <RefreshCw size={16} className={`mr-2 ${recalculating ? "animate-spin" : ""}`} />
               Tính lại ({formatCurrency(perPerson)}/người)

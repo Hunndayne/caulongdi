@@ -1,4 +1,17 @@
-import type { Member, Session, SessionDetail, Cost, Payment, StatsResponse, UserProfile, ProfileUpdateInput, PlayGroup } from "@/types";
+import type {
+  Member,
+  Session,
+  SessionDetail,
+  Cost,
+  Payment,
+  StatsResponse,
+  UserProfile,
+  ProfileUpdateInput,
+  PlayGroup,
+  GroupInvite,
+  GroupMember,
+  GroupSearchResult,
+} from "@/types";
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const res = await fetch(url, {
@@ -15,7 +28,8 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
 
 export const api = {
   // Members
-  getMembers: () => request<Member[]>("/api/members"),
+  getMembers: (groupId?: string) =>
+    request<Member[]>(groupId ? `/api/members?groupId=${encodeURIComponent(groupId)}` : "/api/members"),
   createMember: (data: Partial<Member>) =>
     request<Member>("/api/members", { method: "POST", body: JSON.stringify(data) }),
   updateMember: (id: string, data: Partial<Member>) =>
@@ -58,17 +72,31 @@ export const api = {
     request<Payment>(`/api/payments/${id}/toggle`, { method: "POST" }),
 
   // Stats
-  getStats: () => request<StatsResponse>("/api/stats"),
+  getStats: (groupId?: string) =>
+    request<StatsResponse>(groupId ? `/api/stats?groupId=${encodeURIComponent(groupId)}` : "/api/stats"),
 
   // Groups
   getGroups: () => request<PlayGroup[]>("/api/groups"),
   createGroup: (data: { name: string; description?: string }) =>
     request<PlayGroup>("/api/groups", { method: "POST", body: JSON.stringify(data) }),
-  joinGroup: (id: string) =>
-    request<{ success: boolean }>(`/api/groups/${id}/join`, { method: "POST" }),
+  getGroupMembers: (id: string) => request<GroupMember[]>(`/api/groups/${id}/members`),
+  getGroupInvites: (id: string) => request<GroupInvite[]>(`/api/groups/${id}/invites`),
+  getReceivedGroupInvites: () => request<GroupInvite[]>("/api/groups/invites/received"),
+  searchGroupUsers: (id: string, q: string) =>
+    request<GroupSearchResult[]>(`/api/groups/${id}/search-users?q=${encodeURIComponent(q)}`),
+  inviteGroupMember: (id: string, data: { userId: string; role?: "admin" | "member" }) =>
+    request<GroupInvite>(`/api/groups/${id}/invites`, { method: "POST", body: JSON.stringify(data) }),
+  acceptGroupInvite: (inviteId: string) =>
+    request<{ success: boolean; groupId: string }>(`/api/groups/invites/${inviteId}/accept`, { method: "POST" }),
+  declineGroupInvite: (inviteId: string) =>
+    request<{ success: boolean; groupId: string }>(`/api/groups/invites/${inviteId}/decline`, { method: "POST" }),
+  cancelGroupInvite: (id: string, inviteId: string) =>
+    request<{ success: boolean }>(`/api/groups/${id}/invites/${inviteId}`, { method: "DELETE" }),
+  removeGroupMember: (id: string, userId: string) =>
+    request<{ success: boolean }>(`/api/groups/${id}/members/${userId}`, { method: "DELETE" }),
 
   // Profiles
-  getProfiles: () => request<UserProfile[]>("/api/profiles"),
+  getProfiles: (groupId: string) => request<UserProfile[]>(`/api/profiles?groupId=${encodeURIComponent(groupId)}`),
   getMyProfile: () => request<UserProfile>("/api/profiles/me"),
   getProfile: (id: string) => request<UserProfile>(`/api/profiles/${id}`),
   updateMyProfile: (data: ProfileUpdateInput) =>

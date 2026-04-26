@@ -5,7 +5,7 @@ import type { Member } from "@/types";
 interface MembersState {
   members: Member[];
   loading: boolean;
-  fetch: () => Promise<void>;
+  fetch: (groupId?: string) => Promise<void>;
   create: (data: Partial<Member>) => Promise<Member>;
   update: (id: string, data: Partial<Member>) => Promise<void>;
   remove: (id: string) => Promise<void>;
@@ -15,10 +15,10 @@ export const useMembersStore = create<MembersState>((set, get) => ({
   members: [],
   loading: false,
 
-  fetch: async () => {
+  fetch: async (groupId) => {
     set({ loading: true });
     try {
-      const members = await api.getMembers();
+      const members = await api.getMembers(groupId);
       set({ members });
     } finally {
       set({ loading: false });

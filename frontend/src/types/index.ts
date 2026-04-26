@@ -35,6 +35,42 @@ export interface PlayGroup {
   updatedAt: string;
 }
 
+export interface GroupMember {
+  userId: string;
+  role: "admin" | "member";
+  joinedAt: string;
+  name: string;
+  email: string;
+  avatarUrl?: string;
+}
+
+export interface GroupInvite {
+  id: string;
+  groupId: string;
+  groupName: string;
+  groupDescription?: string;
+  invitedUserId: string;
+  invitedUserName?: string;
+  invitedUserEmail?: string;
+  invitedUserAvatarUrl?: string;
+  invitedByUserId: string;
+  invitedByName: string;
+  invitedByEmail: string;
+  role: "admin" | "member";
+  status: "pending" | "accepted" | "declined";
+  createdAt: string;
+  respondedAt?: string;
+}
+
+export interface GroupSearchResult {
+  userId: string;
+  name: string;
+  email: string;
+  avatarUrl?: string;
+  inviteStatus: "none" | "pending";
+  pendingInviteId?: string;
+}
+
 export interface Member {
   id: string;
   group_id?: string;

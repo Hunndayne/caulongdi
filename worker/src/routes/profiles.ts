@@ -41,14 +41,79 @@ function cleanOptional(value: unknown, maxLength: number) {
   return trimmed ? trimmed.slice(0, maxLength) : null;
 }
 
+function isMissingGroupSchema(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes("no such table: groups") ||
+    message.includes("no such table: group_members") ||
+    message.includes("no such column: group_id")
+  );
+}
+
+async function canViewProfile(c: any, targetUserId: string) {
+  if (targetUserId === c.get("userId")) return true;
+  if (c.get("userRole") === "admin") return true;
+
+  try {
+    const shared = await c.env.DB.prepare(`
+      SELECT 1
+      FROM group_members mine
+      JOIN group_members theirs ON theirs.group_id = mine.group_id
+      WHERE mine.user_id = ?
+        AND theirs.user_id = ?
+      LIMIT 1
+    `)
+      .bind(c.get("userId"), targetUserId)
+      .first() as { 1: number } | null;
+
+    return Boolean(shared);
+  } catch (error) {
+    if (isMissingGroupSchema(error)) return false;
+    throw error;
+  }
+}
+
 const profileSelect = `
   SELECT id, name, email, avatar_url, role, phone, bio, birthday, location, created_at, updated_at
   FROM users
 `;
 
 profiles.get("/", async (c) => {
-  const rows = await c.env.DB.prepare(`${profileSelect} ORDER BY name COLLATE NOCASE ASC`).all<ProfileRow>();
-  return c.json(rows.results.map(toProfile));
+  const groupId = c.req.query("groupId")?.trim();
+  if (!groupId) return c.json({ error: "groupId required" }, 400);
+
+  try {
+    const membership = await c.env.DB.prepare(`
+      SELECT role
+      FROM group_members
+      WHERE group_id = ? AND user_id = ?
+    `)
+      .bind(groupId, c.get("userId"))
+      .first<{ role: string }>();
+
+    if (!membership && c.get("userRole") !== "admin") {
+      return c.json({ error: "Forbidden" }, 403);
+    }
+
+    const rows = await c.env.DB.prepare(`
+      ${profileSelect}
+      WHERE id IN (
+        SELECT gm.user_id
+        FROM group_members gm
+        WHERE gm.group_id = ?
+      )
+      ORDER BY name COLLATE NOCASE ASC
+    `)
+      .bind(groupId)
+      .all<ProfileRow>();
+
+    return c.json(rows.results.map(toProfile));
+  } catch (error) {
+    if (isMissingGroupSchema(error)) {
+      return c.json({ error: "Run group database migration first" }, 400);
+    }
+    throw error;
+  }
 });
 
 profiles.get("/me", async (c) => {
@@ -113,6 +178,9 @@ profiles.put("/me", async (c) => {
 
 profiles.get("/:id", async (c) => {
   const { id } = c.req.param();
+  if (!(await canViewProfile(c, id))) {
+    return c.json({ error: "Forbidden" }, 403);
+  }
   const row = await c.env.DB.prepare(`${profileSelect} WHERE id = ?`)
     .bind(id)
     .first<ProfileRow>();
@@ -139,6 +207,8 @@ profiles.delete("/:id", async (c) => {
 
   await c.env.DB.batch([
     c.env.DB.prepare("UPDATE members SET user_id = NULL WHERE user_id = ?").bind(id),
+    c.env.DB.prepare("DELETE FROM group_invites WHERE invited_user_id = ? OR invited_by_user_id = ?").bind(id, id),
+    c.env.DB.prepare("DELETE FROM group_members WHERE user_id = ?").bind(id),
     c.env.DB.prepare("DELETE FROM sessions_auth WHERE user_id = ?").bind(id),
     c.env.DB.prepare("DELETE FROM accounts WHERE user_id = ?").bind(id),
     c.env.DB.prepare("DELETE FROM users WHERE id = ?").bind(id),

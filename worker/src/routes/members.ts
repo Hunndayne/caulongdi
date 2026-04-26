@@ -4,23 +4,85 @@ import { nanoid } from "../utils";
 
 const members = new Hono<{ Bindings: Env; Variables: { userId: string; userRole: string } }>();
 
+function isMissingGroupSchema(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes("no such table: groups") ||
+    message.includes("no such table: group_members") ||
+    message.includes("no such column: group_id")
+  );
+}
+
 members.get("/", async (c) => {
-  const rows = await c.env.DB.prepare(
-    "SELECT * FROM members ORDER BY is_active DESC, name ASC"
-  ).all();
-  return c.json(rows.results);
+  const groupId = c.req.query("groupId")?.trim();
+
+  try {
+    if (groupId) {
+      const membership = await c.env.DB.prepare(`
+        SELECT role
+        FROM group_members
+        WHERE group_id = ? AND user_id = ?
+      `)
+        .bind(groupId, c.get("userId"))
+        .first<{ role: string }>();
+
+      if (!membership && c.get("userRole") !== "admin") {
+        return c.json({ error: "Forbidden" }, 403);
+      }
+
+      const rows = await c.env.DB.prepare(`
+        SELECT *
+        FROM members
+        WHERE group_id = ?
+        ORDER BY is_active DESC, name ASC
+      `)
+        .bind(groupId)
+        .all();
+      return c.json(rows.results);
+    }
+
+    if (c.get("userRole") === "admin") {
+      const rows = await c.env.DB.prepare(
+        "SELECT * FROM members ORDER BY is_active DESC, name ASC"
+      ).all();
+      return c.json(rows.results);
+    }
+
+    const rows = await c.env.DB.prepare(`
+      SELECT *
+      FROM members
+      WHERE group_id IS NULL
+         OR group_id IN (
+           SELECT gm.group_id
+           FROM group_members gm
+           WHERE gm.user_id = ?
+         )
+      ORDER BY is_active DESC, name ASC
+    `)
+      .bind(c.get("userId"))
+      .all();
+    return c.json(rows.results);
+  } catch (error) {
+    if (isMissingGroupSchema(error)) {
+      const rows = await c.env.DB.prepare(
+        "SELECT * FROM members ORDER BY is_active DESC, name ASC"
+      ).all();
+      return c.json(rows.results);
+    }
+    throw error;
+  }
 });
 
 members.post("/", async (c) => {
   if (c.get("userRole") !== "admin") return c.json({ error: "Forbidden" }, 403);
-  const body = await c.req.json<{ name: string; phone?: string; avatarColor?: string; userId?: string }>();
+  const body = await c.req.json<{ name: string; phone?: string; avatarColor?: string; userId?: string; groupId?: string }>();
   if (!body.name?.trim()) return c.json({ error: "name required" }, 400);
   const id = nanoid();
   const now = new Date().toISOString();
   await c.env.DB.prepare(
-    "INSERT INTO members (id, user_id, name, phone, avatar_color, is_active, created_at) VALUES (?, ?, ?, ?, ?, 1, ?)"
+    "INSERT INTO members (id, group_id, user_id, name, phone, avatar_color, is_active, created_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?)"
   )
-    .bind(id, body.userId ?? null, body.name.trim(), body.phone ?? null, body.avatarColor ?? "#22c55e", now)
+    .bind(id, body.groupId ?? null, body.userId ?? null, body.name.trim(), body.phone ?? null, body.avatarColor ?? "#22c55e", now)
     .run();
   const row = await c.env.DB.prepare("SELECT * FROM members WHERE id = ?").bind(id).first();
   return c.json(row, 201);
