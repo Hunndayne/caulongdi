@@ -214,21 +214,9 @@ sessions.post("/:id/join", async (c) => {
     .first<{ id: string; name: string; email: string }>();
   if (!user) return c.json({ error: "User not found" }, 404);
 
-  let existingMember: { id: string } | null = null;
-  try {
-    existingMember = session.group_id
-      ? await c.env.DB.prepare("SELECT id FROM members WHERE user_id = ? AND group_id = ?")
-        .bind(userId, session.group_id)
-        .first<{ id: string }>()
-      : await c.env.DB.prepare("SELECT id FROM members WHERE user_id = ?")
-        .bind(userId)
-        .first<{ id: string }>();
-  } catch (error) {
-    if (!isMissingGroupSchema(error)) throw error;
-    existingMember = await c.env.DB.prepare("SELECT id FROM members WHERE user_id = ?")
-      .bind(userId)
-      .first<{ id: string }>();
-  }
+  const existingMember = await c.env.DB.prepare("SELECT id FROM members WHERE user_id = ?")
+    .bind(userId)
+    .first<{ id: string }>();
 
   const memberId = existingMember?.id ?? nanoid();
   if (existingMember) {
@@ -236,20 +224,11 @@ sessions.post("/:id/join", async (c) => {
       .bind(user.name || user.email, null, memberId)
       .run();
   } else {
-    try {
-      await c.env.DB.prepare(
-        "INSERT INTO members (id, group_id, user_id, name, phone, avatar_color, is_active, created_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?)"
-      )
-        .bind(memberId, session.group_id ?? null, userId, user.name || user.email, null, colorForUser(userId), new Date().toISOString())
-        .run();
-    } catch (error) {
-      if (!isMissingGroupSchema(error)) throw error;
-      await c.env.DB.prepare(
-        "INSERT INTO members (id, user_id, name, phone, avatar_color, is_active, created_at) VALUES (?, ?, ?, ?, ?, 1, ?)"
-      )
-        .bind(memberId, userId, user.name || user.email, null, colorForUser(userId), new Date().toISOString())
-        .run();
-    }
+    await c.env.DB.prepare(
+      "INSERT INTO members (id, user_id, name, phone, avatar_color, is_active, created_at) VALUES (?, ?, ?, ?, ?, 1, ?)"
+    )
+      .bind(memberId, userId, user.name || user.email, null, colorForUser(userId), new Date().toISOString())
+      .run();
   }
 
   await c.env.DB.batch([
