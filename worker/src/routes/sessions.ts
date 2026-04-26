@@ -176,8 +176,14 @@ sessions.get("/:id", async (c) => {
   if (!(await canAccessSession(c, session))) return c.json({ error: "Forbidden" }, 403);
 
   const members = await c.env.DB.prepare(`
-    SELECT m.*, sm.attended FROM members m
+    SELECT m.*, sm.attended,
+      u.email AS user_email,
+      u.bank_bin AS user_bank_bin,
+      u.bank_account_number AS user_bank_account_number,
+      u.bank_account_name AS user_bank_account_name
+    FROM members m
     JOIN session_members sm ON sm.member_id = m.id
+    LEFT JOIN users u ON u.id = m.user_id
     WHERE sm.session_id = ?
   `).bind(id).all();
 

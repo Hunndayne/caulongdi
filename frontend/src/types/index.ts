@@ -12,6 +12,9 @@ export interface UserProfile extends User {
   bio?: string;
   birthday?: string;
   location?: string;
+  bankBin?: string;
+  bankAccountNumber?: string;
+  bankAccountName?: string;
   updatedAt: string;
 }
 
@@ -22,6 +25,9 @@ export interface ProfileUpdateInput {
   birthday?: string;
   location?: string;
   avatarUrl?: string;
+  bankBin?: string;
+  bankAccountNumber?: string;
+  bankAccountName?: string;
 }
 
 export interface PlayGroup {
@@ -80,6 +86,10 @@ export interface Member {
   avatar_color: string;
   is_active: number;
   created_at: string;
+  user_email?: string;
+  user_bank_bin?: string;
+  user_bank_account_number?: string;
+  user_bank_account_name?: string;
 }
 
 export interface Session {

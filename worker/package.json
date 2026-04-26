@@ -12,7 +12,9 @@
     "db:patch:groups": "wrangler d1 execute caulong --remote --file=src/db/patch-groups.sql",
     "db:patch:group-invites": "wrangler d1 execute caulong --remote --file=src/db/patch-group-invites.sql",
     "db:patch:costs": "wrangler d1 execute caulong --local --file=src/db/patch-costs-payer-consumer.sql",
-    "db:patch:costs:prod": "wrangler d1 execute caulong --remote --file=src/db/patch-costs-payer-consumer.sql"
+    "db:patch:costs:prod": "wrangler d1 execute caulong --remote --file=src/db/patch-costs-payer-consumer.sql",
+    "db:patch:banks": "wrangler d1 execute caulong --local --file=src/db/patch-banks.sql",
+    "db:patch:banks:prod": "wrangler d1 execute caulong --remote --file=src/db/patch-banks.sql"
   },
   "dependencies": {
     "better-auth": "^1.2.7",

@@ -9,6 +9,9 @@ CREATE TABLE IF NOT EXISTS users (
   bio TEXT,
   birthday TEXT,
   location TEXT,
+  bank_bin TEXT,
+  bank_account_number TEXT,
+  bank_account_name TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );

@@ -13,7 +13,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { formatDate, formatCurrency } from "@/lib/utils";
-import type { Cost } from "@/types";
+import type { Cost, Member } from "@/types";
+
+const HUNN_EMAIL = "tranthanhhung1641@gmail.com";
 
 const TABS = ["Check-in", "Chi phí", "Thanh toán"] as const;
 type Tab = (typeof TABS)[number];
@@ -40,6 +42,7 @@ export default function SessionDetailPage() {
   const [joining, setJoining] = useState(false);
   const [copied, setCopied] = useState(false);
   const [shareCopied, setShareCopied] = useState(false);
+  const [recipientId, setRecipientId] = useState<string>(""); // "" = chưa chọn, "auto_<memberId>" = auto Hunn, "<memberId>" = chuyển thường
   const currentUserId = (authSession?.user as { id?: string } | undefined)?.id;
   const groupRole = currentSession?.group_id ? groups.find((group) => group.id === currentSession.group_id)?.role : undefined;
   const canManageSession = Boolean(
@@ -368,66 +371,139 @@ export default function SessionDetailPage() {
       )}
 
       {/* Tab: Thanh toán */}
-      {tab === "Thanh toán" && (
-        <div className="space-y-3">
-          <Button variant="outline" size="sm" onClick={copyNotification} className="w-full">
-            {copied ? <><Check size={14} className="mr-1 text-green-600" /> Đã copy!</> : <><Copy size={14} className="mr-1" /> Copy thông báo</>}
-          </Button>
+      {tab === "Thanh toán" && (() => {
+        // Tìm các member có thông tin ngân hàng
+        const membersWithBank = s.members.filter(
+          (m) => m.user_bank_bin && m.user_bank_account_number && m.user_bank_account_name
+        );
+        const hunnMember = s.members.find((m) => m.user_email === HUNN_EMAIL);
+        const hunnHasBank = hunnMember && hunnMember.user_bank_bin && hunnMember.user_bank_account_number && hunnMember.user_bank_account_name;
 
-          {s.payments.length === 0 ? (
-            <div className="text-center py-8 text-gray-400 text-sm">Chưa tính tiền. Vào tab Chi phí để tính.</div>
-          ) : (
-            <div className="space-y-2">
-              {s.payments.map((p) => {
-                const member = members.find((m) => m.id === p.member_id) ?? s.members.find((m) => m.id === p.member_id);
-                const isNegative = p.amount_owed < 0;
-                return (
-                  <div key={p.id}
-                    className={`flex items-center justify-between p-3 rounded-xl border transition-colors ${
-                      p.paid
-                        ? (isNegative ? "bg-blue-50 border-blue-200" : "bg-green-50 border-green-200")
-                        : (isNegative ? "bg-blue-50 border-blue-200" : "bg-white border-gray-100")
-                    }`}>
-                    <div className="flex items-center gap-3">
-                      {member && <Avatar name={member.name} color={member.avatar_color} size="sm" />}
-                      <div>
-                        <div className="font-medium text-gray-900">{member?.name ?? p.member_id}</div>
-                        {isNegative ? (
-                          <div className="text-sm font-semibold text-blue-600">Nhận lại {formatCurrency(-p.amount_owed)}</div>
-                        ) : (
-                          <div className="text-sm font-semibold text-gray-700">{formatCurrency(p.amount_owed)}</div>
-                        )}
-                      </div>
-                    </div>
-                    <button onClick={() => handleTogglePayment(p.id)}
-                      className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+        // Xác định recipient
+        const isAutoMode = recipientId.startsWith("auto_");
+        const actualRecipientId = isAutoMode ? recipientId.replace("auto_", "") : recipientId;
+        const recipientMember = actualRecipientId ? s.members.find((m) => m.id === actualRecipientId) : null;
+
+        function buildQrUrl(payerMember: Member & { attended: number }, amount: number) {
+          if (!recipientMember?.user_bank_bin || !recipientMember?.user_bank_account_number) return null;
+          if (amount <= 0) return null;
+
+          let addInfo: string;
+          if (isAutoMode) {
+            // Auto mode: 8 ký tự tham chiếu
+            const shortId = s.id.slice(0, 4) + payerMember.id.slice(0, 4);
+            addInfo = shortId;
+          } else {
+            // Normal mode: Tên + trả tiền cầu lông + ngày
+            const dateStr = s.date.split("-").slice(1).reverse().join("/");
+            addInfo = `${payerMember.name} tra tien cau long ${dateStr}`;
+          }
+
+          const bankId = recipientMember.user_bank_bin;
+          const accountNo = recipientMember.user_bank_account_number;
+          const accountName = recipientMember.user_bank_account_name || "";
+          return `https://img.vietqr.io/image/${bankId}-${accountNo}-compact.png?amount=${Math.ceil(amount)}&addInfo=${encodeURIComponent(addInfo)}&accountName=${encodeURIComponent(accountName)}`;
+        }
+
+        return (
+          <div className="space-y-3">
+            {/* Chọn người nhận tiền */}
+            {membersWithBank.length > 0 && (
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Người nhận tiền (tạo mã QR)</label>
+                <select
+                  value={recipientId}
+                  onChange={(e) => setRecipientId(e.target.value)}
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                >
+                  <option value="">-- Chưa chọn --</option>
+                  {hunnHasBank && (
+                    <option value={`auto_${hunnMember!.id}`}>
+                      ⚡ Tự động trừ nợ, kiếm Hunn lấy tiền
+                    </option>
+                  )}
+                  {membersWithBank.map((m) => (
+                    <option key={m.id} value={m.id}>{m.name}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            <Button variant="outline" size="sm" onClick={copyNotification} className="w-full">
+              {copied ? <><Check size={14} className="mr-1 text-green-600" /> Đã copy!</> : <><Copy size={14} className="mr-1" /> Copy thông báo</>}
+            </Button>
+
+            {s.payments.length === 0 ? (
+              <div className="text-center py-8 text-gray-400 text-sm">Chưa tính tiền. Vào tab Chi phí để tính.</div>
+            ) : (
+              <div className="space-y-2">
+                {s.payments.map((p) => {
+                  const member = members.find((m) => m.id === p.member_id) ?? s.members.find((m) => m.id === p.member_id);
+                  const isNegative = p.amount_owed < 0;
+                  const sessionMember = s.members.find((m) => m.id === p.member_id);
+                  const qrUrl = sessionMember && !isNegative && recipientMember && actualRecipientId !== p.member_id
+                    ? buildQrUrl(sessionMember, p.amount_owed)
+                    : null;
+                  return (
+                    <div key={p.id}
+                      className={`p-3 rounded-xl border transition-colors ${
                         p.paid
-                          ? (isNegative ? "bg-blue-600 text-white" : "bg-green-600 text-white")
-                          : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                          ? (isNegative ? "bg-blue-50 border-blue-200" : "bg-green-50 border-green-200")
+                          : (isNegative ? "bg-blue-50 border-blue-200" : "bg-white border-gray-100")
                       }`}>
-                      {p.paid ? (isNegative ? "Đã nhận ✓" : "Đã trả ✓") : (isNegative ? "Chưa nhận" : "Chưa trả")}
-                    </button>
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          {member && <Avatar name={member.name} color={member.avatar_color} size="sm" />}
+                          <div>
+                            <div className="font-medium text-gray-900">{member?.name ?? p.member_id}</div>
+                            {isNegative ? (
+                              <div className="text-sm font-semibold text-blue-600">Nhận lại {formatCurrency(-p.amount_owed)}</div>
+                            ) : (
+                              <div className="text-sm font-semibold text-gray-700">{formatCurrency(p.amount_owed)}</div>
+                            )}
+                          </div>
+                        </div>
+                        <button onClick={() => handleTogglePayment(p.id)}
+                          className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                            p.paid
+                              ? (isNegative ? "bg-blue-600 text-white" : "bg-green-600 text-white")
+                              : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                          }`}>
+                          {p.paid ? (isNegative ? "Đã nhận ✓" : "Đã trả ✓") : (isNegative ? "Chưa nhận" : "Chưa trả")}
+                        </button>
+                      </div>
+                      {qrUrl && !p.paid && (
+                        <div className="mt-3 flex justify-center">
+                          <img
+                            src={qrUrl}
+                            alt={`QR chuyển khoản cho ${member?.name}`}
+                            className="w-48 h-auto rounded-lg border border-gray-200"
+                            loading="lazy"
+                          />
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+                <div className="space-y-1 bg-gray-50 rounded-xl p-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-gray-600">Đã thanh toán xong</span>
+                    <span className="text-sm font-medium text-gray-900">
+                      {s.payments.filter((p) => p.paid).length}/{s.payments.length} người
+                    </span>
                   </div>
-                );
-              })}
-              <div className="space-y-1 bg-gray-50 rounded-xl p-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-gray-600">Đã thanh toán xong</span>
-                  <span className="text-sm font-medium text-gray-900">
-                    {s.payments.filter((p) => p.paid).length}/{s.payments.length} người
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-gray-600">Tổng thu</span>
-                  <span className="text-sm font-medium text-gray-900">
-                    {formatCurrency(s.payments.filter((p) => p.amount_owed > 0).reduce((sum, p) => sum + p.amount_owed, 0))}
-                  </span>
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-gray-600">Tổng thu</span>
+                    <span className="text-sm font-medium text-gray-900">
+                      {formatCurrency(s.payments.filter((p) => p.amount_owed > 0).reduce((sum, p) => sum + p.amount_owed, 0))}
+                    </span>
+                  </div>
                 </div>
               </div>
-            </div>
-          )}
-        </div>
-      )}
+            )}
+          </div>
+        );
+      })()}
     </div>
   );
 }

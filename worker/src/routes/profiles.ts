@@ -14,6 +14,9 @@ type ProfileRow = {
   bio?: string | null;
   birthday?: string | null;
   location?: string | null;
+  bank_bin?: string | null;
+  bank_account_number?: string | null;
+  bank_account_name?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
 };
@@ -29,6 +32,9 @@ function toProfile(row: ProfileRow) {
     bio: row.bio ?? undefined,
     birthday: row.birthday ?? undefined,
     location: row.location ?? undefined,
+    bankBin: row.bank_bin ?? undefined,
+    bankAccountNumber: row.bank_account_number ?? undefined,
+    bankAccountName: row.bank_account_name ?? undefined,
     createdAt: row.created_at ?? "",
     updatedAt: row.updated_at ?? "",
   };
@@ -74,7 +80,7 @@ async function canViewProfile(c: any, targetUserId: string) {
 }
 
 const profileSelect = `
-  SELECT id, name, email, avatar_url, role, phone, bio, birthday, location, created_at, updated_at
+  SELECT id, name, email, avatar_url, role, phone, bio, birthday, location, bank_bin, bank_account_number, bank_account_name, created_at, updated_at
   FROM users
 `;
 
@@ -137,6 +143,9 @@ profiles.put("/me", async (c) => {
     birthday?: string;
     location?: string;
     avatarUrl?: string;
+    bankBin?: string;
+    bankAccountNumber?: string;
+    bankAccountName?: string;
   }>();
 
   if (body.name !== undefined && typeof body.name !== "string") {
@@ -151,11 +160,15 @@ profiles.put("/me", async (c) => {
   const birthday = cleanOptional(body.birthday, 20);
   const location = cleanOptional(body.location, 120);
   const avatarUrl = cleanOptional(body.avatarUrl, 500);
+  const bankBin = cleanOptional(body.bankBin, 10);
+  const bankAccountNumber = cleanOptional(body.bankAccountNumber, 30);
+  const bankAccountName = cleanOptional(body.bankAccountName, 80);
   const now = new Date().toISOString();
 
   await c.env.DB.prepare(`
     UPDATE users
-    SET name = ?, phone = ?, bio = ?, birthday = ?, location = ?, avatar_url = ?, updated_at = ?
+    SET name = ?, phone = ?, bio = ?, birthday = ?, location = ?, avatar_url = ?,
+        bank_bin = ?, bank_account_number = ?, bank_account_name = ?, updated_at = ?
     WHERE id = ?
   `)
     .bind(
@@ -165,6 +178,9 @@ profiles.put("/me", async (c) => {
       birthday === undefined ? existing.birthday ?? null : birthday,
       location === undefined ? existing.location ?? null : location,
       avatarUrl === undefined ? existing.avatar_url ?? null : avatarUrl,
+      bankBin === undefined ? existing.bank_bin ?? null : bankBin,
+      bankAccountNumber === undefined ? existing.bank_account_number ?? null : bankAccountNumber,
+      bankAccountName === undefined ? existing.bank_account_name ?? null : bankAccountName,
       now,
       existing.id
     )

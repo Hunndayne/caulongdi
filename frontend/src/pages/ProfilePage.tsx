@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { LogOut, MapPin, Phone, Save, UserCircle } from "lucide-react";
+import { LogOut, MapPin, Phone, Save, UserCircle, Landmark } from "lucide-react";
 import { api } from "@/api/client";
 import { Avatar } from "@/components/shared/Avatar";
 import { Button } from "@/components/ui/button";
@@ -8,6 +8,9 @@ import { Input } from "@/components/ui/input";
 import { signOut } from "@/lib/auth-client";
 import { useGroupsStore } from "@/stores/groupsStore";
 import type { ProfileUpdateInput, UserProfile } from "@/types";
+import banksData from "@/lib/banks.json";
+
+const banks = (banksData as any).data.filter((b: any) => b.transferSupported === 1);
 
 const emptyForm: Required<ProfileUpdateInput> = {
   name: "",
@@ -16,6 +19,9 @@ const emptyForm: Required<ProfileUpdateInput> = {
   birthday: "",
   location: "",
   avatarUrl: "",
+  bankBin: "",
+  bankAccountNumber: "",
+  bankAccountName: "",
 };
 
 function profileToForm(profile: UserProfile): Required<ProfileUpdateInput> {
@@ -26,6 +32,9 @@ function profileToForm(profile: UserProfile): Required<ProfileUpdateInput> {
     birthday: profile.birthday ?? "",
     location: profile.location ?? "",
     avatarUrl: profile.avatarUrl ?? "",
+    bankBin: profile.bankBin ?? "",
+    bankAccountNumber: profile.bankAccountNumber ?? "",
+    bankAccountName: profile.bankAccountName ?? "",
   };
 }
 
@@ -170,6 +179,47 @@ export default function ProfilePage() {
         <Button className="w-full" onClick={handleSave} disabled={saving || !form.name.trim()}>
           <Save size={16} className="mr-2" />
           {saving ? "Dang luu..." : "Luu ho so"}
+        </Button>
+      </section>
+
+      {/* Thông tin thanh toán */}
+      <section className="space-y-4 rounded-xl border border-gray-100 bg-white p-4 shadow-sm">
+        <div className="flex items-center gap-2 mb-1">
+          <Landmark size={18} className="text-green-600" />
+          <h2 className="font-semibold text-gray-900">Thong tin thanh toan</h2>
+        </div>
+        <p className="text-xs text-gray-400">De nhom tao ma QR chuyen khoan nhanh cho ban.</p>
+        <div className="grid grid-cols-1 gap-4">
+          <div>
+            <label className="mb-1 block text-sm font-medium text-gray-700">Ngan hang</label>
+            <select
+              value={form.bankBin}
+              onChange={(e) => updateForm("bankBin", e.target.value)}
+              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+            >
+              <option value="">-- Chon ngan hang --</option>
+              {banks.map((b: any) => (
+                <option key={b.bin} value={b.bin}>{b.shortName} - {b.name}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="mb-1 block text-sm font-medium text-gray-700">So tai khoan</label>
+            <Input value={form.bankAccountNumber} onChange={(e) => updateForm("bankAccountNumber", e.target.value)} placeholder="0123456789" />
+          </div>
+          <div>
+            <label className="mb-1 block text-sm font-medium text-gray-700">Ten chu tai khoan</label>
+            <Input
+              value={form.bankAccountName}
+              onChange={(e) => updateForm("bankAccountName", e.target.value.toUpperCase())}
+              placeholder="NGUYEN VAN A"
+            />
+            <p className="mt-1 text-xs text-gray-400">In hoa, khong dau</p>
+          </div>
+        </div>
+        <Button className="w-full" onClick={handleSave} disabled={saving || !form.name.trim()}>
+          <Save size={16} className="mr-2" />
+          {saving ? "Dang luu..." : "Luu thong tin"}
         </Button>
       </section>
 
