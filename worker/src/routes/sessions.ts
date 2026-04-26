@@ -33,7 +33,7 @@ function colorForUser(userId: string) {
 
 function isMissingGroupSchema(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
-  return message.includes("no such table: group_members") || message.includes("no such column: group_id") || message.includes("no such column: created_by");
+  return message.includes("no such table: groups") || message.includes("no such table: group_members") || message.includes("no such column: group_id") || message.includes("no such column: created_by");
 }
 
 async function isGroupMember(c: any, groupId: string) {
@@ -53,12 +53,19 @@ async function isGroupAdmin(c: any, groupId?: string | null) {
 
 async function ensureGroupMember(c: any, groupId?: string | null) {
   if (!groupId) return;
-  await c.env.DB.prepare(`
-    INSERT OR IGNORE INTO group_members (group_id, user_id, role, created_at)
-    VALUES (?, ?, 'member', ?)
-  `)
-    .bind(groupId, c.get("userId"), new Date().toISOString())
-    .run();
+  try {
+    await c.env.DB.prepare(`
+      INSERT OR IGNORE INTO group_members (group_id, user_id, role, created_at)
+      VALUES (?, ?, 'member', ?)
+    `)
+      .bind(groupId, c.get("userId"), new Date().toISOString())
+      .run();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!isMissingGroupSchema(error) && !message.includes("FOREIGN KEY constraint failed")) {
+      throw error;
+    }
+  }
 }
 
 async function canManageSession(c: any, session: SessionRow) {
@@ -202,9 +209,9 @@ sessions.post("/:id/join", async (c) => {
   await ensureGroupMember(c, session.group_id);
 
   const userId = c.get("userId");
-  const user = await c.env.DB.prepare("SELECT id, name, email, phone FROM users WHERE id = ?")
+  const user = await c.env.DB.prepare("SELECT id, name, email FROM users WHERE id = ?")
     .bind(userId)
-    .first<{ id: string; name: string; email: string; phone?: string | null }>();
+    .first<{ id: string; name: string; email: string }>();
   if (!user) return c.json({ error: "User not found" }, 404);
 
   let existingMember: { id: string } | null = null;
@@ -226,21 +233,21 @@ sessions.post("/:id/join", async (c) => {
   const memberId = existingMember?.id ?? nanoid();
   if (existingMember) {
     await c.env.DB.prepare("UPDATE members SET name = ?, phone = ?, is_active = 1 WHERE id = ?")
-      .bind(user.name || user.email, user.phone ?? null, memberId)
+      .bind(user.name || user.email, null, memberId)
       .run();
   } else {
     try {
       await c.env.DB.prepare(
         "INSERT INTO members (id, group_id, user_id, name, phone, avatar_color, is_active, created_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?)"
       )
-        .bind(memberId, session.group_id ?? null, userId, user.name || user.email, user.phone ?? null, colorForUser(userId), new Date().toISOString())
+        .bind(memberId, session.group_id ?? null, userId, user.name || user.email, null, colorForUser(userId), new Date().toISOString())
         .run();
     } catch (error) {
       if (!isMissingGroupSchema(error)) throw error;
       await c.env.DB.prepare(
         "INSERT INTO members (id, user_id, name, phone, avatar_color, is_active, created_at) VALUES (?, ?, ?, ?, ?, 1, ?)"
       )
-        .bind(memberId, userId, user.name || user.email, user.phone ?? null, colorForUser(userId), new Date().toISOString())
+        .bind(memberId, userId, user.name || user.email, null, colorForUser(userId), new Date().toISOString())
         .run();
     }
   }
