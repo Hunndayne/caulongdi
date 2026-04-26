@@ -459,27 +459,8 @@ export default function SessionDetailPage() {
 
         return (
           <div className="space-y-3">
-            {/* Chọn người nhận tiền */}
-            {membersWithBank.length > 0 && (
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">Người nhận tiền (tạo mã QR)</label>
-                <select
-                  value={recipientId}
-                  onChange={(e) => handleSetRecipient(e.target.value)}
-                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-                >
-                  <option value="">-- Chưa chọn --</option>
-                  {hunnHasBank && (
-                    <option value={`auto_${hunnMember!.id}`}>
-                      ⚡ Tự động trừ nợ, kiếm Hunn lấy tiền
-                    </option>
-                  )}
-                  {membersWithBank.map((m) => (
-                    <option key={m.id} value={m.id}>{m.name}</option>
-                  ))}
-                </select>
-              </div>
-            )}
+
+
 
             <Button variant="outline" size="sm" onClick={copyNotification} className="w-full">
               {copied ? <><Check size={14} className="mr-1 text-green-600" /> Đã copy!</> : <><Copy size={14} className="mr-1" /> Copy thông báo</>}
@@ -493,11 +474,9 @@ export default function SessionDetailPage() {
                   const member = members.find((m) => m.id === p.member_id) ?? session.members.find((m) => m.id === p.member_id);
                   const isNegative = p.amount_owed < 0;
                   const sessionMember = session.members.find((m) => m.id === p.member_id);
-                  // QR chỉ hiện cho người cần trả, KHÔNG hiện cho: recipient, người quản lý session, người đã trả
-                  const isMyEntry = myMember?.id === p.member_id;
+                  // QR hiện cho tất cả người cần trả, CHỈ ẨN cho: recipient
                   const qrUrl = sessionMember && !isNegative && recipientMember
                     && actualRecipientId !== p.member_id
-                    && !(isMyEntry && canManageSession) // Người quản lý không cần QR cho chính mình
                     ? buildQrUrl(sessionMember, p.amount_owed)
                     : null;
                   return (
