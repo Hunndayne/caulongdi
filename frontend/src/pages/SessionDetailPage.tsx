@@ -388,14 +388,17 @@ export default function SessionDetailPage() {
           if (!recipientMember?.user_bank_bin || !recipientMember?.user_bank_account_number) return null;
           if (amount <= 0) return null;
 
+          const sessionId = s!.id;
+          const sessionDate = s!.date;
+
           let addInfo: string;
           if (isAutoMode) {
             // Auto mode: 8 ký tự tham chiếu
-            const shortId = s.id.slice(0, 4) + payerMember.id.slice(0, 4);
+            const shortId = sessionId.slice(0, 4) + payerMember.id.slice(0, 4);
             addInfo = shortId;
           } else {
             // Normal mode: Tên + trả tiền cầu lông + ngày
-            const dateStr = s.date.split("-").slice(1).reverse().join("/");
+            const dateStr = sessionDate.split("-").slice(1).reverse().join("/");
             addInfo = `${payerMember.name} tra tien cau long ${dateStr}`;
           }
 
