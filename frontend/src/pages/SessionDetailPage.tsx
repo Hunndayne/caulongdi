@@ -372,24 +372,25 @@ export default function SessionDetailPage() {
 
       {/* Tab: Thanh toán */}
       {tab === "Thanh toán" && (() => {
+        const session = s!; // Tạo biến local để TS không báo possibly null
         // Tìm các member có thông tin ngân hàng
-        const membersWithBank = s.members.filter(
+        const membersWithBank = session.members.filter(
           (m) => m.user_bank_bin && m.user_bank_account_number && m.user_bank_account_name
         );
-        const hunnMember = s.members.find((m) => m.user_email === HUNN_EMAIL);
+        const hunnMember = session.members.find((m) => m.user_email === HUNN_EMAIL);
         const hunnHasBank = hunnMember && hunnMember.user_bank_bin && hunnMember.user_bank_account_number && hunnMember.user_bank_account_name;
 
         // Xác định recipient
         const isAutoMode = recipientId.startsWith("auto_");
         const actualRecipientId = isAutoMode ? recipientId.replace("auto_", "") : recipientId;
-        const recipientMember = actualRecipientId ? s.members.find((m) => m.id === actualRecipientId) : null;
+        const recipientMember = actualRecipientId ? session.members.find((m) => m.id === actualRecipientId) : null;
 
         function buildQrUrl(payerMember: Member & { attended: number }, amount: number) {
           if (!recipientMember?.user_bank_bin || !recipientMember?.user_bank_account_number) return null;
           if (amount <= 0) return null;
 
-          const sessionId = s!.id;
-          const sessionDate = s!.date;
+          const sessionId = session.id;
+          const sessionDate = session.date;
 
           let addInfo: string;
           if (isAutoMode) {
@@ -436,14 +437,14 @@ export default function SessionDetailPage() {
               {copied ? <><Check size={14} className="mr-1 text-green-600" /> Đã copy!</> : <><Copy size={14} className="mr-1" /> Copy thông báo</>}
             </Button>
 
-            {s.payments.length === 0 ? (
+            {session.payments.length === 0 ? (
               <div className="text-center py-8 text-gray-400 text-sm">Chưa tính tiền. Vào tab Chi phí để tính.</div>
             ) : (
               <div className="space-y-2">
-                {s.payments.map((p) => {
-                  const member = members.find((m) => m.id === p.member_id) ?? s.members.find((m) => m.id === p.member_id);
+                {session.payments.map((p) => {
+                  const member = members.find((m) => m.id === p.member_id) ?? session.members.find((m) => m.id === p.member_id);
                   const isNegative = p.amount_owed < 0;
-                  const sessionMember = s.members.find((m) => m.id === p.member_id);
+                  const sessionMember = session.members.find((m) => m.id === p.member_id);
                   const qrUrl = sessionMember && !isNegative && recipientMember && actualRecipientId !== p.member_id
                     ? buildQrUrl(sessionMember, p.amount_owed)
                     : null;
@@ -492,13 +493,13 @@ export default function SessionDetailPage() {
                   <div className="flex items-center justify-between">
                     <span className="text-sm text-gray-600">Đã thanh toán xong</span>
                     <span className="text-sm font-medium text-gray-900">
-                      {s.payments.filter((p) => p.paid).length}/{s.payments.length} người
+                      {session.payments.filter((p) => p.paid).length}/{session.payments.length} người
                     </span>
                   </div>
                   <div className="flex items-center justify-between">
                     <span className="text-sm text-gray-600">Tổng thu</span>
                     <span className="text-sm font-medium text-gray-900">
-                      {formatCurrency(s.payments.filter((p) => p.amount_owed > 0).reduce((sum, p) => sum + p.amount_owed, 0))}
+                      {formatCurrency(session.payments.filter((p) => p.amount_owed > 0).reduce((sum, p) => sum + p.amount_owed, 0))}
                     </span>
                   </div>
                 </div>
