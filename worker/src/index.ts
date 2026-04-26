@@ -21,6 +21,7 @@ type PreviewSession = {
   note?: string | null;
   status: string;
   attendee_count: number;
+  attendee_names: string | null;
 };
 
 function escapeHtml(value: string) {
@@ -43,7 +44,8 @@ function formatPreviewDate(date: string) {
 async function getPreviewSession(c: Context<{ Bindings: Env }>, id: string) {
   return c.env.DB.prepare(`
     SELECT s.*,
-      (SELECT COUNT(*) FROM session_members sm WHERE sm.session_id = s.id AND sm.attended = 1) as attendee_count
+      (SELECT COUNT(*) FROM session_members sm WHERE sm.session_id = s.id AND sm.attended = 1) as attendee_count,
+      (SELECT group_concat(m.name, ', ') FROM session_members sm JOIN members m ON sm.member_id = m.id WHERE sm.session_id = s.id AND sm.attended = 1) as attendee_names
     FROM sessions s
     WHERE s.id = ?
   `)
@@ -58,7 +60,8 @@ function previewTitle(session?: PreviewSession | null) {
 function previewDescription(session?: PreviewSession | null) {
   if (!session) return "Xem lịch chơi và tham gia buổi cầu lông của nhóm.";
   const place = session.location ? ` tại ${session.location}` : "";
-  const count = session.attendee_count ? ` · ${session.attendee_count} người tham gia` : "";
+  const names = session.attendee_names ? ` (${session.attendee_names})` : "";
+  const count = session.attendee_count ? ` · ${session.attendee_count} người tham gia${names}` : "";
   return `${formatPreviewDate(session.date)} lúc ${session.start_time}${place}${count}`;
 }
 

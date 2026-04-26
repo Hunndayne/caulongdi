@@ -50,9 +50,9 @@ export default function SessionDetailPage() {
   const managersList: string[] = currentSession?.managers ? JSON.parse(currentSession.managers) : [];
   const canManageSession = Boolean(
     isAdminUser(authSession?.user) ||
-      (currentUserId && currentSession?.created_by === currentUserId) ||
-      (currentUserId && managersList.includes(currentUserId)) ||
-      groupRole === "admin"
+    (currentUserId && currentSession?.created_by === currentUserId) ||
+    (currentUserId && managersList.includes(currentUserId)) ||
+    groupRole === "admin"
   );
 
   useEffect(() => {
@@ -122,23 +122,12 @@ export default function SessionDetailPage() {
 
   const handleShare = async () => {
     const url = `${window.location.origin}/sessions/${s.id}`;
-    const title = `Buổi cầu lông tại ${s.venue}`;
-    const text = `${formatDate(s.date)} · ${s.start_time}${s.location ? ` · ${s.location}` : ""}`;
-
     try {
-      if (navigator.share) {
-        await navigator.share({ title, text, url });
-      } else {
-        await navigator.clipboard.writeText(url);
-        setShareCopied(true);
-        setTimeout(() => setShareCopied(false), 2000);
-      }
+      await navigator.clipboard.writeText(url);
+      setShareCopied(true);
+      setTimeout(() => setShareCopied(false), 2000);
     } catch (e: any) {
-      if (e?.name !== "AbortError") {
-        await navigator.clipboard.writeText(url);
-        setShareCopied(true);
-        setTimeout(() => setShareCopied(false), 2000);
-      }
+      alert("Không thể copy link: " + e.message);
     }
   };
 
@@ -267,7 +256,7 @@ export default function SessionDetailPage() {
           ) : (
             <div className="bg-gray-50 border border-gray-200 rounded-xl p-3 space-y-3">
               <div className="text-xs font-semibold text-gray-700">Người tạo: {s.members.find(m => m.user_id === s.created_by)?.name || "Ẩn danh"}</div>
-              
+
               {managersList.length > 0 && (
                 <div>
                   <div className="text-xs text-gray-500 mb-1">Đồng quản lý:</div>
@@ -278,7 +267,7 @@ export default function SessionDetailPage() {
                       return (
                         <Badge key={uid} variant="gray" className="flex items-center gap-1">
                           {m.name}
-                          <button 
+                          <button
                             onClick={async () => {
                               if (!confirm(`Xóa quyền quản lý của ${m.name}?`)) return;
                               setManagingSettings(true);
@@ -356,7 +345,7 @@ export default function SessionDetailPage() {
                   Chuyển giao
                 </Button>
               </div>
-              <button 
+              <button
                 onClick={() => setShowManagerSettings(false)}
                 className="w-full text-xs text-gray-500 text-center hover:text-gray-700 mt-2"
               >
@@ -599,11 +588,10 @@ export default function SessionDetailPage() {
                     : null;
                   return (
                     <div key={p.id}
-                      className={`p-3 rounded-xl border transition-colors ${
-                        p.paid
+                      className={`p-3 rounded-xl border transition-colors ${p.paid
                           ? (isNegative ? "bg-blue-50 border-blue-200" : "bg-green-50 border-green-200")
                           : (isNegative ? "bg-blue-50 border-blue-200" : "bg-white border-gray-100")
-                      }`}>
+                        }`}>
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-3">
                           {member && <Avatar name={member.name} color={member.avatar_color} size="sm" />}
@@ -617,11 +605,10 @@ export default function SessionDetailPage() {
                           </div>
                         </div>
                         <button onClick={() => handleTogglePayment(p.id)}
-                          className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                            p.paid
+                          className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${p.paid
                               ? (isNegative ? "bg-blue-600 text-white" : "bg-green-600 text-white")
                               : "bg-gray-100 text-gray-600 hover:bg-gray-200"
-                          }`}>
+                            }`}>
                           {p.paid ? (isNegative ? "Đã nhận ✓" : "Đã trả ✓") : (isNegative ? "Chưa nhận" : "Chưa trả")}
                         </button>
                       </div>
