@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 
-import { ArrowLeft, Trash2, RefreshCw, Plus, Copy, Check } from "lucide-react";
+import { ArrowLeft, Trash2, RefreshCw, Plus, Copy, Check, Share2, UserMinus, UserPlus } from "lucide-react";
 import { useSessionsStore } from "@/stores/sessionsStore";
 import { useMembersStore } from "@/stores/membersStore";
 import { useSession } from "@/lib/auth-client";
@@ -34,7 +34,9 @@ export default function SessionDetailPage() {
   const [costForm, setCostForm] = useState({ label: "", amount: "", type: "court" });
   const [addingCost, setAddingCost] = useState(false);
   const [recalculating, setRecalculating] = useState(false);
+  const [joining, setJoining] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [shareCopied, setShareCopied] = useState(false);
   const isAdmin = isAdminUser(authSession?.user);
 
   useEffect(() => {
@@ -46,6 +48,9 @@ export default function SessionDetailPage() {
   if (!s) return <div className="text-center py-16 text-gray-400">Không tìm thấy buổi chơi</div>;
 
   const checkedInIds = new Set(s.members.map((m) => m.id));
+  const currentUserId = (authSession?.user as { id?: string } | undefined)?.id;
+  const myMember = currentUserId ? s.members.find((m) => m.user_id === currentUserId) : undefined;
+  const hasJoined = Boolean(myMember);
 
   const toggleMember = async (memberId: string) => {
     if (!isAdmin) return;
@@ -54,6 +59,46 @@ export default function SessionDetailPage() {
       : [...checkedInIds, memberId];
     await api.setSessionMembers(s.id, newIds);
     await refresh(s.id);
+  };
+
+  const handleJoinToggle = async () => {
+    if (s.status !== "upcoming") return;
+    setJoining(true);
+    try {
+      if (hasJoined) {
+        await api.leaveSession(s.id);
+      } else {
+        await api.joinSession(s.id);
+      }
+      await refresh(s.id);
+      await fetchMembers();
+    } catch (e: any) {
+      alert(e.message);
+    } finally {
+      setJoining(false);
+    }
+  };
+
+  const handleShare = async () => {
+    const url = `${window.location.origin}/sessions/${s.id}`;
+    const title = `Buổi cầu lông tại ${s.venue}`;
+    const text = `${formatDate(s.date)} · ${s.start_time}${s.location ? ` · ${s.location}` : ""}`;
+
+    try {
+      if (navigator.share) {
+        await navigator.share({ title, text, url });
+      } else {
+        await navigator.clipboard.writeText(url);
+        setShareCopied(true);
+        setTimeout(() => setShareCopied(false), 2000);
+      }
+    } catch (e: any) {
+      if (e?.name !== "AbortError") {
+        await navigator.clipboard.writeText(url);
+        setShareCopied(true);
+        setTimeout(() => setShareCopied(false), 2000);
+      }
+    }
   };
 
   const handleAddCost = async () => {
@@ -140,6 +185,22 @@ export default function SessionDetailPage() {
         </button>
       )}
 
+      <div className="grid grid-cols-2 gap-2 mb-4">
+        <Button
+          onClick={handleJoinToggle}
+          disabled={joining || s.status !== "upcoming"}
+          variant={hasJoined ? "outline" : "default"}
+          className="w-full"
+        >
+          {hasJoined ? <UserMinus size={16} className="mr-2" /> : <UserPlus size={16} className="mr-2" />}
+          {joining ? "Đang xử lý..." : hasJoined ? "Rời buổi" : "Tham gia"}
+        </Button>
+        <Button variant="outline" onClick={handleShare} className="w-full">
+          {shareCopied ? <Check size={16} className="mr-2 text-green-600" /> : <Share2 size={16} className="mr-2" />}
+          {shareCopied ? "Đã copy" : "Chia sẻ"}
+        </Button>
+      </div>
+
       {/* Tabs */}
       <div className="flex bg-gray-100 rounded-xl p-1 mb-4">
         {TABS.map((t) => (
@@ -157,7 +218,7 @@ export default function SessionDetailPage() {
             <span className="text-sm text-gray-500">{s.members.length} người tham gia</span>
           </div>
           <div className="space-y-2">
-            {members.filter((m) => m.is_active).map((m) => {
+            {(isAdmin ? members.filter((m) => m.is_active) : s.members).map((m) => {
               const checked = checkedInIds.has(m.id);
               return (
                 <button key={m.id} onClick={() => toggleMember(m.id)} disabled={!isAdmin}

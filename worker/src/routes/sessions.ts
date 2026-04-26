@@ -4,6 +4,8 @@ import { nanoid } from "../utils";
 
 const sessions = new Hono<{ Bindings: Env; Variables: { userId: string; userRole: string } }>();
 
+const MEMBER_COLORS = ["#22c55e", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4"];
+
 type SessionBody = {
   date?: string;
   startTime?: string;
@@ -13,6 +15,11 @@ type SessionBody = {
   note?: string;
   status?: string;
 };
+
+function colorForUser(userId: string) {
+  const total = [...userId].reduce((sum, char) => sum + char.charCodeAt(0), 0);
+  return MEMBER_COLORS[total % MEMBER_COLORS.length];
+}
 
 sessions.get("/", async (c) => {
   const rows = await c.env.DB.prepare(`
@@ -92,6 +99,70 @@ sessions.delete("/:id", async (c) => {
   if (c.get("userRole") !== "admin") return c.json({ error: "Forbidden" }, 403);
   const { id } = c.req.param();
   await c.env.DB.prepare("DELETE FROM sessions WHERE id = ?").bind(id).run();
+  return c.json({ success: true });
+});
+
+sessions.post("/:id/join", async (c) => {
+  const { id } = c.req.param();
+  const session = await c.env.DB.prepare("SELECT status FROM sessions WHERE id = ?")
+    .bind(id)
+    .first<{ status: string }>();
+  if (!session) return c.json({ error: "Not found" }, 404);
+  if (session.status !== "upcoming") return c.json({ error: "Session is not open for joining" }, 400);
+
+  const userId = c.get("userId");
+  const user = await c.env.DB.prepare("SELECT id, name, email, phone FROM users WHERE id = ?")
+    .bind(userId)
+    .first<{ id: string; name: string; email: string; phone?: string | null }>();
+  if (!user) return c.json({ error: "User not found" }, 404);
+
+  const existingMember = await c.env.DB.prepare("SELECT id FROM members WHERE user_id = ?")
+    .bind(userId)
+    .first<{ id: string }>();
+
+  const memberId = existingMember?.id ?? nanoid();
+  if (existingMember) {
+    await c.env.DB.prepare("UPDATE members SET name = ?, phone = ?, is_active = 1 WHERE id = ?")
+      .bind(user.name || user.email, user.phone ?? null, memberId)
+      .run();
+  } else {
+    await c.env.DB.prepare(
+      "INSERT INTO members (id, user_id, name, phone, avatar_color, is_active, created_at) VALUES (?, ?, ?, ?, ?, 1, ?)"
+    )
+      .bind(memberId, userId, user.name || user.email, user.phone ?? null, colorForUser(userId), new Date().toISOString())
+      .run();
+  }
+
+  await c.env.DB.batch([
+    c.env.DB.prepare("INSERT OR IGNORE INTO session_members (session_id, member_id, attended) VALUES (?, ?, 1)")
+      .bind(id, memberId),
+    c.env.DB.prepare("UPDATE session_members SET attended = 1 WHERE session_id = ? AND member_id = ?")
+      .bind(id, memberId),
+  ]);
+
+  return c.json({ success: true, memberId });
+});
+
+sessions.delete("/:id/join", async (c) => {
+  const { id } = c.req.param();
+  const session = await c.env.DB.prepare("SELECT status FROM sessions WHERE id = ?")
+    .bind(id)
+    .first<{ status: string }>();
+  if (!session) return c.json({ error: "Not found" }, 404);
+  if (session.status !== "upcoming") return c.json({ error: "Session is not open for changes" }, 400);
+
+  const member = await c.env.DB.prepare("SELECT id FROM members WHERE user_id = ?")
+    .bind(c.get("userId"))
+    .first<{ id: string }>();
+  if (!member) return c.json({ success: true });
+
+  await c.env.DB.batch([
+    c.env.DB.prepare("DELETE FROM session_members WHERE session_id = ? AND member_id = ?")
+      .bind(id, member.id),
+    c.env.DB.prepare("DELETE FROM payments WHERE session_id = ? AND member_id = ?")
+      .bind(id, member.id),
+  ]);
+
   return c.json({ success: true });
 });
 

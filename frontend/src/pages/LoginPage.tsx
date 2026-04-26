@@ -1,8 +1,13 @@
 import { signIn } from "@/lib/auth-client";
+import { useSearchParams } from "react-router-dom";
 
 export default function LoginPage() {
+  const [searchParams] = useSearchParams();
+  const redirect = searchParams.get("redirect");
+  const callbackURL = redirect?.startsWith("/") && !redirect.startsWith("//") ? redirect : "/";
+
   const handleLogin = () => {
-    signIn.social({ provider: "google", callbackURL: "/" });
+    signIn.social({ provider: "google", callbackURL });
   };
 
   return (

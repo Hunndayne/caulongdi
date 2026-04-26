@@ -32,6 +32,10 @@ export const api = {
     request<Session>(`/api/sessions/${id}`, { method: "PUT", body: JSON.stringify(data) }),
   deleteSession: (id: string) =>
     request<{ success: boolean }>(`/api/sessions/${id}`, { method: "DELETE" }),
+  joinSession: (id: string) =>
+    request<{ success: boolean; memberId: string }>(`/api/sessions/${id}/join`, { method: "POST" }),
+  leaveSession: (id: string) =>
+    request<{ success: boolean }>(`/api/sessions/${id}/join`, { method: "DELETE" }),
 
   // Session members & costs
   setSessionMembers: (id: string, memberIds: string[]) =>

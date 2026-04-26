@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { useSession } from "@/lib/auth-client";
 import { Sidebar, BottomNav } from "@/components/shared/Navbar";
 import LoginPage from "@/pages/LoginPage";
@@ -13,6 +13,7 @@ import PublicProfilePage from "@/pages/PublicProfilePage";
 
 function AuthGuard({ children }: { children: React.ReactNode }) {
   const { data: session, isPending } = useSession();
+  const location = useLocation();
   if (isPending) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -23,7 +24,10 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
       </div>
     );
   }
-  if (!session) return <Navigate to="/login" replace />;
+  if (!session) {
+    const redirect = encodeURIComponent(`${location.pathname}${location.search}`);
+    return <Navigate to={`/login?redirect=${redirect}`} replace />;
+  }
   return <>{children}</>;
 }
 
