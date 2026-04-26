@@ -276,7 +276,7 @@ export default function SessionDetailPage() {
                       const m = s.members.find(m => m.user_id === uid);
                       if (!m) return null;
                       return (
-                        <Badge key={uid} variant="outline" className="flex items-center gap-1">
+                        <Badge key={uid} variant="gray" className="flex items-center gap-1">
                           {m.name}
                           <button 
                             onClick={async () => {
