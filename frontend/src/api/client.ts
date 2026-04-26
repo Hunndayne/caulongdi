@@ -62,4 +62,6 @@ export const api = {
   getProfile: (id: string) => request<UserProfile>(`/api/profiles/${id}`),
   updateMyProfile: (data: ProfileUpdateInput) =>
     request<UserProfile>("/api/profiles/me", { method: "PUT", body: JSON.stringify(data) }),
+  deleteProfile: (id: string) =>
+    request<{ success: boolean }>(`/api/profiles/${id}`, { method: "DELETE" }),
 };

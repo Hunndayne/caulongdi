@@ -120,4 +120,31 @@ profiles.get("/:id", async (c) => {
   return c.json(toProfile(row));
 });
 
+profiles.delete("/:id", async (c) => {
+  if (c.get("userRole") !== "admin") return c.json({ error: "Forbidden" }, 403);
+
+  const { id } = c.req.param();
+  if (id === c.get("userId")) {
+    return c.json({ error: "Cannot delete your own account" }, 400);
+  }
+
+  const row = await c.env.DB.prepare(`${profileSelect} WHERE id = ?`)
+    .bind(id)
+    .first<ProfileRow>();
+  if (!row) return c.json({ error: "Not found" }, 404);
+
+  if (isAdminEmail(row.email)) {
+    return c.json({ error: "Cannot delete the protected admin account" }, 400);
+  }
+
+  await c.env.DB.batch([
+    c.env.DB.prepare("UPDATE members SET user_id = NULL WHERE user_id = ?").bind(id),
+    c.env.DB.prepare("DELETE FROM sessions_auth WHERE user_id = ?").bind(id),
+    c.env.DB.prepare("DELETE FROM accounts WHERE user_id = ?").bind(id),
+    c.env.DB.prepare("DELETE FROM users WHERE id = ?").bind(id),
+  ]);
+
+  return c.json({ success: true });
+});
+
 export default profiles;

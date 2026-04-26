@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { Mail, MapPin, Phone, ShieldCheck, UserCircle } from "lucide-react";
+import { Mail, MapPin, Phone, ShieldCheck, Trash2, UserCircle } from "lucide-react";
 import { api } from "@/api/client";
+import { useSession } from "@/lib/auth-client";
+import { isAdminUser } from "@/lib/permissions";
 import { Avatar } from "@/components/shared/Avatar";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/shared/EmptyState";
 import type { UserProfile } from "@/types";
 
@@ -25,9 +28,13 @@ function colorForProfile(profile: UserProfile) {
 }
 
 export default function MembersPage() {
+  const { data: session } = useSession();
   const [profiles, setProfiles] = useState<UserProfile[]>([]);
   const [loading, setLoading] = useState(true);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const isAdmin = isAdminUser(session?.user);
+  const currentUserId = (session?.user as { id?: string } | undefined)?.id;
 
   useEffect(() => {
     api.getProfiles()
@@ -40,6 +47,28 @@ export default function MembersPage() {
     () => [...profiles].sort((a, b) => a.name.localeCompare(b.name, "vi")),
     [profiles]
   );
+
+  const handleDelete = async (profile: UserProfile) => {
+    if (profile.id === currentUserId) {
+      setError("Không thể xóa chính tài khoản đang đăng nhập");
+      return;
+    }
+
+    if (!confirm(`Xóa user ${profile.name} (${profile.email})? Người này sẽ không đăng nhập được nữa.`)) {
+      return;
+    }
+
+    setDeletingId(profile.id);
+    setError(null);
+    try {
+      await api.deleteProfile(profile.id);
+      setProfiles((current) => current.filter((item) => item.id !== profile.id));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Không xóa được user");
+    } finally {
+      setDeletingId(null);
+    }
+  };
 
   return (
     <div className="space-y-4">
@@ -61,33 +90,34 @@ export default function MembersPage() {
       ) : (
         <div className="space-y-2">
           {sortedProfiles.map((profile) => (
-            <Link
+            <div
               key={profile.id}
-              to={`/profiles/${profile.id}`}
               className="flex items-center justify-between gap-3 bg-white rounded-xl border border-gray-100 p-3 shadow-sm hover:border-green-200 transition-colors"
             >
-              <div className="flex items-center gap-3 min-w-0">
-                <Avatar
-                  name={profile.name}
-                  color={colorForProfile(profile)}
-                  imageUrl={profile.avatarUrl}
-                />
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span className="font-semibold text-gray-900 truncate">{profile.name}</span>
-                    {profile.role === "admin" && (
-                      <Badge variant="green" className="hidden sm:inline-flex">
-                        <ShieldCheck size={12} className="mr-1" />
-                        Admin
-                      </Badge>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-1 text-xs text-gray-500 truncate">
-                    <Mail size={11} className="flex-shrink-0" />
-                    <span className="truncate">{profile.email}</span>
+              <Link to={`/profiles/${profile.id}`} className="flex items-center gap-3 min-w-0 flex-1">
+                <div className="flex items-center gap-3 min-w-0">
+                  <Avatar
+                    name={profile.name}
+                    color={colorForProfile(profile)}
+                    imageUrl={profile.avatarUrl}
+                  />
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="font-semibold text-gray-900 truncate">{profile.name}</span>
+                      {profile.role === "admin" && (
+                        <Badge variant="green" className="hidden sm:inline-flex">
+                          <ShieldCheck size={12} className="mr-1" />
+                          Admin
+                        </Badge>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1 text-xs text-gray-500 truncate">
+                      <Mail size={11} className="flex-shrink-0" />
+                      <span className="truncate">{profile.email}</span>
+                    </div>
                   </div>
                 </div>
-              </div>
+              </Link>
 
               <div className="hidden md:flex flex-col items-end gap-1 text-xs text-gray-400">
                 {profile.phone && (
@@ -103,7 +133,21 @@ export default function MembersPage() {
                   </span>
                 )}
               </div>
-            </Link>
+
+              {isAdmin && profile.id !== currentUserId && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="text-red-500 hover:text-red-600 hover:bg-red-50"
+                  onClick={() => handleDelete(profile)}
+                  disabled={deletingId === profile.id}
+                  aria-label="Xóa user"
+                  title="Xóa user"
+                >
+                  <Trash2 size={16} />
+                </Button>
+              )}
+            </div>
           ))}
         </div>
       )}
