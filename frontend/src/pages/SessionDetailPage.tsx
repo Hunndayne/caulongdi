@@ -362,10 +362,41 @@ export default function SessionDetailPage() {
           )}
 
           {canManageSession && s.costs.length > 0 && s.members.length > 0 && (
-            <Button variant="outline" className="w-full" onClick={handleRecalculate} disabled={recalculating}>
-              <RefreshCw size={16} className={`mr-2 ${recalculating ? "animate-spin" : ""}`} />
-              {recalculating ? "Đang tính..." : "Tính lại và cập nhật"}
-            </Button>
+            <>
+              {/* Chọn người nhận tiền */}
+              {(() => {
+                const membersWithBank = s.members.filter(
+                  (m) => m.user_bank_bin && m.user_bank_account_number && m.user_bank_account_name
+                );
+                const hunnMember = s.members.find((m) => m.user_email === HUNN_EMAIL);
+                const hunnHasBank = hunnMember && hunnMember.user_bank_bin && hunnMember.user_bank_account_number && hunnMember.user_bank_account_name;
+                if (membersWithBank.length === 0) return null;
+                return (
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">Người nhận tiền (tạo mã QR bên tab Thanh toán)</label>
+                    <select
+                      value={recipientId}
+                      onChange={(e) => setRecipientId(e.target.value)}
+                      className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                    >
+                      <option value="">-- Chưa chọn --</option>
+                      {hunnHasBank && (
+                        <option value={`auto_${hunnMember!.id}`}>
+                          ⚡ Tự động trừ nợ, kiếm Hunn lấy tiền
+                        </option>
+                      )}
+                      {membersWithBank.map((m) => (
+                        <option key={m.id} value={m.id}>{m.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                );
+              })()}
+              <Button variant="outline" className="w-full" onClick={handleRecalculate} disabled={recalculating}>
+                <RefreshCw size={16} className={`mr-2 ${recalculating ? "animate-spin" : ""}`} />
+                {recalculating ? "Đang tính..." : "Tính lại và cập nhật"}
+              </Button>
+            </>
           )}
         </div>
       )}
@@ -445,7 +476,11 @@ export default function SessionDetailPage() {
                   const member = members.find((m) => m.id === p.member_id) ?? session.members.find((m) => m.id === p.member_id);
                   const isNegative = p.amount_owed < 0;
                   const sessionMember = session.members.find((m) => m.id === p.member_id);
-                  const qrUrl = sessionMember && !isNegative && recipientMember && actualRecipientId !== p.member_id
+                  // QR chỉ hiện cho người cần trả, KHÔNG hiện cho: recipient, người quản lý session, người đã trả
+                  const isMyEntry = myMember?.id === p.member_id;
+                  const qrUrl = sessionMember && !isNegative && recipientMember
+                    && actualRecipientId !== p.member_id
+                    && !(isMyEntry && canManageSession) // Người quản lý không cần QR cho chính mình
                     ? buildQrUrl(sessionMember, p.amount_owed)
                     : null;
                   return (
