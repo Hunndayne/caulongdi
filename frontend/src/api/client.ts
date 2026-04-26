@@ -1,4 +1,4 @@
-import type { Member, Session, SessionDetail, Cost, Payment, StatsResponse, UserProfile, ProfileUpdateInput } from "@/types";
+import type { Member, Session, SessionDetail, Cost, Payment, StatsResponse, UserProfile, ProfileUpdateInput, PlayGroup } from "@/types";
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const res = await fetch(url, {
@@ -24,8 +24,8 @@ export const api = {
     request<{ success: boolean }>(`/api/members/${id}`, { method: "DELETE" }),
 
   // Sessions
-  getSessions: () => request<Session[]>("/api/sessions"),
-  createSession: (data: Partial<Session>) =>
+  getSessions: (groupId?: string) => request<Session[]>(groupId ? `/api/sessions?groupId=${encodeURIComponent(groupId)}` : "/api/sessions"),
+  createSession: (data: Partial<Session> & { groupId?: string; startTime?: string }) =>
     request<Session>("/api/sessions", { method: "POST", body: JSON.stringify(data) }),
   getSession: (id: string) => request<SessionDetail>(`/api/sessions/${id}`),
   updateSession: (id: string, data: Partial<Session>) =>
@@ -59,6 +59,13 @@ export const api = {
 
   // Stats
   getStats: () => request<StatsResponse>("/api/stats"),
+
+  // Groups
+  getGroups: () => request<PlayGroup[]>("/api/groups"),
+  createGroup: (data: { name: string; description?: string }) =>
+    request<PlayGroup>("/api/groups", { method: "POST", body: JSON.stringify(data) }),
+  joinGroup: (id: string) =>
+    request<{ success: boolean }>(`/api/groups/${id}/join`, { method: "POST" }),
 
   // Profiles
   getProfiles: () => request<UserProfile[]>("/api/profiles"),

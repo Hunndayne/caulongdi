@@ -10,10 +10,20 @@ type SessionBody = {
   date?: string;
   startTime?: string;
   start_time?: string;
+  groupId?: string;
+  group_id?: string;
   venue?: string;
   location?: string;
   note?: string;
   status?: string;
+};
+
+type SessionRow = {
+  id: string;
+  group_id?: string | null;
+  created_by?: string | null;
+  status: string;
+  [key: string]: unknown;
 };
 
 function colorForUser(userId: string) {
@@ -21,30 +31,108 @@ function colorForUser(userId: string) {
   return MEMBER_COLORS[total % MEMBER_COLORS.length];
 }
 
+function isMissingGroupSchema(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("no such table: group_members") || message.includes("no such column: group_id") || message.includes("no such column: created_by");
+}
+
+async function isGroupMember(c: any, groupId: string) {
+  const row = await c.env.DB.prepare("SELECT role FROM group_members WHERE group_id = ? AND user_id = ?")
+    .bind(groupId, c.get("userId"))
+    .first() as { role: string } | null;
+  return Boolean(row);
+}
+
+async function isGroupAdmin(c: any, groupId?: string | null) {
+  if (!groupId) return false;
+  const row = await c.env.DB.prepare("SELECT role FROM group_members WHERE group_id = ? AND user_id = ?")
+    .bind(groupId, c.get("userId"))
+    .first() as { role: string } | null;
+  return row?.role === "admin";
+}
+
+async function ensureGroupMember(c: any, groupId?: string | null) {
+  if (!groupId) return;
+  await c.env.DB.prepare(`
+    INSERT OR IGNORE INTO group_members (group_id, user_id, role, created_at)
+    VALUES (?, ?, 'member', ?)
+  `)
+    .bind(groupId, c.get("userId"), new Date().toISOString())
+    .run();
+}
+
+async function canManageSession(c: any, session: SessionRow) {
+  if (c.get("userRole") === "admin") return true;
+  if (session.created_by && session.created_by === c.get("userId")) return true;
+  return isGroupAdmin(c, session.group_id);
+}
+
 sessions.get("/", async (c) => {
+  const groupId = c.req.query("groupId")?.trim();
+  if (groupId) {
+    try {
+      if (!(await isGroupMember(c, groupId)) && c.get("userRole") !== "admin") {
+        return c.json({ error: "Forbidden" }, 403);
+      }
+      const rows = await c.env.DB.prepare(`
+        SELECT s.*,
+          (SELECT COUNT(*) FROM session_members sm WHERE sm.session_id = s.id AND sm.attended = 1) as attendee_count,
+          (SELECT COALESCE(SUM(amount), 0) FROM costs co WHERE co.session_id = s.id) as total_cost
+        FROM sessions s
+        WHERE s.group_id = ?
+        ORDER BY s.date DESC, s.start_time DESC
+      `).bind(groupId).all();
+      return c.json(rows.results);
+    } catch (error) {
+      if (!isMissingGroupSchema(error)) throw error;
+    }
+  }
+
   const rows = await c.env.DB.prepare(`
-    SELECT s.*,
-      (SELECT COUNT(*) FROM session_members sm WHERE sm.session_id = s.id AND sm.attended = 1) as attendee_count,
-      (SELECT COALESCE(SUM(amount), 0) FROM costs co WHERE co.session_id = s.id) as total_cost
-    FROM sessions s
-    ORDER BY s.date DESC, s.start_time DESC
-  `).all();
+      SELECT s.*,
+        (SELECT COUNT(*) FROM session_members sm WHERE sm.session_id = s.id AND sm.attended = 1) as attendee_count,
+        (SELECT COALESCE(SUM(amount), 0) FROM costs co WHERE co.session_id = s.id) as total_cost
+      FROM sessions s
+      ORDER BY s.date DESC, s.start_time DESC
+    `).all();
   return c.json(rows.results);
 });
 
 sessions.post("/", async (c) => {
-  if (c.get("userRole") !== "admin") return c.json({ error: "Forbidden" }, 403);
   const body = await c.req.json<SessionBody>();
   const startTime = body.startTime ?? body.start_time;
+  const groupId = body.groupId ?? body.group_id;
   const venue = body.venue?.trim();
   if (!body.date || !startTime || !venue) return c.json({ error: "date, startTime, venue required" }, 400);
   const id = nanoid();
   const now = new Date().toISOString();
-  await c.env.DB.prepare(
-    "INSERT INTO sessions (id, date, start_time, venue, location, note, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'upcoming', ?)"
-  )
-    .bind(id, body.date, startTime, venue, body.location ?? null, body.note ?? null, now)
-    .run();
+
+  if (groupId) {
+    try {
+      if (!(await isGroupMember(c, groupId)) && c.get("userRole") !== "admin") {
+        return c.json({ error: "Forbidden" }, 403);
+      }
+      await c.env.DB.prepare(
+        "INSERT INTO sessions (id, group_id, created_by, date, start_time, venue, location, note, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'upcoming', ?)"
+      )
+        .bind(id, groupId, c.get("userId"), body.date, startTime, venue, body.location ?? null, body.note ?? null, now)
+        .run();
+    } catch (error) {
+      if (!isMissingGroupSchema(error)) throw error;
+      await c.env.DB.prepare(
+        "INSERT INTO sessions (id, date, start_time, venue, location, note, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'upcoming', ?)"
+      )
+        .bind(id, body.date, startTime, venue, body.location ?? null, body.note ?? null, now)
+        .run();
+    }
+  } else {
+    await c.env.DB.prepare(
+      "INSERT INTO sessions (id, date, start_time, venue, location, note, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'upcoming', ?)"
+    )
+      .bind(id, body.date, startTime, venue, body.location ?? null, body.note ?? null, now)
+      .run();
+  }
+
   const row = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first();
   return c.json(row, 201);
 });
@@ -72,10 +160,10 @@ sessions.get("/:id", async (c) => {
 });
 
 sessions.put("/:id", async (c) => {
-  if (c.get("userRole") !== "admin") return c.json({ error: "Forbidden" }, 403);
   const { id } = c.req.param();
-  const existing = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first() as any;
+  const existing = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first<SessionRow>();
   if (!existing) return c.json({ error: "Not found" }, 404);
+  if (!(await canManageSession(c, existing))) return c.json({ error: "Forbidden" }, 403);
   const body = await c.req.json<SessionBody>();
   const startTime = body.startTime ?? body.start_time;
   await c.env.DB.prepare(
@@ -96,19 +184,22 @@ sessions.put("/:id", async (c) => {
 });
 
 sessions.delete("/:id", async (c) => {
-  if (c.get("userRole") !== "admin") return c.json({ error: "Forbidden" }, 403);
   const { id } = c.req.param();
+  const existing = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first<SessionRow>();
+  if (!existing) return c.json({ error: "Not found" }, 404);
+  if (!(await canManageSession(c, existing))) return c.json({ error: "Forbidden" }, 403);
   await c.env.DB.prepare("DELETE FROM sessions WHERE id = ?").bind(id).run();
   return c.json({ success: true });
 });
 
 sessions.post("/:id/join", async (c) => {
   const { id } = c.req.param();
-  const session = await c.env.DB.prepare("SELECT status FROM sessions WHERE id = ?")
+  const session = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?")
     .bind(id)
-    .first<{ status: string }>();
+    .first<SessionRow>();
   if (!session) return c.json({ error: "Not found" }, 404);
   if (session.status !== "upcoming") return c.json({ error: "Session is not open for joining" }, 400);
+  await ensureGroupMember(c, session.group_id);
 
   const userId = c.get("userId");
   const user = await c.env.DB.prepare("SELECT id, name, email, phone FROM users WHERE id = ?")
@@ -116,9 +207,21 @@ sessions.post("/:id/join", async (c) => {
     .first<{ id: string; name: string; email: string; phone?: string | null }>();
   if (!user) return c.json({ error: "User not found" }, 404);
 
-  const existingMember = await c.env.DB.prepare("SELECT id FROM members WHERE user_id = ?")
-    .bind(userId)
-    .first<{ id: string }>();
+  let existingMember: { id: string } | null = null;
+  try {
+    existingMember = session.group_id
+      ? await c.env.DB.prepare("SELECT id FROM members WHERE user_id = ? AND group_id = ?")
+        .bind(userId, session.group_id)
+        .first<{ id: string }>()
+      : await c.env.DB.prepare("SELECT id FROM members WHERE user_id = ?")
+        .bind(userId)
+        .first<{ id: string }>();
+  } catch (error) {
+    if (!isMissingGroupSchema(error)) throw error;
+    existingMember = await c.env.DB.prepare("SELECT id FROM members WHERE user_id = ?")
+      .bind(userId)
+      .first<{ id: string }>();
+  }
 
   const memberId = existingMember?.id ?? nanoid();
   if (existingMember) {
@@ -126,11 +229,20 @@ sessions.post("/:id/join", async (c) => {
       .bind(user.name || user.email, user.phone ?? null, memberId)
       .run();
   } else {
-    await c.env.DB.prepare(
-      "INSERT INTO members (id, user_id, name, phone, avatar_color, is_active, created_at) VALUES (?, ?, ?, ?, ?, 1, ?)"
-    )
-      .bind(memberId, userId, user.name || user.email, user.phone ?? null, colorForUser(userId), new Date().toISOString())
-      .run();
+    try {
+      await c.env.DB.prepare(
+        "INSERT INTO members (id, group_id, user_id, name, phone, avatar_color, is_active, created_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?)"
+      )
+        .bind(memberId, session.group_id ?? null, userId, user.name || user.email, user.phone ?? null, colorForUser(userId), new Date().toISOString())
+        .run();
+    } catch (error) {
+      if (!isMissingGroupSchema(error)) throw error;
+      await c.env.DB.prepare(
+        "INSERT INTO members (id, user_id, name, phone, avatar_color, is_active, created_at) VALUES (?, ?, ?, ?, ?, 1, ?)"
+      )
+        .bind(memberId, userId, user.name || user.email, user.phone ?? null, colorForUser(userId), new Date().toISOString())
+        .run();
+    }
   }
 
   await c.env.DB.batch([
@@ -168,8 +280,10 @@ sessions.delete("/:id/join", async (c) => {
 
 // Set check-in list (replace all)
 sessions.post("/:id/members", async (c) => {
-  if (c.get("userRole") !== "admin") return c.json({ error: "Forbidden" }, 403);
   const { id } = c.req.param();
+  const session = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first<SessionRow>();
+  if (!session) return c.json({ error: "Not found" }, 404);
+  if (!(await canManageSession(c, session))) return c.json({ error: "Forbidden" }, 403);
   const body = await c.req.json<{ memberIds: string[] }>();
   await c.env.DB.prepare("DELETE FROM session_members WHERE session_id = ?").bind(id).run();
   if (body.memberIds?.length) {
@@ -184,8 +298,10 @@ sessions.post("/:id/members", async (c) => {
 
 // Add cost
 sessions.post("/:id/costs", async (c) => {
-  if (c.get("userRole") !== "admin") return c.json({ error: "Forbidden" }, 403);
   const { id } = c.req.param();
+  const session = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first<SessionRow>();
+  if (!session) return c.json({ error: "Not found" }, 404);
+  if (!(await canManageSession(c, session))) return c.json({ error: "Forbidden" }, 403);
   const body = await c.req.json<{ label: string; amount: number; type?: string }>();
   if (!body.label || body.amount == null) return c.json({ error: "label, amount required" }, 400);
   const costId = nanoid();
@@ -200,16 +316,20 @@ sessions.post("/:id/costs", async (c) => {
 
 // Delete cost
 sessions.delete("/:id/costs/:costId", async (c) => {
-  if (c.get("userRole") !== "admin") return c.json({ error: "Forbidden" }, 403);
-  const { costId } = c.req.param();
+  const { id, costId } = c.req.param();
+  const session = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first<SessionRow>();
+  if (!session) return c.json({ error: "Not found" }, 404);
+  if (!(await canManageSession(c, session))) return c.json({ error: "Forbidden" }, 403);
   await c.env.DB.prepare("DELETE FROM costs WHERE id = ?").bind(costId).run();
   return c.json({ success: true });
 });
 
 // Recalculate payments
 sessions.post("/:id/recalculate", async (c) => {
-  if (c.get("userRole") !== "admin") return c.json({ error: "Forbidden" }, 403);
   const { id } = c.req.param();
+  const session = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first<SessionRow>();
+  if (!session) return c.json({ error: "Not found" }, 404);
+  if (!(await canManageSession(c, session))) return c.json({ error: "Forbidden" }, 403);
 
   const totalRow = await c.env.DB.prepare(
     "SELECT COALESCE(SUM(amount), 0) as total FROM costs WHERE session_id = ?"

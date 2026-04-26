@@ -12,9 +12,11 @@ import {
 import { api } from "@/api/client";
 import { useSession } from "@/lib/auth-client";
 import { useSessionsStore } from "@/stores/sessionsStore";
+import { useGroupsStore } from "@/stores/groupsStore";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/shared/EmptyState";
+import { GroupSelector } from "@/components/shared/GroupSelector";
 import { formatCurrency, formatDate } from "@/lib/utils";
 import type { MemberStats, Session } from "@/types";
 
@@ -116,17 +118,18 @@ function buildMonthCells(month: Date) {
 export default function HomePage() {
   const { data: session } = useSession();
   const { sessions, fetch } = useSessionsStore();
+  const activeGroupId = useGroupsStore((state) => state.activeGroupId);
   const [myStats, setMyStats] = useState<MemberStats | null>(null);
   const [calendarMonth, setCalendarMonth] = useState(() => new Date());
 
   useEffect(() => {
-    fetch();
+    fetch(activeGroupId);
     api.getStats()
       .then((s) => {
         setMyStats(s.memberStats[0] ?? null);
       })
       .catch(() => {});
-  }, [fetch]);
+  }, [activeGroupId, fetch]);
 
   const upcoming = useMemo(
     () => sessions.filter((s) => s.status === "upcoming").sort(compareSessionAsc).slice(0, 3),
@@ -175,6 +178,8 @@ export default function HomePage() {
           )}
         </div>
       </div>
+
+      <GroupSelector />
 
       <section>
         <div className="flex items-center justify-between mb-3">

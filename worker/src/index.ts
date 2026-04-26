@@ -8,6 +8,7 @@ import sessionsRouter from "./routes/sessions";
 import paymentsRouter from "./routes/payments";
 import statsRouter from "./routes/stats";
 import profilesRouter from "./routes/profiles";
+import groupsRouter from "./routes/groups";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -177,5 +178,6 @@ app.route("/api/sessions", sessionsRouter);
 app.route("/api/payments", paymentsRouter);
 app.route("/api/stats", statsRouter);
 app.route("/api/profiles", profilesRouter);
+app.route("/api/groups", groupsRouter);
 
 export default app;

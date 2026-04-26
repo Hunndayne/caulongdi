@@ -6,7 +6,7 @@ interface SessionsState {
   sessions: Session[];
   currentSession: SessionDetail | null;
   loading: boolean;
-  fetch: () => Promise<void>;
+  fetch: (groupId?: string) => Promise<void>;
   fetchOne: (id: string) => Promise<void>;
   create: (data: Partial<Session>) => Promise<Session>;
   update: (id: string, data: Partial<Session>) => Promise<void>;
@@ -19,10 +19,10 @@ export const useSessionsStore = create<SessionsState>((set) => ({
   currentSession: null,
   loading: false,
 
-  fetch: async () => {
+  fetch: async (groupId) => {
     set({ loading: true });
     try {
-      const sessions = await api.getSessions();
+      const sessions = await api.getSessions(groupId);
       set({ sessions });
     } finally {
       set({ loading: false });
