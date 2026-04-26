@@ -5,6 +5,7 @@ import { ArrowLeft, Trash2, RefreshCw, Plus, Copy, Check } from "lucide-react";
 import { useSessionsStore } from "@/stores/sessionsStore";
 import { useMembersStore } from "@/stores/membersStore";
 import { useSession } from "@/lib/auth-client";
+import { isAdminUser } from "@/lib/permissions";
 import { api } from "@/api/client";
 import { Avatar } from "@/components/shared/Avatar";
 import { Button } from "@/components/ui/button";
@@ -34,7 +35,7 @@ export default function SessionDetailPage() {
   const [addingCost, setAddingCost] = useState(false);
   const [recalculating, setRecalculating] = useState(false);
   const [copied, setCopied] = useState(false);
-  const isAdmin = (authSession?.user as any)?.role === "admin";
+  const isAdmin = isAdminUser(authSession?.user);
 
   useEffect(() => {
     if (id) { fetchOne(id); fetchMembers(); }

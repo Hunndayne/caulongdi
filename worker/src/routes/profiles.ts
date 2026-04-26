@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { isAdminEmail } from "../admin";
 import { Env } from "../types";
 
 const profiles = new Hono<{ Bindings: Env; Variables: { userId: string; userRole: string } }>();
@@ -23,7 +24,7 @@ function toProfile(row: ProfileRow) {
     name: row.name,
     email: row.email,
     avatarUrl: row.avatar_url ?? undefined,
-    role: row.role,
+    role: isAdminEmail(row.email) ? "admin" : row.role,
     phone: row.phone ?? undefined,
     bio: row.bio ?? undefined,
     birthday: row.birthday ?? undefined,

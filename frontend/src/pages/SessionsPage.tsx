@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { Plus, ChevronRight, MapPin, Clock, Users } from "lucide-react";
 import { useSessionsStore } from "@/stores/sessionsStore";
 import { useSession } from "@/lib/auth-client";
+import { isAdminUser } from "@/lib/permissions";
 import { Dialog } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -33,7 +34,7 @@ export default function SessionsPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [form, setForm] = useState<FormState>(defaultForm);
   const [saving, setSaving] = useState(false);
-  const isAdmin = (session?.user as any)?.role === "admin";
+  const isAdmin = isAdminUser(session?.user);
 
   useEffect(() => { fetch(); }, []);
 

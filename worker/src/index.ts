@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { isAdminEmail } from "./admin";
 import { createAuth } from "./auth";
 import { Env } from "./types";
 import membersRouter from "./routes/members";
@@ -37,10 +38,19 @@ app.use("/api/*", async (c, next) => {
   c.set("userId", session.user.id);
 
   // Fetch role from DB since better-auth might not include custom fields
-  const user = await c.env.DB.prepare("SELECT role FROM users WHERE id = ?")
+  const user = await c.env.DB.prepare("SELECT role, email FROM users WHERE id = ?")
     .bind(session.user.id)
-    .first<{ role: string }>();
-  c.set("userRole", (user?.role ?? "member") as any);
+    .first<{ role: string; email: string }>();
+
+  let userRole = user?.role ?? "member";
+  if (user && isAdminEmail(user.email) && userRole !== "admin") {
+    await c.env.DB.prepare("UPDATE users SET role = 'admin' WHERE id = ?")
+      .bind(session.user.id)
+      .run();
+    userRole = "admin";
+  }
+
+  c.set("userRole", userRole as any);
 
   await next();
 });

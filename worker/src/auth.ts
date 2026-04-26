@@ -1,4 +1,5 @@
 import { betterAuth } from "better-auth";
+import { isAdminEmail } from "./admin";
 import { Env } from "./types";
 
 export const createAuth = (env: Env, request?: Request) => {
@@ -74,7 +75,7 @@ export const createAuth = (env: Env, request?: Request) => {
           after: async (user) => {
             const count = await env.DB.prepare("SELECT COUNT(*) as cnt FROM users")
               .first<{ cnt: number }>();
-            if (count && count.cnt === 1) {
+            if (isAdminEmail(user.email) || (count && count.cnt === 1)) {
               await env.DB.prepare("UPDATE users SET role = 'admin' WHERE id = ?")
                 .bind(user.id)
                 .run();
