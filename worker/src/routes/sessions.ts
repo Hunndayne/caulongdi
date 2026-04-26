@@ -16,6 +16,8 @@ type SessionBody = {
   location?: string;
   note?: string;
   status?: string;
+  paymentRecipient?: string | null;
+  payment_recipient?: string | null;
 };
 
 type SessionRow = {
@@ -205,8 +207,9 @@ sessions.put("/:id", async (c) => {
   if (!(await canManageSession(c, existing))) return c.json({ error: "Forbidden" }, 403);
   const body = await c.req.json<SessionBody>();
   const startTime = body.startTime ?? body.start_time;
+  const paymentRecipient = body.paymentRecipient ?? body.payment_recipient;
   await c.env.DB.prepare(
-    "UPDATE sessions SET date = ?, start_time = ?, venue = ?, location = ?, note = ?, status = ? WHERE id = ?"
+    "UPDATE sessions SET date = ?, start_time = ?, venue = ?, location = ?, note = ?, status = ?, payment_recipient = ? WHERE id = ?"
   )
     .bind(
       body.date ?? existing.date,
@@ -215,6 +218,7 @@ sessions.put("/:id", async (c) => {
       body.location !== undefined ? body.location : existing.location,
       body.note !== undefined ? body.note : existing.note,
       body.status ?? existing.status,
+      paymentRecipient !== undefined ? (paymentRecipient || null) : (existing as any).payment_recipient ?? null,
       id
     )
     .run();

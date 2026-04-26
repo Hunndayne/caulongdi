@@ -112,6 +112,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   location TEXT,
   note TEXT,
   status TEXT NOT NULL DEFAULT 'upcoming',
+  payment_recipient TEXT,
   created_at TEXT NOT NULL,
   FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE SET NULL,
   FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL

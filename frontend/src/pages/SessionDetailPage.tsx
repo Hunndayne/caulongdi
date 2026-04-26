@@ -64,6 +64,23 @@ export default function SessionDetailPage() {
     fetchMembers(currentSession.group_id);
   }, [currentSession, fetchMembers]);
 
+  // Đồng bộ recipientId từ DB khi session load xong
+  useEffect(() => {
+    if (currentSession?.payment_recipient) {
+      setRecipientId(currentSession.payment_recipient);
+    }
+  }, [currentSession?.id, currentSession?.payment_recipient]);
+
+  // Lưu recipientId lên DB khi manager thay đổi
+  const handleSetRecipient = async (value: string) => {
+    setRecipientId(value);
+    if (canManageSession && id) {
+      try {
+        await api.updateSession(id, { payment_recipient: value || null } as any);
+      } catch { /* silent */ }
+    }
+  };
+
   const s = currentSession;
   if (loading && !s) return <div className="text-center py-16 text-gray-400">Đang tải...</div>;
   if (!s) return <div className="text-center py-16 text-gray-400">Không tìm thấy buổi chơi</div>;
@@ -376,7 +393,7 @@ export default function SessionDetailPage() {
                     <label className="block text-xs text-gray-500 mb-1">Người nhận tiền (tạo mã QR bên tab Thanh toán)</label>
                     <select
                       value={recipientId}
-                      onChange={(e) => setRecipientId(e.target.value)}
+                      onChange={(e) => handleSetRecipient(e.target.value)}
                       className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
                     >
                       <option value="">-- Chưa chọn --</option>
@@ -448,7 +465,7 @@ export default function SessionDetailPage() {
                 <label className="block text-xs text-gray-500 mb-1">Người nhận tiền (tạo mã QR)</label>
                 <select
                   value={recipientId}
-                  onChange={(e) => setRecipientId(e.target.value)}
+                  onChange={(e) => handleSetRecipient(e.target.value)}
                   className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
                 >
                   <option value="">-- Chưa chọn --</option>
