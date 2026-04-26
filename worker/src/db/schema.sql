@@ -129,7 +129,11 @@ CREATE TABLE IF NOT EXISTS costs (
   label TEXT NOT NULL,
   amount REAL NOT NULL,
   type TEXT NOT NULL DEFAULT 'other',
-  FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+  payer_id TEXT,                          -- ai trả tiền hộ; NULL = quỹ chung trả
+  consumer_id TEXT,                       -- ai dùng riêng; NULL = chia đều cho tất cả
+  FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+  FOREIGN KEY (payer_id) REFERENCES members(id) ON DELETE SET NULL,
+  FOREIGN KEY (consumer_id) REFERENCES members(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS payments (

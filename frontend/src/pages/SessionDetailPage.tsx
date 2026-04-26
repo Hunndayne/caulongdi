@@ -34,7 +34,7 @@ export default function SessionDetailPage() {
   const groups = useGroupsStore((state) => state.groups);
   const fetchGroups = useGroupsStore((state) => state.fetch);
   const [tab, setTab] = useState<Tab>("Check-in");
-  const [costForm, setCostForm] = useState({ label: "", amount: "", type: "court" });
+  const [costForm, setCostForm] = useState({ label: "", amount: "", type: "court", payerId: "", consumerId: "" });
   const [addingCost, setAddingCost] = useState(false);
   const [recalculating, setRecalculating] = useState(false);
   const [joining, setJoining] = useState(false);
@@ -122,8 +122,14 @@ export default function SessionDetailPage() {
     if (!costForm.label || !costForm.amount) return;
     setAddingCost(true);
     try {
-      await api.addCost(s.id, { label: costForm.label, amount: parseFloat(costForm.amount), type: costForm.type as Cost["type"] });
-      setCostForm({ label: "", amount: "", type: "court" });
+      await api.addCost(s.id, {
+        label: costForm.label,
+        amount: parseFloat(costForm.amount),
+        type: costForm.type as Cost["type"],
+        payer_id: costForm.payerId || null,
+        consumer_id: costForm.consumerId || null,
+      });
+      setCostForm({ label: "", amount: "", type: "court", payerId: "", consumerId: "" });
       await refresh(s.id);
     } finally { setAddingCost(false); }
   };
@@ -163,9 +169,14 @@ export default function SessionDetailPage() {
   const perPerson = s.members.length > 0 ? Math.ceil(totalCost / s.members.length) : 0;
 
   const copyNotification = () => {
-    const memberNames = s.members.map((m) => m.name).join(", ");
     const costBreakdown = s.costs.map((c) => `${c.label}: ${formatCurrency(c.amount)}`).join(" | ");
-    const text = `🏸 Buổi chơi ${formatDate(s.date)} tại ${s.venue}\n📍 ${s.location ?? ""}\n👥 Tham gia: ${memberNames}\n💰 Mỗi người đóng: ${formatCurrency(perPerson)}\n(${costBreakdown})`;
+    const paymentLines = s.payments.map((p) => {
+      const member = members.find((m) => m.id === p.member_id) ?? s.members.find((m) => m.id === p.member_id);
+      const name = member?.name ?? p.member_id;
+      if (p.amount_owed < 0) return `  • ${name}: nhận lại ${formatCurrency(-p.amount_owed)}`;
+      return `  • ${name}: đóng ${formatCurrency(p.amount_owed)}`;
+    }).join("\n");
+    const text = `🏸 Buổi chơi ${formatDate(s.date)} tại ${s.venue}\n📍 ${s.location ?? ""}\n👥 Tham gia: ${s.members.map((m) => m.name).join(", ")}\n\n💸 Chi phí: ${costBreakdown}\n\n💰 Số tiền:\n${paymentLines}`;
     navigator.clipboard.writeText(text);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
@@ -257,14 +268,47 @@ export default function SessionDetailPage() {
         <div className="space-y-4">
           {canManageSession && (
             <div className="bg-gray-50 rounded-xl p-4 space-y-3">
+              {/* Loại & số tiền */}
               <div className="grid grid-cols-2 gap-2">
-                <select value={costForm.type} onChange={(e) => setCostForm((f) => ({ ...f, type: e.target.value, label: COST_TYPES.find(t => t.value === e.target.value)?.label ?? "" }))}
-                  className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500">
+                <select
+                  value={costForm.type}
+                  onChange={(e) => setCostForm((f) => ({ ...f, type: e.target.value, label: COST_TYPES.find(t => t.value === e.target.value)?.label ?? "" }))}
+                  className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                >
                   {COST_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
                 </select>
                 <Input value={costForm.amount} onChange={(e) => setCostForm((f) => ({ ...f, amount: e.target.value }))} placeholder="Số tiền" type="number" min="0" />
               </div>
+
+              {/* Mô tả */}
               <Input value={costForm.label} onChange={(e) => setCostForm((f) => ({ ...f, label: e.target.value }))} placeholder="Mô tả (vd: Tiền sân 2h)" />
+
+              {/* Người trả & Người dùng */}
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Người trả hộ</label>
+                  <select
+                    value={costForm.payerId}
+                    onChange={(e) => setCostForm((f) => ({ ...f, payerId: e.target.value }))}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                  >
+                    <option value="">Quỹ chung</option>
+                    {s.members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Người dùng</label>
+                  <select
+                    value={costForm.consumerId}
+                    onChange={(e) => setCostForm((f) => ({ ...f, consumerId: e.target.value }))}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                  >
+                    <option value="">Dùng chung</option>
+                    {s.members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                  </select>
+                </div>
+              </div>
+
               <Button className="w-full" onClick={handleAddCost} disabled={addingCost || !costForm.label || !costForm.amount}>
                 <Plus size={16} className="mr-1" />
                 {addingCost ? "Đang thêm..." : "Thêm khoản chi"}
@@ -276,22 +320,37 @@ export default function SessionDetailPage() {
             <div className="text-center py-8 text-gray-400 text-sm">Chưa có khoản chi nào</div>
           ) : (
             <div className="space-y-2">
-              {s.costs.map((c) => (
-                <div key={c.id} className="flex items-center justify-between bg-white rounded-xl p-3 border border-gray-100">
-                  <div>
-                    <div className="font-medium text-gray-900">{c.label}</div>
-                    <div className="text-xs text-gray-500">{COST_TYPES.find((t) => t.value === c.type)?.label ?? c.type}</div>
+              {s.costs.map((c) => {
+                const payerMember = c.payer_id ? (s.members.find((m) => m.id === c.payer_id) ?? members.find((m) => m.id === c.payer_id)) : null;
+                const consumerMember = c.consumer_id ? (s.members.find((m) => m.id === c.consumer_id) ?? members.find((m) => m.id === c.consumer_id)) : null;
+                return (
+                  <div key={c.id} className="flex items-center justify-between bg-white rounded-xl p-3 border border-gray-100">
+                    <div className="flex-1 min-w-0">
+                      <div className="font-medium text-gray-900">{c.label}</div>
+                      <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-0.5">
+                        <span className="text-xs text-gray-400">{COST_TYPES.find((t) => t.value === c.type)?.label ?? c.type}</span>
+                        {payerMember && (
+                          <span className="text-xs text-blue-500">💳 {payerMember.name} trả</span>
+                        )}
+                        {consumerMember && (
+                          <span className="text-xs text-orange-500">👤 {consumerMember.name} dùng</span>
+                        )}
+                        {!payerMember && !consumerMember && (
+                          <span className="text-xs text-green-500">🔄 Chia đều</span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      <span className="font-semibold text-gray-900">{formatCurrency(c.amount)}</span>
+                      {canManageSession && (
+                        <Button variant="ghost" size="icon" onClick={() => handleDeleteCost(c.id)} className="text-red-400 hover:text-red-600">
+                          <Trash2 size={14} />
+                        </Button>
+                      )}
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <span className="font-semibold text-gray-900">{formatCurrency(c.amount)}</span>
-                    {canManageSession && (
-                      <Button variant="ghost" size="icon" onClick={() => handleDeleteCost(c.id)} className="text-red-400 hover:text-red-600">
-                        <Trash2 size={14} />
-                      </Button>
-                    )}
-                  </div>
-                </div>
-              ))}
+                );
+              })}
               <div className="flex items-center justify-between bg-green-50 rounded-xl p-3 border border-green-200">
                 <span className="font-semibold text-green-800">Tổng cộng</span>
                 <span className="font-bold text-green-800">{formatCurrency(totalCost)}</span>
@@ -302,7 +361,7 @@ export default function SessionDetailPage() {
           {canManageSession && s.costs.length > 0 && s.members.length > 0 && (
             <Button variant="outline" className="w-full" onClick={handleRecalculate} disabled={recalculating}>
               <RefreshCw size={16} className={`mr-2 ${recalculating ? "animate-spin" : ""}`} />
-              Tính lại ({formatCurrency(perPerson)}/người)
+              {recalculating ? "Đang tính..." : "Tính lại và cập nhật"}
             </Button>
           )}
         </div>
@@ -321,30 +380,49 @@ export default function SessionDetailPage() {
             <div className="space-y-2">
               {s.payments.map((p) => {
                 const member = members.find((m) => m.id === p.member_id) ?? s.members.find((m) => m.id === p.member_id);
+                const isNegative = p.amount_owed < 0;
                 return (
                   <div key={p.id}
-                    className={`flex items-center justify-between p-3 rounded-xl border transition-colors ${p.paid ? "bg-green-50 border-green-200" : "bg-white border-gray-100"}`}>
+                    className={`flex items-center justify-between p-3 rounded-xl border transition-colors ${
+                      p.paid
+                        ? (isNegative ? "bg-blue-50 border-blue-200" : "bg-green-50 border-green-200")
+                        : (isNegative ? "bg-blue-50 border-blue-200" : "bg-white border-gray-100")
+                    }`}>
                     <div className="flex items-center gap-3">
                       {member && <Avatar name={member.name} color={member.avatar_color} size="sm" />}
                       <div>
                         <div className="font-medium text-gray-900">{member?.name ?? p.member_id}</div>
-                        <div className="text-sm font-semibold text-gray-700">{formatCurrency(p.amount_owed)}</div>
+                        {isNegative ? (
+                          <div className="text-sm font-semibold text-blue-600">Nhận lại {formatCurrency(-p.amount_owed)}</div>
+                        ) : (
+                          <div className="text-sm font-semibold text-gray-700">{formatCurrency(p.amount_owed)}</div>
+                        )}
                       </div>
                     </div>
                     <button onClick={() => handleTogglePayment(p.id)}
-                      className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${p.paid ? "bg-green-600 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}>
-                      {p.paid ? "Đã trả ✓" : "Chưa trả"}
+                      className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                        p.paid
+                          ? (isNegative ? "bg-blue-600 text-white" : "bg-green-600 text-white")
+                          : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                      }`}>
+                      {p.paid ? (isNegative ? "Đã nhận ✓" : "Đã trả ✓") : (isNegative ? "Chưa nhận" : "Chưa trả")}
                     </button>
                   </div>
                 );
               })}
-              <div className="flex items-center justify-between bg-gray-50 rounded-xl p-3">
-                <span className="text-sm text-gray-600">
-                  Đã trả: {s.payments.filter((p) => p.paid).length}/{s.payments.length}
-                </span>
-                <span className="font-semibold text-gray-900">
-                  {formatCurrency(s.payments.filter((p) => p.paid).reduce((sum, p) => sum + p.amount_owed, 0))} / {formatCurrency(totalCost)}
-                </span>
+              <div className="space-y-1 bg-gray-50 rounded-xl p-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-600">Đã thanh toán xong</span>
+                  <span className="text-sm font-medium text-gray-900">
+                    {s.payments.filter((p) => p.paid).length}/{s.payments.length} người
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-600">Tổng thu</span>
+                  <span className="text-sm font-medium text-gray-900">
+                    {formatCurrency(s.payments.filter((p) => p.amount_owed > 0).reduce((sum, p) => sum + p.amount_owed, 0))}
+                  </span>
+                </div>
               </div>
             </div>
           )}

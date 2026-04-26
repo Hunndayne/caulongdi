@@ -361,13 +361,13 @@ sessions.post("/:id/costs", async (c) => {
   const session = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first<SessionRow>();
   if (!session) return c.json({ error: "Not found" }, 404);
   if (!(await canManageSession(c, session))) return c.json({ error: "Forbidden" }, 403);
-  const body = await c.req.json<{ label: string; amount: number; type?: string }>();
+  const body = await c.req.json<{ label: string; amount: number; type?: string; payerId?: string | null; consumerId?: string | null }>();
   if (!body.label || body.amount == null) return c.json({ error: "label, amount required" }, 400);
   const costId = nanoid();
   await c.env.DB.prepare(
-    "INSERT INTO costs (id, session_id, label, amount, type) VALUES (?, ?, ?, ?, ?)"
+    "INSERT INTO costs (id, session_id, label, amount, type, payer_id, consumer_id) VALUES (?, ?, ?, ?, ?, ?, ?)"
   )
-    .bind(costId, id, body.label, body.amount, body.type ?? "other")
+    .bind(costId, id, body.label, body.amount, body.type ?? "other", body.payerId ?? null, body.consumerId ?? null)
     .run();
   const row = await c.env.DB.prepare("SELECT * FROM costs WHERE id = ?").bind(costId).first();
   return c.json(row, 201);
@@ -390,11 +390,6 @@ sessions.post("/:id/recalculate", async (c) => {
   if (!session) return c.json({ error: "Not found" }, 404);
   if (!(await canManageSession(c, session))) return c.json({ error: "Forbidden" }, 403);
 
-  const totalRow = await c.env.DB.prepare(
-    "SELECT COALESCE(SUM(amount), 0) as total FROM costs WHERE session_id = ?"
-  ).bind(id).first<{ total: number }>();
-  const total = totalRow?.total ?? 0;
-
   const attendees = await c.env.DB.prepare(
     "SELECT member_id FROM session_members WHERE session_id = ? AND attended = 1"
   ).bind(id).all<{ member_id: string }>();
@@ -402,18 +397,45 @@ sessions.post("/:id/recalculate", async (c) => {
   const count = attendees.results.length;
   if (count === 0) return c.json({ error: "No attendees" }, 400);
 
-  const perPerson = Math.ceil(total / count);
+  type CostRow = { id: string; amount: number; payer_id: string | null; consumer_id: string | null };
+  const costs = await c.env.DB.prepare(
+    "SELECT id, amount, payer_id, consumer_id FROM costs WHERE session_id = ?"
+  ).bind(id).all<CostRow>();
+
+  // Tổng chi phí chung (consumer_id IS NULL) — chia đều cho tất cả attendees
+  const sharedTotal = costs.results
+    .filter((c) => c.consumer_id === null)
+    .reduce((sum, c) => sum + c.amount, 0);
+  const sharedPerPerson = sharedTotal / count;
+
+  // Khởi tạo bảng tính cho từng attendee
+  const amountMap = new Map<string, number>();
+  for (const a of attendees.results) {
+    amountMap.set(a.member_id, sharedPerPerson);
+  }
+
+  for (const cost of costs.results) {
+    // Cộng chi phí cá nhân vào đúng người dùng
+    if (cost.consumer_id !== null) {
+      const current = amountMap.get(cost.consumer_id) ?? 0;
+      amountMap.set(cost.consumer_id, current + cost.amount);
+    }
+    // Trừ tiền chi hộ khỏi người đã bỏ tiền ra
+    if (cost.payer_id !== null) {
+      const current = amountMap.get(cost.payer_id) ?? 0;
+      amountMap.set(cost.payer_id, current - cost.amount);
+    }
+  }
 
   await c.env.DB.prepare("DELETE FROM payments WHERE session_id = ?").bind(id).run();
 
-  if (attendees.results.length > 0) {
-    const stmts = attendees.results.map((a) =>
-      c.env.DB.prepare(
-        "INSERT INTO payments (id, session_id, member_id, amount_owed, paid) VALUES (?, ?, ?, ?, 0)"
-      ).bind(nanoid(), id, a.member_id, perPerson)
-    );
-    await c.env.DB.batch(stmts);
-  }
+  const stmts = attendees.results.map((a) => {
+    const amountOwed = amountMap.get(a.member_id) ?? 0;
+    return c.env.DB.prepare(
+      "INSERT INTO payments (id, session_id, member_id, amount_owed, paid) VALUES (?, ?, ?, ?, 0)"
+    ).bind(nanoid(), id, a.member_id, Math.ceil(amountOwed));
+  });
+  if (stmts.length > 0) await c.env.DB.batch(stmts);
 
   const payments = await c.env.DB.prepare("SELECT * FROM payments WHERE session_id = ?").bind(id).all();
   return c.json(payments.results);

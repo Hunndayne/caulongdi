@@ -109,6 +109,8 @@ export interface Cost {
   label: string;
   amount: number;
   type: "court" | "water" | "shuttle" | "other";
+  payer_id?: string | null;   // ai trả tiền hộ; null = quỹ chung trả
+  consumer_id?: string | null; // ai dùng riêng; null = chia đều
 }
 
 export interface Payment {
