@@ -361,13 +361,15 @@ sessions.post("/:id/costs", async (c) => {
   const session = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first<SessionRow>();
   if (!session) return c.json({ error: "Not found" }, 404);
   if (!(await canManageSession(c, session))) return c.json({ error: "Forbidden" }, 403);
-  const body = await c.req.json<{ label: string; amount: number; type?: string; payerId?: string | null; consumerId?: string | null }>();
+  const body = await c.req.json<{ label: string; amount: number; type?: string; payerId?: string | null; consumerId?: string | null; payer_id?: string | null; consumer_id?: string | null }>();
   if (!body.label || body.amount == null) return c.json({ error: "label, amount required" }, 400);
   const costId = nanoid();
+  const payerId = body.payerId ?? body.payer_id ?? null;
+  const consumerId = body.consumerId ?? body.consumer_id ?? null;
   await c.env.DB.prepare(
     "INSERT INTO costs (id, session_id, label, amount, type, payer_id, consumer_id) VALUES (?, ?, ?, ?, ?, ?, ?)"
   )
-    .bind(costId, id, body.label, body.amount, body.type ?? "other", body.payerId ?? null, body.consumerId ?? null)
+    .bind(costId, id, body.label, body.amount, body.type ?? "other", payerId, consumerId)
     .run();
   const row = await c.env.DB.prepare("SELECT * FROM costs WHERE id = ?").bind(costId).first();
   return c.json(row, 201);
