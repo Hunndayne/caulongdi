@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 
-import { ArrowLeft, Trash2, RefreshCw, Plus, Copy, Check, Share2, UserMinus, UserPlus } from "lucide-react";
+import { ArrowLeft, Trash2, RefreshCw, Plus, Copy, Check, Share2, UserMinus, UserPlus, ArrowRightLeft } from "lucide-react";
 import { useSessionsStore } from "@/stores/sessionsStore";
 import { useMembersStore } from "@/stores/membersStore";
 import { useSession } from "@/lib/auth-client";
@@ -42,12 +42,16 @@ export default function SessionDetailPage() {
   const [joining, setJoining] = useState(false);
   const [copied, setCopied] = useState(false);
   const [shareCopied, setShareCopied] = useState(false);
+  const [managingSettings, setManagingSettings] = useState(false);
+  const [showManagerSettings, setShowManagerSettings] = useState(false);
   const [recipientId, setRecipientId] = useState<string>(""); // "" = chưa chọn, "auto_<memberId>" = auto Hunn, "<memberId>" = chuyển thường
   const currentUserId = (authSession?.user as { id?: string } | undefined)?.id;
   const groupRole = currentSession?.group_id ? groups.find((group) => group.id === currentSession.group_id)?.role : undefined;
+  const managersList: string[] = currentSession?.managers ? JSON.parse(currentSession.managers) : [];
   const canManageSession = Boolean(
     isAdminUser(authSession?.user) ||
       (currentUserId && currentSession?.created_by === currentUserId) ||
+      (currentUserId && managersList.includes(currentUserId)) ||
       groupRole === "admin"
   );
 
@@ -248,6 +252,120 @@ export default function SessionDetailPage() {
           {shareCopied ? "Đã copy" : "Chia sẻ"}
         </Button>
       </div>
+
+      {/* Cài đặt quản lý */}
+      {canManageSession && (
+        <div className="mb-4">
+          {!showManagerSettings ? (
+            <button
+              onClick={() => setShowManagerSettings(true)}
+              className="w-full flex items-center justify-center gap-2 text-sm text-gray-500 hover:text-gray-700 py-1.5 transition-colors"
+            >
+              <ArrowRightLeft size={14} />
+              Cài đặt quản lý
+            </button>
+          ) : (
+            <div className="bg-gray-50 border border-gray-200 rounded-xl p-3 space-y-3">
+              <div className="text-xs font-semibold text-gray-700">Người tạo: {s.members.find(m => m.user_id === s.created_by)?.name || "Ẩn danh"}</div>
+              
+              {managersList.length > 0 && (
+                <div>
+                  <div className="text-xs text-gray-500 mb-1">Đồng quản lý:</div>
+                  <div className="flex flex-wrap gap-2">
+                    {managersList.map(uid => {
+                      const m = s.members.find(m => m.user_id === uid);
+                      if (!m) return null;
+                      return (
+                        <Badge key={uid} variant="outline" className="flex items-center gap-1">
+                          {m.name}
+                          <button 
+                            onClick={async () => {
+                              if (!confirm(`Xóa quyền quản lý của ${m.name}?`)) return;
+                              setManagingSettings(true);
+                              try {
+                                await api.removeSessionManager(s.id, m.id);
+                                await refresh(s.id);
+                              } catch (e: any) {
+                                alert(e.message);
+                              } finally {
+                                setManagingSettings(false);
+                              }
+                            }}
+                            className="text-gray-400 hover:text-red-500 ml-1"
+                          >
+                            ×
+                          </button>
+                        </Badge>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              <div className="flex gap-2">
+                <select
+                  id="manager-select"
+                  className="flex-1 rounded-lg border border-gray-300 px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                  defaultValue=""
+                >
+                  <option value="" disabled>Chọn thành viên</option>
+                  {s.members
+                    .filter((m) => m.user_id && m.user_id !== s.created_by && !managersList.includes(m.user_id))
+                    .map((m) => <option key={m.id} value={m.id}>{m.name}</option>)
+                  }
+                </select>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={managingSettings}
+                  onClick={async () => {
+                    const sel = (document.getElementById("manager-select") as HTMLSelectElement)?.value;
+                    if (!sel) return;
+                    setManagingSettings(true);
+                    try {
+                      await api.addSessionManager(s.id, sel);
+                      await refresh(s.id);
+                    } catch (e: any) {
+                      alert(e.message);
+                    } finally {
+                      setManagingSettings(false);
+                    }
+                  }}
+                >
+                  <Plus size={14} className="mr-1" /> Thêm
+                </Button>
+                <Button
+                  size="sm"
+                  disabled={managingSettings}
+                  onClick={async () => {
+                    const sel = (document.getElementById("manager-select") as HTMLSelectElement)?.value;
+                    if (!sel) return;
+                    if (!confirm("Bạn chắc chắn muốn chuyển giao QUYỀN SỞ HỮU buổi chơi này?")) return;
+                    setManagingSettings(true);
+                    try {
+                      await api.transferSession(s.id, sel);
+                      await refresh(s.id);
+                      setShowManagerSettings(false);
+                    } catch (e: any) {
+                      alert(e.message);
+                    } finally {
+                      setManagingSettings(false);
+                    }
+                  }}
+                >
+                  Chuyển giao
+                </Button>
+              </div>
+              <button 
+                onClick={() => setShowManagerSettings(false)}
+                className="w-full text-xs text-gray-500 text-center hover:text-gray-700 mt-2"
+              >
+                Đóng
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Tabs */}
       <div className="flex bg-gray-100 rounded-xl p-1 mb-4">

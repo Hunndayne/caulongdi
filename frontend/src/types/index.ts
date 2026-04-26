@@ -103,6 +103,7 @@ export interface Session {
   note?: string;
   status: "upcoming" | "completed";
   payment_recipient?: string | null;
+  managers?: string | null;
   created_at: string;
   attendee_count?: number;
   total_cost?: number;

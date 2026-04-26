@@ -61,9 +61,18 @@ async function canAccessSession(c: any, session: SessionRow) {
 
 async function canManageSession(c: any, session: SessionRow) {
   if (c.get("userRole") === "admin") return true;
-  if (session.created_by && session.created_by === c.get("userId")) {
+  const userId = c.get("userId");
+  if (session.created_by && session.created_by === userId) {
     if (!session.group_id) return true;
     return isGroupMember(c, session.group_id);
+  }
+  // Kiểm tra co-managers
+  const managersRaw = (session as any).managers;
+  if (managersRaw) {
+    try {
+      const managers: string[] = JSON.parse(managersRaw);
+      if (managers.includes(userId)) return true;
+    } catch { /* ignore */ }
   }
   return isGroupAdmin(c, session.group_id);
 }
@@ -235,6 +244,61 @@ sessions.delete("/:id", async (c) => {
   return c.json({ success: true });
 });
 
+// Chuyển giao quản lý buổi chơi
+sessions.post("/:id/transfer", async (c) => {
+  const { id } = c.req.param();
+  const session = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first<SessionRow>();
+  if (!session) return c.json({ error: "Not found" }, 404);
+  if (!(await canManageSession(c, session))) return c.json({ error: "Forbidden" }, 403);
+  const body = await c.req.json<{ memberId: string }>();
+  if (!body.memberId) return c.json({ error: "memberId required" }, 400);
+  // Tìm member và kiểm tra đã liên kết user chưa
+  const member = await c.env.DB.prepare("SELECT * FROM members WHERE id = ?").bind(body.memberId).first<{ id: string; user_id?: string | null; name: string }>();
+  if (!member) return c.json({ error: "Member not found" }, 404);
+  if (!member.user_id) return c.json({ error: "Member chưa liên kết tài khoản" }, 400);
+  await c.env.DB.prepare("UPDATE sessions SET created_by = ? WHERE id = ?").bind(member.user_id, id).run();
+  const row = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first();
+  return c.json(row);
+});
+
+// Thêm co-manager
+sessions.post("/:id/managers", async (c) => {
+  const { id } = c.req.param();
+  const session = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first<SessionRow>();
+  if (!session) return c.json({ error: "Not found" }, 404);
+  if (!(await canManageSession(c, session))) return c.json({ error: "Forbidden" }, 403);
+  const body = await c.req.json<{ memberId: string }>();
+  if (!body.memberId) return c.json({ error: "memberId required" }, 400);
+
+  const member = await c.env.DB.prepare("SELECT * FROM members WHERE id = ?").bind(body.memberId).first<{ id: string; user_id?: string | null }>();
+  if (!member) return c.json({ error: "Member not found" }, 404);
+  if (!member.user_id) return c.json({ error: "Member chưa liên kết tài khoản" }, 400);
+
+  const managers: string[] = session.managers ? JSON.parse(session.managers as string) : [];
+  if (!managers.includes(member.user_id)) {
+    managers.push(member.user_id);
+    await c.env.DB.prepare("UPDATE sessions SET managers = ? WHERE id = ?").bind(JSON.stringify(managers), id).run();
+  }
+  const row = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first();
+  return c.json(row);
+});
+
+// Xóa co-manager
+sessions.delete("/:id/managers/:memberId", async (c) => {
+  const { id, memberId } = c.req.param();
+  const session = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first<SessionRow>();
+  if (!session) return c.json({ error: "Not found" }, 404);
+  if (!(await canManageSession(c, session))) return c.json({ error: "Forbidden" }, 403);
+
+  const member = await c.env.DB.prepare("SELECT * FROM members WHERE id = ?").bind(memberId).first<{ id: string; user_id?: string | null }>();
+  if (!member || !member.user_id) return c.json({ error: "Member invalid" }, 400);
+
+  const managers: string[] = session.managers ? JSON.parse(session.managers as string) : [];
+  const newManagers = managers.filter(uId => uId !== member.user_id);
+  await c.env.DB.prepare("UPDATE sessions SET managers = ? WHERE id = ?").bind(JSON.stringify(newManagers), id).run();
+  
+  return c.json({ success: true });
+});
 sessions.post("/:id/join", async (c) => {
   const { id } = c.req.param();
   const session = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?")

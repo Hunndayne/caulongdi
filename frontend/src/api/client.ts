@@ -50,6 +50,12 @@ export const api = {
     request<{ success: boolean; memberId: string }>(`/api/sessions/${id}/join`, { method: "POST" }),
   leaveSession: (id: string) =>
     request<{ success: boolean }>(`/api/sessions/${id}/join`, { method: "DELETE" }),
+  transferSession: (id: string, memberId: string) =>
+    request<Session>(`/api/sessions/${id}/transfer`, { method: "POST", body: JSON.stringify({ memberId }) }),
+  addSessionManager: (id: string, memberId: string) =>
+    request<Session>(`/api/sessions/${id}/managers`, { method: "POST", body: JSON.stringify({ memberId }) }),
+  removeSessionManager: (id: string, memberId: string) =>
+    request<{ success: boolean }>(`/api/sessions/${id}/managers/${memberId}`, { method: "DELETE" }),
 
   // Session members & costs
   setSessionMembers: (id: string, memberIds: string[]) =>
