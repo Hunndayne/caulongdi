@@ -1,5 +1,6 @@
-import { NavLink } from "react-router-dom";
-import { Home, Users, Calendar, CreditCard, BarChart2 } from "lucide-react";
+import { NavLink, useNavigate } from "react-router-dom";
+import { Home, Users, Calendar, CreditCard, BarChart2, LogOut, UserCircle } from "lucide-react";
+import { signOut } from "@/lib/auth-client";
 import { cn } from "@/lib/utils";
 
 const navItems = [
@@ -8,7 +9,19 @@ const navItems = [
   { to: "/members", icon: Users, label: "Thành viên" },
   { to: "/debt", icon: CreditCard, label: "Công nợ" },
   { to: "/stats", icon: BarChart2, label: "Thống kê" },
+  { to: "/profile", icon: UserCircle, label: "Hồ sơ" },
 ];
+
+function useLogout() {
+  const navigate = useNavigate();
+  return async () => {
+    try {
+      await signOut();
+    } finally {
+      navigate("/login", { replace: true });
+    }
+  };
+}
 
 export function BottomNav() {
   return (
@@ -35,12 +48,14 @@ export function BottomNav() {
 }
 
 export function Sidebar() {
+  const handleLogout = useLogout();
+
   return (
     <aside className="hidden sm:flex w-56 flex-col fixed left-0 top-0 bottom-0 bg-white border-r border-gray-200 z-40">
       <div className="p-4 border-b">
         <div className="flex items-center gap-2">
           <span className="text-2xl">🏸</span>
-          <span className="font-bold text-green-700 text-lg">Cầu Lông Đội</span>
+          <span className="font-bold text-green-700 text-lg">Hội cầu lông</span>
         </div>
       </div>
       <nav className="flex-1 p-3 space-y-1">
@@ -62,6 +77,16 @@ export function Sidebar() {
           </NavLink>
         ))}
       </nav>
+      <div className="p-3 border-t border-gray-200">
+        <button
+          type="button"
+          onClick={handleLogout}
+          className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-gray-600 transition-colors hover:bg-red-50 hover:text-red-600"
+        >
+          <LogOut size={18} />
+          Đăng xuất
+        </button>
+      </div>
     </aside>
   );
 }

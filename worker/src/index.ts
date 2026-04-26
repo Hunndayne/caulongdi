@@ -6,6 +6,7 @@ import membersRouter from "./routes/members";
 import sessionsRouter from "./routes/sessions";
 import paymentsRouter from "./routes/payments";
 import statsRouter from "./routes/stats";
+import profilesRouter from "./routes/profiles";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -48,5 +49,6 @@ app.route("/api/members", membersRouter);
 app.route("/api/sessions", sessionsRouter);
 app.route("/api/payments", paymentsRouter);
 app.route("/api/stats", statsRouter);
+app.route("/api/profiles", profilesRouter);
 
 export default app;

@@ -5,6 +5,10 @@ CREATE TABLE IF NOT EXISTS users (
   email_verified INTEGER NOT NULL DEFAULT 0,
   avatar_url TEXT,
   role TEXT NOT NULL DEFAULT 'member',
+  phone TEXT,
+  bio TEXT,
+  birthday TEXT,
+  location TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );

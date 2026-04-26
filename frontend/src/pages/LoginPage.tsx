@@ -9,7 +9,7 @@ export default function LoginPage() {
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-green-50 to-emerald-100">
       <div className="bg-white rounded-2xl shadow-lg p-8 w-full max-w-sm text-center">
         <div className="text-6xl mb-4">🏸</div>
-        <h1 className="text-2xl font-bold text-gray-900 mb-1">Cầu Lông Đội</h1>
+        <h1 className="text-2xl font-bold text-gray-900 mb-1">Hội cầu lông</h1>
         <p className="text-gray-500 text-sm mb-8">Quản lý lịch chơi, chi phí và công nợ nhóm</p>
         <button
           onClick={handleLogin}

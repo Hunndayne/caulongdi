@@ -1,4 +1,4 @@
-import type { Member, Session, SessionDetail, Cost, Payment, StatsResponse } from "@/types";
+import type { Member, Session, SessionDetail, Cost, Payment, StatsResponse, UserProfile, ProfileUpdateInput } from "@/types";
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const res = await fetch(url, {
@@ -55,4 +55,11 @@ export const api = {
 
   // Stats
   getStats: () => request<StatsResponse>("/api/stats"),
+
+  // Profiles
+  getProfiles: () => request<UserProfile[]>("/api/profiles"),
+  getMyProfile: () => request<UserProfile>("/api/profiles/me"),
+  getProfile: (id: string) => request<UserProfile>(`/api/profiles/${id}`),
+  updateMyProfile: (data: ProfileUpdateInput) =>
+    request<UserProfile>("/api/profiles/me", { method: "PUT", body: JSON.stringify(data) }),
 };

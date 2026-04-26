@@ -7,6 +7,23 @@ export interface User {
   createdAt: string;
 }
 
+export interface UserProfile extends User {
+  phone?: string;
+  bio?: string;
+  birthday?: string;
+  location?: string;
+  updatedAt: string;
+}
+
+export interface ProfileUpdateInput {
+  name?: string;
+  phone?: string;
+  bio?: string;
+  birthday?: string;
+  location?: string;
+  avatarUrl?: string;
+}
+
 export interface Member {
   id: string;
   user_id?: string;
