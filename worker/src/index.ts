@@ -20,7 +20,7 @@ app.use(
   })
 );
 
-app.on(["GET", "POST"], "/api/auth/**", (c) => {
+app.all("/api/auth/*", (c) => {
   const auth = createAuth(c.env, c.req.raw);
   return auth.handler(c.req.raw);
 });

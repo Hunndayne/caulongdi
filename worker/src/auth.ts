@@ -2,12 +2,13 @@ import { betterAuth } from "better-auth";
 import { Env } from "./types";
 
 export const createAuth = (env: Env, request?: Request) => {
-  const baseURL = (
+  const origin = (
     request ? new URL(request.url).origin : env.FRONTEND_URL ?? ""
   ).trim();
 
   return betterAuth({
-    baseURL,
+    baseURL: origin,
+    basePath: "/api/auth",
     database: env.DB,
     secret: env.BETTER_AUTH_SECRET,
     socialProviders: {
@@ -16,7 +17,7 @@ export const createAuth = (env: Env, request?: Request) => {
         clientSecret: env.GOOGLE_CLIENT_SECRET,
       },
     },
-    trustedOrigins: baseURL ? [baseURL] : [],
+    trustedOrigins: origin ? [origin] : [],
     user: {
       modelName: "users",
       fields: {
