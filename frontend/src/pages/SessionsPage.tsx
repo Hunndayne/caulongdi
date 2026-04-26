@@ -42,7 +42,7 @@ export default function SessionsPage() {
     if (!form.venue.trim()) return;
     setSaving(true);
     try {
-      await create({ date: form.date, start_time: form.startTime, venue: form.venue, location: form.location || undefined, note: form.note || undefined } as any);
+      await create({ date: form.date, startTime: form.startTime, venue: form.venue, location: form.location || undefined, note: form.note || undefined } as any);
       setDialogOpen(false);
       setForm(defaultForm);
     } finally {

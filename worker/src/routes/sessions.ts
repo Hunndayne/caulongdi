@@ -4,6 +4,16 @@ import { nanoid } from "../utils";
 
 const sessions = new Hono<{ Bindings: Env; Variables: { userId: string; userRole: string } }>();
 
+type SessionBody = {
+  date?: string;
+  startTime?: string;
+  start_time?: string;
+  venue?: string;
+  location?: string;
+  note?: string;
+  status?: string;
+};
+
 sessions.get("/", async (c) => {
   const rows = await c.env.DB.prepare(`
     SELECT s.*,
@@ -17,14 +27,16 @@ sessions.get("/", async (c) => {
 
 sessions.post("/", async (c) => {
   if (c.get("userRole") !== "admin") return c.json({ error: "Forbidden" }, 403);
-  const body = await c.req.json<{ date: string; startTime: string; venue: string; location?: string; note?: string }>();
-  if (!body.date || !body.startTime || !body.venue) return c.json({ error: "date, startTime, venue required" }, 400);
+  const body = await c.req.json<SessionBody>();
+  const startTime = body.startTime ?? body.start_time;
+  const venue = body.venue?.trim();
+  if (!body.date || !startTime || !venue) return c.json({ error: "date, startTime, venue required" }, 400);
   const id = nanoid();
   const now = new Date().toISOString();
   await c.env.DB.prepare(
     "INSERT INTO sessions (id, date, start_time, venue, location, note, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'upcoming', ?)"
   )
-    .bind(id, body.date, body.startTime, body.venue, body.location ?? null, body.note ?? null, now)
+    .bind(id, body.date, startTime, venue, body.location ?? null, body.note ?? null, now)
     .run();
   const row = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first();
   return c.json(row, 201);
@@ -57,14 +69,15 @@ sessions.put("/:id", async (c) => {
   const { id } = c.req.param();
   const existing = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first() as any;
   if (!existing) return c.json({ error: "Not found" }, 404);
-  const body = await c.req.json<{ date?: string; startTime?: string; venue?: string; location?: string; note?: string; status?: string }>();
+  const body = await c.req.json<SessionBody>();
+  const startTime = body.startTime ?? body.start_time;
   await c.env.DB.prepare(
     "UPDATE sessions SET date = ?, start_time = ?, venue = ?, location = ?, note = ?, status = ? WHERE id = ?"
   )
     .bind(
       body.date ?? existing.date,
-      body.startTime ?? existing.start_time,
-      body.venue ?? existing.venue,
+      startTime ?? existing.start_time,
+      body.venue?.trim() || existing.venue,
       body.location !== undefined ? body.location : existing.location,
       body.note !== undefined ? body.note : existing.note,
       body.status ?? existing.status,
