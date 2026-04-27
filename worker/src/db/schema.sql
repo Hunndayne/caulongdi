@@ -145,11 +145,13 @@ CREATE TABLE IF NOT EXISTS payments (
   id TEXT PRIMARY KEY,
   session_id TEXT NOT NULL,
   member_id TEXT NOT NULL,
+  recipient_member_id TEXT,
   amount_owed REAL NOT NULL,
   paid INTEGER NOT NULL DEFAULT 0,
   paid_at TEXT,
   FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
-  FOREIGN KEY (member_id) REFERENCES members(id) ON DELETE CASCADE
+  FOREIGN KEY (member_id) REFERENCES members(id) ON DELETE CASCADE,
+  FOREIGN KEY (recipient_member_id) REFERENCES members(id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_group_members_user_id ON group_members(user_id);

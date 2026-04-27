@@ -147,6 +147,7 @@ export interface Payment {
   id: string;
   session_id: string;
   member_id: string;
+  recipient_member_id?: string | null;
   amount_owed: number;
   paid: number;
   paid_at?: string;
