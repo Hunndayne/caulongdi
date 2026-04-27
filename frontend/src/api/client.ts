@@ -41,6 +41,10 @@ export const api = {
 
   // Sessions
   getSessions: (groupId?: string) => request<Session[]>(groupId ? `/api/sessions?groupId=${encodeURIComponent(groupId)}` : "/api/sessions"),
+  getJoinedSessions: (groupId?: string) =>
+    request<Session[]>(groupId
+      ? `/api/sessions?joined=true&groupId=${encodeURIComponent(groupId)}`
+      : "/api/sessions?joined=true"),
   createSession: (data: Partial<Session> & { groupId?: string; startTime?: string }) =>
     request<Session>("/api/sessions", { method: "POST", body: JSON.stringify(data) }),
   getSession: (id: string) => request<SessionDetail>(`/api/sessions/${id}`),

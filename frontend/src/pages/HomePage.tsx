@@ -8,6 +8,7 @@ import {
   Clock,
   MapPin,
   TrendingUp,
+  User,
 } from "lucide-react";
 import { api } from "@/api/client";
 import { useSession } from "@/lib/auth-client";
@@ -115,12 +116,17 @@ function buildMonthCells(month: Date) {
   return cells;
 }
 
+type CalendarMode = "group" | "mine";
+
 export default function HomePage() {
   const { data: session } = useSession();
   const { sessions, fetch } = useSessionsStore();
   const activeGroupId = useGroupsStore((state) => state.activeGroupId);
   const [myStats, setMyStats] = useState<MemberStats | null>(null);
   const [calendarMonth, setCalendarMonth] = useState(() => new Date());
+  const [calendarMode, setCalendarMode] = useState<CalendarMode>("mine");
+  const [joinedSessions, setJoinedSessions] = useState<Session[]>([]);
+  const [joinedLoading, setJoinedLoading] = useState(true);
 
   useEffect(() => {
     fetch(activeGroupId);
@@ -131,6 +137,14 @@ export default function HomePage() {
       .catch(() => {});
   }, [activeGroupId, fetch]);
 
+  useEffect(() => {
+    setJoinedLoading(true);
+    api.getJoinedSessions(activeGroupId)
+      .then(setJoinedSessions)
+      .catch(() => setJoinedSessions([]))
+      .finally(() => setJoinedLoading(false));
+  }, [activeGroupId]);
+
   const upcoming = useMemo(
     () => sessions.filter((s) => s.status === "upcoming").sort(compareSessionAsc).slice(0, 3),
     [sessions]
@@ -140,25 +154,40 @@ export default function HomePage() {
     [sessions]
   );
 
+  // Sessions hiển thị trên lịch tuỳ theo mode
+  const calendarSessions = calendarMode === "mine" ? joinedSessions : sessions;
+
   const thisMonth = monthKey(new Date());
-  const thisMonthCount = sessions.filter((s) => s.date.startsWith(thisMonth)).length;
+  const myThisMonthCount = joinedSessions.filter((s) => s.date.startsWith(thisMonth)).length;
   const activeMonth = monthKey(calendarMonth);
-  const monthSessions = sessions.filter((s) => s.date.startsWith(activeMonth));
+  const monthSessions = calendarSessions.filter((s) => s.date.startsWith(activeMonth));
   const upcomingInMonth = monthSessions.filter((s) => s.status === "upcoming").length;
   const today = dateKey(new Date());
 
   const sessionsByDate = useMemo(() => {
-    return sessions.reduce<Record<string, Session[]>>((acc, item) => {
+    return calendarSessions.reduce<Record<string, Session[]>>((acc, item) => {
       acc[item.date] = [...(acc[item.date] ?? []), item].sort(compareSessionAsc);
       return acc;
     }, {});
-  }, [sessions]);
+  }, [calendarSessions]);
 
   const monthCells = useMemo(() => buildMonthCells(calendarMonth), [calendarMonth]);
 
   const changeMonth = (amount: number) => {
     setCalendarMonth((current) => new Date(current.getFullYear(), current.getMonth() + amount, 1));
   };
+
+  // Các buổi sắp tới mà mình đã đăng ký
+  const myUpcoming = useMemo(
+    () => joinedSessions.filter((s) => s.status === "upcoming").sort(compareSessionAsc),
+    [joinedSessions]
+  );
+
+  // Các buổi đã qua mà mình đã tham gia
+  const myCompleted = useMemo(
+    () => joinedSessions.filter((s) => s.status === "completed").sort(compareSessionDesc),
+    [joinedSessions]
+  );
 
   return (
     <div className="space-y-6">
@@ -167,8 +196,12 @@ export default function HomePage() {
         <h1 className="text-xl font-bold">{session?.user.name} 👋</h1>
         <div className="flex gap-4 mt-4">
           <div className="bg-white/20 rounded-xl px-4 py-2 text-center">
-            <div className="text-2xl font-bold">{thisMonthCount}</div>
+            <div className="text-2xl font-bold">{myThisMonthCount}</div>
             <div className="text-xs text-green-100">Buổi tháng này</div>
+          </div>
+          <div className="bg-white/20 rounded-xl px-4 py-2 text-center">
+            <div className="text-2xl font-bold">{joinedSessions.length}</div>
+            <div className="text-xs text-green-100">Tổng buổi đã tham gia</div>
           </div>
           {myStats && (
             <div className="bg-white/20 rounded-xl px-4 py-2 text-center">
@@ -181,6 +214,7 @@ export default function HomePage() {
 
       <GroupSelector />
 
+      {/* Lịch */}
       <section>
         <div className="flex items-center justify-between mb-3">
           <h2 className="font-semibold text-gray-900 flex items-center gap-2">
@@ -205,9 +239,34 @@ export default function HomePage() {
                 {monthSessions.length} buổi · {upcomingInMonth} sắp tới
               </div>
             </div>
-            <Button variant="outline" size="sm" onClick={() => setCalendarMonth(new Date())}>
-              Hôm nay
-            </Button>
+            <div className="flex items-center gap-2">
+              {/* Toggle nhóm / của tôi */}
+              <div className="flex rounded-lg border border-gray-200 bg-gray-50 p-0.5 text-xs">
+                <button
+                  onClick={() => setCalendarMode("mine")}
+                  className={`rounded-md px-2.5 py-1 font-medium transition-colors ${
+                    calendarMode === "mine"
+                      ? "bg-white text-green-700 shadow-sm"
+                      : "text-gray-500 hover:text-gray-700"
+                  }`}
+                >
+                  Của tôi
+                </button>
+                <button
+                  onClick={() => setCalendarMode("group")}
+                  className={`rounded-md px-2.5 py-1 font-medium transition-colors ${
+                    calendarMode === "group"
+                      ? "bg-white text-green-700 shadow-sm"
+                      : "text-gray-500 hover:text-gray-700"
+                  }`}
+                >
+                  Nhóm
+                </button>
+              </div>
+              <Button variant="outline" size="sm" onClick={() => setCalendarMonth(new Date())}>
+                Hôm nay
+              </Button>
+            </div>
           </div>
 
           <div className="grid grid-cols-7 gap-1 text-center text-xs font-medium text-gray-400 mb-1">
@@ -260,21 +319,24 @@ export default function HomePage() {
         </div>
       </section>
 
+      {/* Buổi của tôi sắp tới */}
       <section>
         <div className="flex items-center justify-between mb-3">
           <h2 className="font-semibold text-gray-900 flex items-center gap-2">
-            <Clock size={18} className="text-green-600" />
-            Buổi sắp tới
+            <User size={18} className="text-green-600" />
+            Buổi của tôi sắp tới
           </h2>
           <Link to="/sessions" className="text-sm text-green-600 font-medium">
             Xem tất cả
           </Link>
         </div>
-        {upcoming.length === 0 ? (
-          <EmptyState icon="📅" title="Chưa có buổi chơi nào" description="Tạo buổi mới để bắt đầu" />
+        {joinedLoading ? (
+          <div className="text-center py-6 text-gray-400 text-sm">Đang tải...</div>
+        ) : myUpcoming.length === 0 ? (
+          <EmptyState icon="📅" title="Chưa có buổi nào" description="Bạn chưa đăng ký buổi chơi nào sắp tới" />
         ) : (
           <div className="space-y-2">
-            {upcoming.map((item) => (
+            {myUpcoming.map((item) => (
               <div
                 key={item.id}
                 className="flex items-center justify-between gap-3 bg-white rounded-xl p-4 shadow-sm border border-gray-100 hover:border-green-200 transition-colors"
@@ -309,14 +371,71 @@ export default function HomePage() {
         )}
       </section>
 
-      {recent.length > 0 && (
+      {/* Buổi nhóm sắp tới (ngoài buổi của mình) */}
+      <section>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="font-semibold text-gray-900 flex items-center gap-2">
+            <Clock size={18} className="text-green-600" />
+            Buổi nhóm sắp tới
+          </h2>
+          <Link to="/sessions" className="text-sm text-green-600 font-medium">
+            Xem tất cả
+          </Link>
+        </div>
+        {upcoming.length === 0 ? (
+          <EmptyState icon="📅" title="Chưa có buổi chơi nào" description="Tạo buổi mới để bắt đầu" />
+        ) : (
+          <div className="space-y-2">
+            {upcoming.map((item) => {
+              const iJoined = joinedSessions.some((j) => j.id === item.id);
+              return (
+                <div
+                  key={item.id}
+                  className="flex items-center justify-between gap-3 bg-white rounded-xl p-4 shadow-sm border border-gray-100 hover:border-green-200 transition-colors"
+                >
+                  <Link to={`/sessions/${item.id}`} className="min-w-0 flex-1">
+                    <div className="font-medium text-gray-900 truncate">{item.venue}</div>
+                    <div className="text-sm text-gray-500">
+                      {formatDate(item.date)} · {item.start_time}
+                    </div>
+                    {item.location && (
+                      <div className="text-xs text-gray-400 flex items-center gap-1 truncate">
+                        <MapPin size={11} />
+                        {item.location}
+                      </div>
+                    )}
+                  </Link>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    {iJoined ? (
+                      <Badge variant="green">Đã đăng ký</Badge>
+                    ) : (
+                      <Badge variant="gray">Chưa đăng ký</Badge>
+                    )}
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      onClick={() => downloadCalendarFile(item)}
+                      aria-label="Thêm vào lịch"
+                      title="Thêm vào lịch"
+                    >
+                      <CalendarPlus size={16} />
+                    </Button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      {myCompleted.length > 0 && (
         <section>
           <h2 className="font-semibold text-gray-900 flex items-center gap-2 mb-3">
             <TrendingUp size={18} className="text-green-600" />
-            Buổi gần đây
+            Buổi tôi đã tham gia gần đây
           </h2>
           <div className="space-y-2">
-            {recent.map((item) => (
+            {myCompleted.slice(0, 5).map((item) => (
               <Link
                 key={item.id}
                 to={`/sessions/${item.id}`}

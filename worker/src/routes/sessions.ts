@@ -79,6 +79,32 @@ async function canManageSession(c: any, session: SessionRow) {
 
 sessions.get("/", async (c) => {
   const groupId = c.req.query("groupId")?.trim();
+  const joinedOnly = c.req.query("joined") === "true";
+
+  if (joinedOnly) {
+    // Trả về các session mà user đã đăng ký tham gia (có trong session_members)
+    try {
+      const rows = await c.env.DB.prepare(`
+        SELECT s.*,
+          (SELECT COUNT(*) FROM session_members sm2 WHERE sm2.session_id = s.id AND sm2.attended = 1) as attendee_count,
+          (SELECT COALESCE(SUM(amount), 0) FROM costs co WHERE co.session_id = s.id) as total_cost
+        FROM sessions s
+        JOIN session_members sm ON sm.session_id = s.id
+        JOIN members m ON m.id = sm.member_id
+        WHERE m.user_id = ?
+          AND sm.attended = 1
+          ${groupId ? "AND s.group_id = ?" : ""}
+        ORDER BY s.date DESC, s.start_time DESC
+      `)
+        .bind(...(groupId ? [c.get("userId"), groupId] : [c.get("userId")]))
+        .all();
+      return c.json(rows.results);
+    } catch (error) {
+      if (!isMissingGroupSchema(error)) throw error;
+      return c.json([]);
+    }
+  }
+
   if (groupId) {
     try {
       if (!(await isGroupMember(c, groupId)) && c.get("userRole") !== "admin") {
@@ -140,6 +166,7 @@ sessions.get("/", async (c) => {
   `).all();
   return c.json(rows.results);
 });
+
 
 sessions.post("/", async (c) => {
   const body = await c.req.json<SessionBody>();
