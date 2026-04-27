@@ -15,6 +15,16 @@ function isMissingGroupSchema(error: unknown) {
 
 members.get("/", async (c) => {
   const groupId = c.req.query("groupId")?.trim();
+  const memberSelect = `
+    SELECT
+      m.*,
+      u.email AS user_email,
+      u.bank_bin AS user_bank_bin,
+      u.bank_account_number AS user_bank_account_number,
+      u.bank_account_name AS user_bank_account_name
+    FROM members m
+    LEFT JOIN users u ON u.id = m.user_id
+  `;
 
   try {
     if (groupId) {
@@ -31,10 +41,9 @@ members.get("/", async (c) => {
       }
 
       const rows = await c.env.DB.prepare(`
-        SELECT *
-        FROM members
-        WHERE group_id = ?
-        ORDER BY is_active DESC, name ASC
+        ${memberSelect}
+        WHERE m.group_id = ?
+        ORDER BY m.is_active DESC, m.name ASC
       `)
         .bind(groupId)
         .all();
@@ -42,31 +51,32 @@ members.get("/", async (c) => {
     }
 
     if (c.get("userRole") === "admin") {
-      const rows = await c.env.DB.prepare(
-        "SELECT * FROM members ORDER BY is_active DESC, name ASC"
-      ).all();
+      const rows = await c.env.DB.prepare(`
+        ${memberSelect}
+        ORDER BY m.is_active DESC, m.name ASC
+      `).all();
       return c.json(rows.results);
     }
 
     const rows = await c.env.DB.prepare(`
-      SELECT *
-      FROM members
-      WHERE group_id IS NULL
-         OR group_id IN (
+      ${memberSelect}
+      WHERE m.group_id IS NULL
+         OR m.group_id IN (
            SELECT gm.group_id
            FROM group_members gm
            WHERE gm.user_id = ?
          )
-      ORDER BY is_active DESC, name ASC
+      ORDER BY m.is_active DESC, m.name ASC
     `)
       .bind(c.get("userId"))
       .all();
     return c.json(rows.results);
   } catch (error) {
     if (isMissingGroupSchema(error)) {
-      const rows = await c.env.DB.prepare(
-        "SELECT * FROM members ORDER BY is_active DESC, name ASC"
-      ).all();
+      const rows = await c.env.DB.prepare(`
+        ${memberSelect}
+        ORDER BY m.is_active DESC, m.name ASC
+      `).all();
       return c.json(rows.results);
     }
     throw error;

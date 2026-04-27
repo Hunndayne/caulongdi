@@ -50,6 +50,10 @@ function getCostTypeLabel(type: string) {
   return COST_TYPES.find((item) => item.value === type)?.label ?? type;
 }
 
+function hasBankInfo(member: Member | null | undefined) {
+  return Boolean(member?.user_bank_bin && member?.user_bank_account_number && member?.user_bank_account_name);
+}
+
 export default function SessionDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -123,12 +127,25 @@ export default function SessionDetailPage() {
   const allMembers = [...members, ...s.members];
   const memberById = new Map<string, Member>();
   for (const member of allMembers) {
-    if (!memberById.has(member.id)) memberById.set(member.id, member);
+    const existing = memberById.get(member.id);
+    if (!existing) {
+      memberById.set(member.id, member);
+      continue;
+    }
+
+    const existingHasBank = hasBankInfo(existing);
+    const nextHasBank = hasBankInfo(member);
+    if (!existingHasBank && nextHasBank) {
+      memberById.set(member.id, member);
+      continue;
+    }
+
+    if (existingHasBank === nextHasBank && s.members.some((sessionMember) => sessionMember.id === member.id)) {
+      memberById.set(member.id, member);
+    }
   }
 
-  const membersWithBank = s.members.filter(
-    (member) => member.user_bank_bin && member.user_bank_account_number && member.user_bank_account_name
-  );
+  const membersWithBank = Array.from(memberById.values()).filter(hasBankInfo);
   const fallbackRecipientMember = recipientId ? memberById.get(recipientId) ?? null : null;
 
   const paymentRows = [...s.payments]
@@ -707,9 +724,7 @@ export default function SessionDetailPage() {
               {paymentRows.map(({ payment, debtor, recipient }) => {
                 const debtorName = debtor?.name ?? payment.member_id;
                 const recipientName = recipient?.name ?? payment.recipient_member_id ?? "nguoi nhan";
-                const recipientHasBank = Boolean(
-                  recipient?.user_bank_bin && recipient?.user_bank_account_number && recipient?.user_bank_account_name
-                );
+                const recipientHasBank = hasBankInfo(recipient);
                 const qrRecipient = recipientHasBank
                   ? recipient
                   : (fallbackRecipientMember && fallbackRecipientMember.id !== payment.member_id ? fallbackRecipientMember : null);
