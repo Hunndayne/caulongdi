@@ -80,15 +80,6 @@ export const createAuth = (env: Env, request?: Request) => {
                 .bind(user.id)
                 .run();
             }
-
-            await env.DB.prepare(`
-              INSERT OR IGNORE INTO group_members (group_id, user_id, role, created_at)
-              SELECT 'default', ?, 'member', ?
-              WHERE EXISTS (SELECT 1 FROM groups WHERE id = 'default')
-            `)
-              .bind(user.id, new Date().toISOString())
-              .run()
-              .catch(() => {});
           },
         },
       },
