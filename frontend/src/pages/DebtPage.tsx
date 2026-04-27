@@ -1,27 +1,22 @@
 import { useEffect, useState } from "react";
 import { api } from "@/api/client";
 import { Avatar } from "@/components/shared/Avatar";
+import { GroupSelector } from "@/components/shared/GroupSelector";
 import { formatCurrency } from "@/lib/utils";
 import { EmptyState } from "@/components/shared/EmptyState";
-import { useGroupsStore } from "@/stores/groupsStore";
 import type { MemberStats } from "@/types";
 
 export default function DebtPage() {
-  const activeGroupId = useGroupsStore((state) => state.activeGroupId);
-  const fetchGroups = useGroupsStore((state) => state.fetch);
+  const [selectedGroupId, setSelectedGroupId] = useState<string | undefined>(undefined);
   const [stats, setStats] = useState<MemberStats[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetchGroups();
-  }, [fetchGroups]);
-
-  useEffect(() => {
     setLoading(true);
-    api.getStats(activeGroupId)
+    api.getStats(selectedGroupId)
       .then((s) => setStats([...s.memberStats].sort((a, b) => b.debt - a.debt)))
       .finally(() => setLoading(false));
-  }, [activeGroupId]);
+  }, [selectedGroupId]);
 
   const totalDebt = stats.reduce((sum, s) => sum + s.debt, 0);
 
@@ -29,6 +24,10 @@ export default function DebtPage() {
     <div>
       <div className="mb-5 flex items-center justify-between">
         <h1 className="text-xl font-bold text-gray-900">Cong no</h1>
+      </div>
+
+      <div className="mb-5">
+        <GroupSelector value={selectedGroupId} onChange={setSelectedGroupId} allowAll allLabel="Tong hop tat ca nhom" />
       </div>
 
       {loading ? (

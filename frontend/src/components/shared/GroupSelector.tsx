@@ -3,8 +3,22 @@ import { Link } from "react-router-dom";
 import { Settings2, Users } from "lucide-react";
 import { useGroupsStore } from "@/stores/groupsStore";
 
-export function GroupSelector() {
+type GroupSelectorProps = {
+  value?: string;
+  onChange?: (id?: string) => void;
+  allowAll?: boolean;
+  allLabel?: string;
+};
+
+export function GroupSelector({
+  value,
+  onChange,
+  allowAll = false,
+  allLabel = "Tat ca nhom",
+}: GroupSelectorProps) {
   const { groups, activeGroupId, loading, error, fetch, setActiveGroup } = useGroupsStore();
+  const isControlled = typeof onChange === "function";
+  const selectedValue = isControlled ? value ?? "" : activeGroupId ?? "";
 
   useEffect(() => {
     fetch();
@@ -15,19 +29,26 @@ export function GroupSelector() {
       <div className="flex items-center gap-2">
         <Users size={18} className="text-green-600" />
         <select
-          value={activeGroupId ?? ""}
-          onChange={(event) => setActiveGroup(event.target.value || undefined)}
+          value={selectedValue}
+          onChange={(event) => {
+            const nextValue = event.target.value || undefined;
+            if (isControlled) onChange?.(nextValue);
+            else setActiveGroup(nextValue);
+          }}
           disabled={loading || groups.length === 0}
           className="min-w-0 flex-1 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-800 focus:outline-none focus:ring-2 focus:ring-green-500"
         >
           {groups.length === 0 ? (
             <option value="">Chua co nhom</option>
           ) : (
-            groups.map((group) => (
-              <option key={group.id} value={group.id}>
-                {group.name}
-              </option>
-            ))
+            <>
+              {allowAll && <option value="">{allLabel}</option>}
+              {groups.map((group) => (
+                <option key={group.id} value={group.id}>
+                  {group.name}
+                </option>
+              ))}
+            </>
           )}
         </select>
         <Link

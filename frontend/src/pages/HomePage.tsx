@@ -13,7 +13,6 @@ import {
 import { api } from "@/api/client";
 import { useSession } from "@/lib/auth-client";
 import { useSessionsStore } from "@/stores/sessionsStore";
-import { useGroupsStore } from "@/stores/groupsStore";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/shared/EmptyState";
@@ -121,7 +120,7 @@ type CalendarMode = "group" | "mine";
 export default function HomePage() {
   const { data: session } = useSession();
   const { sessions, fetch } = useSessionsStore();
-  const activeGroupId = useGroupsStore((state) => state.activeGroupId);
+  const [selectedGroupId, setSelectedGroupId] = useState<string | undefined>(undefined);
   const [myStats, setMyStats] = useState<MemberStats | null>(null);
   const [calendarMonth, setCalendarMonth] = useState(() => new Date());
   const [calendarMode, setCalendarMode] = useState<CalendarMode>("mine");
@@ -129,21 +128,22 @@ export default function HomePage() {
   const [joinedLoading, setJoinedLoading] = useState(true);
 
   useEffect(() => {
-    fetch(activeGroupId);
-    api.getStats(activeGroupId)
-      .then((s) => {
-        setMyStats(s.memberStats[0] ?? null);
+    fetch(selectedGroupId);
+    api.getStats(selectedGroupId)
+      .then((response) => {
+        const currentUserId = (session?.user as { id?: string } | undefined)?.id;
+        setMyStats(response.memberStats.find((item) => item.userId === currentUserId) ?? null);
       })
       .catch(() => {});
-  }, [activeGroupId, fetch]);
+  }, [fetch, selectedGroupId, session?.user]);
 
   useEffect(() => {
     setJoinedLoading(true);
-    api.getJoinedSessions(activeGroupId)
+    api.getJoinedSessions(selectedGroupId)
       .then(setJoinedSessions)
       .catch(() => setJoinedSessions([]))
       .finally(() => setJoinedLoading(false));
-  }, [activeGroupId]);
+  }, [selectedGroupId]);
 
   const upcoming = useMemo(
     () => sessions.filter((s) => s.status === "upcoming").sort(compareSessionAsc).slice(0, 3),
@@ -212,7 +212,7 @@ export default function HomePage() {
         </div>
       </div>
 
-      <GroupSelector />
+      <GroupSelector value={selectedGroupId} onChange={setSelectedGroupId} allowAll allLabel="Tong hop tat ca nhom" />
 
       {/* Lịch */}
       <section>

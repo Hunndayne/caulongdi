@@ -2,25 +2,20 @@ import { useEffect, useState } from "react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import { api } from "@/api/client";
 import { Avatar } from "@/components/shared/Avatar";
+import { GroupSelector } from "@/components/shared/GroupSelector";
 import { formatCurrency } from "@/lib/utils";
 import { EmptyState } from "@/components/shared/EmptyState";
-import { useGroupsStore } from "@/stores/groupsStore";
 import type { StatsResponse } from "@/types";
 
 export default function StatsPage() {
-  const activeGroupId = useGroupsStore((state) => state.activeGroupId);
-  const fetchGroups = useGroupsStore((state) => state.fetch);
+  const [selectedGroupId, setSelectedGroupId] = useState<string | undefined>(undefined);
   const [data, setData] = useState<StatsResponse | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetchGroups();
-  }, [fetchGroups]);
-
-  useEffect(() => {
     setLoading(true);
-    api.getStats(activeGroupId).then(setData).finally(() => setLoading(false));
-  }, [activeGroupId]);
+    api.getStats(selectedGroupId).then(setData).finally(() => setLoading(false));
+  }, [selectedGroupId]);
 
   if (loading) return <div className="py-12 text-center text-gray-400">Dang tai...</div>;
   if (!data) return null;
@@ -34,7 +29,10 @@ export default function StatsPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-bold text-gray-900">Thong ke</h1>
+      <div className="space-y-3">
+        <h1 className="text-xl font-bold text-gray-900">Thong ke</h1>
+        <GroupSelector value={selectedGroupId} onChange={setSelectedGroupId} allowAll allLabel="Tong hop tat ca nhom" />
+      </div>
 
       <div className="grid grid-cols-2 gap-3">
         <div className="rounded-xl border border-gray-100 bg-white p-4 text-center shadow-sm">

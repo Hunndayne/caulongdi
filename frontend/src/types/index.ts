@@ -155,6 +155,7 @@ export interface Payment {
 
 export interface MemberStats {
   memberId: string;
+  userId?: string;
   memberName: string;
   avatarColor: string;
   attendCount: number;
