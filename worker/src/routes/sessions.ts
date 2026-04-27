@@ -570,19 +570,22 @@ sessions.post("/:id/recalculate", async (c) => {
   if (!session) return c.json({ error: "Not found" }, 404);
   if (!(await canManageSession(c, session))) return c.json({ error: "Forbidden" }, 403);
 
-  const sessionMembers = await c.env.DB.prepare(
-    "SELECT member_id FROM session_members WHERE session_id = ?"
-  ).bind(id).all<{ member_id: string }>();
   const attendees = await c.env.DB.prepare(
     "SELECT member_id FROM session_members WHERE session_id = ? AND attended = 1"
   ).bind(id).all<{ member_id: string }>();
+  const eligibleMembers = session.group_id
+    ? await c.env.DB.prepare("SELECT id FROM members WHERE group_id = ?")
+      .bind(session.group_id)
+      .all<{ id: string }>()
+    : await c.env.DB.prepare("SELECT id FROM members")
+      .all<{ id: string }>();
 
   const count = attendees.results.length;
   if (count === 0) return c.json({ error: "No attendees" }, 400);
 
-  const sessionMemberSet = new Set(sessionMembers.results.map((item) => item.member_id));
   const attendeeIds = attendees.results.map((item) => item.member_id);
   const attendeeSet = new Set(attendeeIds);
+  const eligibleMemberSet = new Set(eligibleMembers.results.map((item) => item.id));
   const costs = await c.env.DB.prepare(
     "SELECT id, amount, payer_id, consumer_id FROM costs WHERE session_id = ?"
   ).bind(id).all<CostRow>();
@@ -591,8 +594,8 @@ sessions.post("/:id/recalculate", async (c) => {
   const directCosts = costs.results.filter((cost) => cost.consumer_id !== null);
   const fallbackRecipientId = normalizePaymentRecipient((session as any).payment_recipient as string | null | undefined);
 
-  if (fallbackRecipientId && !sessionMemberSet.has(fallbackRecipientId)) {
-    return c.json({ error: "Payment recipient must belong to the session member list" }, 400);
+  if (fallbackRecipientId && !eligibleMemberSet.has(fallbackRecipientId)) {
+    return c.json({ error: "Payment recipient must be an existing member" }, 400);
   }
 
   const paymentMap = new Map<string, number>();
@@ -607,8 +610,8 @@ sessions.post("/:id/recalculate", async (c) => {
     if (!recipientId) {
       return c.json({ error: "Shared costs need a payer or a common payment recipient" }, 400);
     }
-    if (!sessionMemberSet.has(recipientId)) {
-      return c.json({ error: "Payment recipient must belong to the session member list" }, 400);
+    if (!eligibleMemberSet.has(recipientId)) {
+      return c.json({ error: "Payment recipient must be an existing member" }, 400);
     }
 
     const roundedAmount = Math.round(cost.amount);
@@ -626,8 +629,8 @@ sessions.post("/:id/recalculate", async (c) => {
     if (!cost.payer_id || !cost.consumer_id) {
       return c.json({ error: "Direct costs need both payer and consumer" }, 400);
     }
-    if (!sessionMemberSet.has(cost.payer_id) || !sessionMemberSet.has(cost.consumer_id)) {
-      return c.json({ error: "Payer and consumer must both belong to the session member list" }, 400);
+    if (!eligibleMemberSet.has(cost.payer_id) || !eligibleMemberSet.has(cost.consumer_id)) {
+      return c.json({ error: "Payer and consumer must both be existing members" }, 400);
     }
     addPayment(cost.consumer_id, cost.payer_id, Math.round(cost.amount));
   }
