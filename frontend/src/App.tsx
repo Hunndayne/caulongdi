@@ -10,6 +10,7 @@ import DebtPage from "@/pages/DebtPage";
 import StatsPage from "@/pages/StatsPage";
 import ProfilePage from "@/pages/ProfilePage";
 import PublicProfilePage from "@/pages/PublicProfilePage";
+import JoinPage from "@/pages/JoinPage";
 
 function AuthGuard({ children }: { children: React.ReactNode }) {
   const { data: session, isPending } = useSession();
@@ -60,6 +61,7 @@ export default function App() {
                 <Route path="stats" element={<StatsPage />} />
                 <Route path="profile" element={<ProfilePage />} />
                 <Route path="profiles/:id" element={<PublicProfilePage />} />
+                <Route path="join/:code" element={<JoinPage />} />
               </Routes>
             </Layout>
           </AuthGuard>

@@ -11,6 +11,8 @@ import type {
   GroupInvite,
   GroupMember,
   GroupSearchResult,
+  GroupInviteLink,
+  JoinLinkPreview,
 } from "@/types";
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
@@ -100,6 +102,16 @@ export const api = {
     request<{ success: boolean }>(`/api/groups/${id}/invites/${inviteId}`, { method: "DELETE" }),
   removeGroupMember: (id: string, userId: string) =>
     request<{ success: boolean }>(`/api/groups/${id}/members/${userId}`, { method: "DELETE" }),
+
+  // Invite links
+  createInviteLink: (groupId: string) =>
+    request<GroupInviteLink>(`/api/groups/${groupId}/invite-link`, { method: "POST" }),
+  revokeInviteLink: (groupId: string) =>
+    request<{ success: boolean }>(`/api/groups/${groupId}/invite-link`, { method: "DELETE" }),
+  getJoinLinkPreview: (code: string) =>
+    request<JoinLinkPreview>(`/api/groups/join/${code}`),
+  joinViaLink: (code: string) =>
+    request<{ success: boolean; groupId: string; alreadyMember: boolean }>(`/api/groups/join/${code}`, { method: "POST" }),
 
   // Profiles
   getProfiles: (groupId: string) => request<UserProfile[]>(`/api/profiles?groupId=${encodeURIComponent(groupId)}`),

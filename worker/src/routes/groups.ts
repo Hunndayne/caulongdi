@@ -649,4 +649,180 @@ groups.delete("/:id/members/:userId", async (c) => {
   }
 });
 
+// ─── Invite Link ─────────────────────────────────────────────
+
+groups.post("/:id/invite-link", async (c) => {
+  const { id } = c.req.param();
+
+  try {
+    const membership = await getMembership(c, id);
+    if (membership !== "admin") return c.json({ error: "Forbidden" }, 403);
+
+    // Return existing active link if one exists
+    const existing = await c.env.DB.prepare(`
+      SELECT id, code, role, max_uses, use_count, expires_at, created_at
+      FROM group_invite_links
+      WHERE group_id = ?
+        AND is_active = 1
+        AND (expires_at IS NULL OR expires_at > datetime('now'))
+      ORDER BY created_at DESC
+      LIMIT 1
+    `)
+      .bind(id)
+      .first<{ id: string; code: string; role: string; max_uses: number | null; use_count: number; expires_at: string | null; created_at: string }>();
+
+    if (existing) {
+      return c.json({
+        code: existing.code,
+        role: existing.role,
+        maxUses: existing.max_uses,
+        useCount: existing.use_count,
+        expiresAt: existing.expires_at ?? undefined,
+        createdAt: existing.created_at,
+      });
+    }
+
+    // Create a new invite link
+    const linkId = nanoid();
+    const code = nanoid(10);
+    const now = new Date().toISOString();
+
+    await c.env.DB.prepare(`
+      INSERT INTO group_invite_links (id, group_id, code, created_by_user_id, role, is_active, created_at)
+      VALUES (?, ?, ?, ?, 'member', 1, ?)
+    `)
+      .bind(linkId, id, code, c.get("userId"), now)
+      .run();
+
+    return c.json({
+      code,
+      role: "member",
+      maxUses: null,
+      useCount: 0,
+      expiresAt: undefined,
+      createdAt: now,
+    }, 201);
+  } catch (error) {
+    if (isMissingGroupSchema(error)) {
+      return c.json({ error: "Run invite-link database migration first" }, 400);
+    }
+    throw error;
+  }
+});
+
+groups.delete("/:id/invite-link", async (c) => {
+  const { id } = c.req.param();
+
+  try {
+    const membership = await getMembership(c, id);
+    if (membership !== "admin") return c.json({ error: "Forbidden" }, 403);
+
+    await c.env.DB.prepare(`
+      UPDATE group_invite_links
+      SET is_active = 0
+      WHERE group_id = ? AND is_active = 1
+    `)
+      .bind(id)
+      .run();
+
+    return c.json({ success: true });
+  } catch (error) {
+    if (isMissingGroupSchema(error)) {
+      return c.json({ error: "Run invite-link database migration first" }, 400);
+    }
+    throw error;
+  }
+});
+
+groups.get("/join/:code", async (c) => {
+  const { code } = c.req.param();
+
+  try {
+    const link = await c.env.DB.prepare(`
+      SELECT gil.group_id, gil.role, g.name as group_name, g.description as group_description,
+        (SELECT COUNT(*) FROM group_members gm WHERE gm.group_id = gil.group_id) as member_count
+      FROM group_invite_links gil
+      JOIN groups g ON g.id = gil.group_id
+      WHERE gil.code = ?
+        AND gil.is_active = 1
+        AND (gil.expires_at IS NULL OR gil.expires_at > datetime('now'))
+        AND (gil.max_uses IS NULL OR gil.use_count < gil.max_uses)
+    `)
+      .bind(code)
+      .first<{ group_id: string; role: string; group_name: string; group_description: string | null; member_count: number }>();
+
+    if (!link) return c.json({ error: "Invite link is invalid or expired" }, 404);
+
+    // Check if user is already a member
+    const existingMember = await c.env.DB.prepare(`
+      SELECT user_id FROM group_members WHERE group_id = ? AND user_id = ?
+    `)
+      .bind(link.group_id, c.get("userId"))
+      .first<{ user_id: string }>();
+
+    return c.json({
+      groupId: link.group_id,
+      groupName: link.group_name,
+      groupDescription: link.group_description ?? undefined,
+      role: link.role,
+      memberCount: link.member_count,
+      alreadyMember: !!existingMember,
+    });
+  } catch (error) {
+    if (isMissingGroupSchema(error)) {
+      return c.json({ error: "Run invite-link database migration first" }, 400);
+    }
+    throw error;
+  }
+});
+
+groups.post("/join/:code", async (c) => {
+  const { code } = c.req.param();
+
+  try {
+    const link = await c.env.DB.prepare(`
+      SELECT id, group_id, role
+      FROM group_invite_links
+      WHERE code = ?
+        AND is_active = 1
+        AND (expires_at IS NULL OR expires_at > datetime('now'))
+        AND (max_uses IS NULL OR use_count < max_uses)
+    `)
+      .bind(code)
+      .first<{ id: string; group_id: string; role: string }>();
+
+    if (!link) return c.json({ error: "Invite link is invalid or expired" }, 404);
+
+    // Check if already a member
+    const existingMember = await c.env.DB.prepare(`
+      SELECT user_id FROM group_members WHERE group_id = ? AND user_id = ?
+    `)
+      .bind(link.group_id, c.get("userId"))
+      .first<{ user_id: string }>();
+
+    if (existingMember) {
+      return c.json({ success: true, groupId: link.group_id, alreadyMember: true });
+    }
+
+    const now = new Date().toISOString();
+    await c.env.DB.batch([
+      c.env.DB.prepare(`
+        INSERT OR IGNORE INTO group_members (group_id, user_id, role, created_at)
+        VALUES (?, ?, ?, ?)
+      `).bind(link.group_id, c.get("userId"), link.role, now),
+      c.env.DB.prepare(`
+        UPDATE group_invite_links SET use_count = use_count + 1 WHERE id = ?
+      `).bind(link.id),
+      c.env.DB.prepare("UPDATE groups SET updated_at = ? WHERE id = ?").bind(now, link.group_id),
+    ]);
+
+    return c.json({ success: true, groupId: link.group_id, alreadyMember: false });
+  } catch (error) {
+    if (isMissingGroupSchema(error)) {
+      return c.json({ error: "Run invite-link database migration first" }, 400);
+    }
+    throw error;
+  }
+});
+
 export default groups;

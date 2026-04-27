@@ -2,8 +2,11 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   Check,
+  Copy,
+  Link2,
   Mail,
   Plus,
+  RefreshCw,
   Search,
   ShieldCheck,
   UserCircle,
@@ -50,6 +53,9 @@ export default function MembersPage() {
   const [creatingGroup, setCreatingGroup] = useState(false);
   const [actingInviteId, setActingInviteId] = useState<string | null>(null);
   const [actingUserId, setActingUserId] = useState<string | null>(null);
+  const [inviteLinkCode, setInviteLinkCode] = useState<string | null>(null);
+  const [inviteLinkLoading, setInviteLinkLoading] = useState(false);
+  const [inviteLinkCopied, setInviteLinkCopied] = useState(false);
 
   const currentUserId = (session?.user as { id?: string } | undefined)?.id;
   const activeGroup = useMemo(
@@ -67,6 +73,7 @@ export default function MembersPage() {
     if (!activeGroupId) {
       setMembers([]);
       setPendingInvites([]);
+      setInviteLinkCode(null);
       return;
     }
 
@@ -320,6 +327,79 @@ export default function MembersPage() {
           <div className="flex items-center gap-2">
             <UserPlus size={18} className="text-green-600" />
             <h2 className="font-semibold text-gray-900">Mời thêm thành viên</h2>
+          </div>
+
+          {/* Invite by link */}
+          <div className="rounded-lg border border-green-100 bg-green-50/50 p-3 space-y-2">
+            <div className="flex items-center gap-2 text-sm font-medium text-gray-700">
+              <Link2 size={15} className="text-green-600" />
+              Mời bằng link
+            </div>
+            {inviteLinkCode ? (
+              <div className="space-y-2">
+                <div className="flex gap-2">
+                  <input
+                    readOnly
+                    value={`${window.location.origin}/join/${inviteLinkCode}`}
+                    className="flex-1 min-w-0 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 select-all focus:outline-none focus:ring-2 focus:ring-green-500"
+                    onFocus={(e) => e.target.select()}
+                  />
+                  <Button
+                    size="sm"
+                    variant={inviteLinkCopied ? "default" : "outline"}
+                    onClick={() => {
+                      navigator.clipboard.writeText(`${window.location.origin}/join/${inviteLinkCode}`);
+                      setInviteLinkCopied(true);
+                      setTimeout(() => setInviteLinkCopied(false), 2000);
+                    }}
+                  >
+                    {inviteLinkCopied ? (
+                      <><Check size={14} className="mr-1" />Đã copy</>
+                    ) : (
+                      <><Copy size={14} className="mr-1" />Copy</>  
+                    )}
+                  </Button>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-gray-400">Ai có link đều có thể tham gia nhóm</span>
+                  <button
+                    className="text-xs text-red-500 hover:text-red-600 flex items-center gap-1"
+                    onClick={async () => {
+                      if (!activeGroupId) return;
+                      try {
+                        await api.revokeInviteLink(activeGroupId);
+                        setInviteLinkCode(null);
+                      } catch {}
+                    }}
+                  >
+                    <RefreshCw size={11} />
+                    Tạo link mới
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <Button
+                variant="outline"
+                size="sm"
+                className="w-full"
+                disabled={inviteLinkLoading}
+                onClick={async () => {
+                  if (!activeGroupId) return;
+                  setInviteLinkLoading(true);
+                  try {
+                    const link = await api.createInviteLink(activeGroupId);
+                    setInviteLinkCode(link.code);
+                  } catch (err) {
+                    setError(err instanceof Error ? err.message : "Không tạo được link mời");
+                  } finally {
+                    setInviteLinkLoading(false);
+                  }
+                }}
+              >
+                <Link2 size={15} className="mr-1.5" />
+                {inviteLinkLoading ? "Đang tạo..." : "Tạo link mời"}
+              </Button>
+            )}
           </div>
 
           <div className="flex gap-2">

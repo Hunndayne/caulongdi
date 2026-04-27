@@ -77,6 +77,24 @@ export interface GroupSearchResult {
   pendingInviteId?: string;
 }
 
+export interface GroupInviteLink {
+  code: string;
+  role: "admin" | "member";
+  maxUses?: number | null;
+  useCount: number;
+  expiresAt?: string;
+  createdAt: string;
+}
+
+export interface JoinLinkPreview {
+  groupId: string;
+  groupName: string;
+  groupDescription?: string;
+  role: string;
+  memberCount: number;
+  alreadyMember: boolean;
+}
+
 export interface Member {
   id: string;
   group_id?: string;
