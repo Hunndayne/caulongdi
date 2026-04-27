@@ -73,7 +73,7 @@ export default function MembersPage() {
     setMembersLoading(true);
     api.getGroupMembers(activeGroupId)
       .then(setMembers)
-      .catch((err) => setError(err instanceof Error ? err.message : "Khong tai duoc thanh vien"))
+      .catch((err) => setError(err instanceof Error ? err.message : "Không tải được thành viên"))
       .finally(() => setMembersLoading(false));
 
     if (!canManageGroup) {
@@ -83,7 +83,7 @@ export default function MembersPage() {
 
     api.getGroupInvites(activeGroupId)
       .then(setPendingInvites)
-      .catch((err) => setError(err instanceof Error ? err.message : "Khong tai duoc loi moi"));
+      .catch((err) => setError(err instanceof Error ? err.message : "Không tải được lời mời"));
   }, [activeGroupId, canManageGroup]);
 
   useEffect(() => {
@@ -97,7 +97,7 @@ export default function MembersPage() {
     const timer = window.setTimeout(() => {
       api.searchGroupUsers(activeGroupId, search.trim())
         .then(setSearchResults)
-        .catch((err) => setError(err instanceof Error ? err.message : "Khong tim duoc user"))
+        .catch((err) => setError(err instanceof Error ? err.message : "Không tìm được user"))
         .finally(() => setSearchLoading(false));
     }, 250);
 
@@ -118,7 +118,7 @@ export default function MembersPage() {
       setGroupDescription("");
       setCreateDialogOpen(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Khong tao duoc nhom");
+      setError(err instanceof Error ? err.message : "Không tạo được nhóm");
     } finally {
       setCreatingGroup(false);
     }
@@ -140,7 +140,7 @@ export default function MembersPage() {
       setActiveGroup(result.groupId);
       await refreshReceivedInvites();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Khong chap nhan duoc loi moi");
+      setError(err instanceof Error ? err.message : "Không chấp nhận được lời mời");
     } finally {
       setActingInviteId(null);
     }
@@ -153,7 +153,7 @@ export default function MembersPage() {
       await api.declineGroupInvite(inviteId);
       await refreshReceivedInvites();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Khong tu choi duoc loi moi");
+      setError(err instanceof Error ? err.message : "Không từ chối được lời mời");
     } finally {
       setActingInviteId(null);
     }
@@ -178,7 +178,7 @@ export default function MembersPage() {
         )
       );
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Khong gui duoc loi moi");
+      setError(err instanceof Error ? err.message : "Không gửi được lời mời");
     } finally {
       setActingUserId(null);
     }
@@ -198,7 +198,7 @@ export default function MembersPage() {
         )
       );
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Khong huy duoc loi moi");
+      setError(err instanceof Error ? err.message : "Không hủy được lời mời");
     } finally {
       setActingInviteId(null);
     }
@@ -206,7 +206,7 @@ export default function MembersPage() {
 
   const handleRemoveMember = async (member: GroupMember) => {
     if (!activeGroupId) return;
-    if (!confirm(`Xoa ${member.name} khoi nhom ${activeGroup?.name}?`)) return;
+    if (!confirm(`Xóa ${member.name} khỏi nhóm ${activeGroup?.name}?`)) return;
 
     setActingUserId(member.userId);
     setError(null);
@@ -215,7 +215,7 @@ export default function MembersPage() {
       setMembers((current) => current.filter((item) => item.userId !== member.userId));
       await fetchGroups();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Khong xoa duoc thanh vien");
+      setError(err instanceof Error ? err.message : "Không xóa được thành viên");
     } finally {
       setActingUserId(null);
     }
@@ -225,7 +225,7 @@ export default function MembersPage() {
     <div className="space-y-5">
       <div className="flex items-center gap-2">
         <UserCircle size={20} className="text-green-600" />
-        <h1 className="text-xl font-bold text-gray-900">Thanh vien va nhom</h1>
+        <h1 className="text-xl font-bold text-gray-900">Thành viên và nhóm</h1>
       </div>
 
       {error && (
@@ -237,12 +237,12 @@ export default function MembersPage() {
       <section className="rounded-xl border border-gray-100 bg-white p-4 shadow-sm space-y-3">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <div className="font-semibold text-gray-900">Nhom hien tai</div>
-            <div className="text-sm text-gray-500">Chi thanh vien trong nhom moi xem duoc nhau.</div>
+            <div className="font-semibold text-gray-900">Nhóm hiện tại</div>
+            <div className="text-sm text-gray-500">Chỉ thành viên trong nhóm mới xem được nhau.</div>
           </div>
           <Button variant="outline" size="sm" onClick={() => setCreateDialogOpen(true)}>
             <Plus size={16} className="mr-1.5" />
-            Tao nhom
+            Tạo nhóm
           </Button>
         </div>
 
@@ -253,7 +253,7 @@ export default function MembersPage() {
           className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-800 focus:outline-none focus:ring-2 focus:ring-green-500"
         >
           {groups.length === 0 ? (
-            <option value="">Chua co nhom nao</option>
+            <option value="">Chưa có nhóm nào</option>
           ) : (
             groups.map((group) => (
               <option key={group.id} value={group.id}>
@@ -274,7 +274,7 @@ export default function MembersPage() {
         <section className="rounded-xl border border-gray-100 bg-white p-4 shadow-sm space-y-3">
           <div className="flex items-center gap-2">
             <Mail size={18} className="text-green-600" />
-            <h2 className="font-semibold text-gray-900">Loi moi dang cho ban xac nhan</h2>
+            <h2 className="font-semibold text-gray-900">Lời mời đang chờ bạn xác nhận</h2>
           </div>
           <div className="space-y-2">
             {receivedInvites.map((invite) => (
@@ -283,11 +283,11 @@ export default function MembersPage() {
                   <div className="min-w-0">
                     <div className="font-medium text-gray-900">{invite.groupName}</div>
                     <div className="text-sm text-gray-500">
-                      Moi boi {invite.invitedByName} ({invite.invitedByEmail})
+                      Mời bởi {invite.invitedByName} ({invite.invitedByEmail})
                     </div>
                   </div>
                   <Badge variant={invite.role === "admin" ? "green" : "gray"}>
-                    {invite.role === "admin" ? "Moi lam admin" : "Moi vao nhom"}
+                    {invite.role === "admin" ? "Mời làm admin" : "Mời vào nhóm"}
                   </Badge>
                 </div>
                 <div className="mt-3 flex gap-2">
@@ -297,7 +297,7 @@ export default function MembersPage() {
                     disabled={actingInviteId === invite.id}
                   >
                     <Check size={15} className="mr-1.5" />
-                    Chap nhan
+                    Chấp nhận
                   </Button>
                   <Button
                     size="sm"
@@ -306,7 +306,7 @@ export default function MembersPage() {
                     disabled={actingInviteId === invite.id}
                   >
                     <X size={15} className="mr-1.5" />
-                    Tu choi
+                    Từ chối
                   </Button>
                 </div>
               </div>
@@ -319,7 +319,7 @@ export default function MembersPage() {
         <section className="rounded-xl border border-gray-100 bg-white p-4 shadow-sm space-y-4">
           <div className="flex items-center gap-2">
             <UserPlus size={18} className="text-green-600" />
-            <h2 className="font-semibold text-gray-900">Moi them thanh vien</h2>
+            <h2 className="font-semibold text-gray-900">Mời thêm thành viên</h2>
           </div>
 
           <div className="flex gap-2">
@@ -329,7 +329,7 @@ export default function MembersPage() {
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
                 className="pl-9"
-                placeholder="Tim theo ten hoac email"
+                placeholder="Tìm theo tên hoặc email"
               />
             </div>
             <select
@@ -343,11 +343,11 @@ export default function MembersPage() {
           </div>
 
           {search.trim().length < 2 ? (
-            <div className="text-sm text-gray-500">Nhap it nhat 2 ky tu de tim user.</div>
+            <div className="text-sm text-gray-500">Nhập ít nhất 2 ký tự để tìm user.</div>
           ) : searchLoading ? (
-            <div className="text-sm text-gray-500">Dang tim user...</div>
+            <div className="text-sm text-gray-500">Đang tìm user...</div>
           ) : searchResults.length === 0 ? (
-            <div className="text-sm text-gray-500">Khong tim thay user phu hop.</div>
+            <div className="text-sm text-gray-500">Không tìm thấy user phù hợp.</div>
           ) : (
             <div className="space-y-2">
               {searchResults.map((user) => (
@@ -363,7 +363,7 @@ export default function MembersPage() {
                     onClick={() => handleInviteUser(user)}
                     disabled={actingUserId === user.userId || user.inviteStatus === "pending"}
                   >
-                    {user.inviteStatus === "pending" ? "Da moi" : "Gui loi moi"}
+                    {user.inviteStatus === "pending" ? "Đã mời" : "Gửi lời mời"}
                   </Button>
                 </div>
               ))}
@@ -376,7 +376,7 @@ export default function MembersPage() {
         <section className="rounded-xl border border-gray-100 bg-white p-4 shadow-sm space-y-3">
           <div className="flex items-center gap-2">
             <Mail size={18} className="text-green-600" />
-            <h2 className="font-semibold text-gray-900">Loi moi dang cho</h2>
+            <h2 className="font-semibold text-gray-900">Lời mời đang chờ</h2>
           </div>
           <div className="space-y-2">
             {pendingInvites.map((invite) => (
@@ -391,7 +391,7 @@ export default function MembersPage() {
                     {invite.invitedUserName || invite.invitedUserEmail || "User"}
                   </div>
                   <div className="text-xs text-gray-500 truncate">
-                    {invite.invitedUserEmail ?? "Dang cho xac nhan"}
+                    {invite.invitedUserEmail ?? "Đang chờ xác nhận"}
                   </div>
                 </div>
                 <Badge variant={invite.role === "admin" ? "green" : "gray"}>
@@ -403,7 +403,7 @@ export default function MembersPage() {
                   className="text-red-500 hover:bg-red-50 hover:text-red-600"
                   onClick={() => handleCancelInvite(invite)}
                   disabled={actingInviteId === invite.id}
-                  aria-label="Huy loi moi"
+                  aria-label="Hủy lời mời"
                 >
                   <X size={16} />
                 </Button>
@@ -417,23 +417,23 @@ export default function MembersPage() {
         <div className="flex items-center gap-2">
           <Users size={18} className="text-green-600" />
           <h2 className="font-semibold text-gray-900">
-            {activeGroup ? `Thanh vien trong ${activeGroup.name}` : "Thanh vien trong nhom"}
+            {activeGroup ? `Thành viên trong ${activeGroup.name}` : "Thành viên trong nhóm"}
           </h2>
         </div>
 
         {!activeGroup ? (
           <EmptyState
             icon="👥"
-            title="Chua chon nhom"
-            description="Tao nhom moi hoac chap nhan mot loi moi de bat dau."
+            title="Chưa chọn nhóm"
+            description="Tạo nhóm mới hoặc chấp nhận một lời mời để bắt đầu."
           />
         ) : membersLoading ? (
-          <div className="text-center py-12 text-gray-400">Dang tai thanh vien...</div>
+          <div className="text-center py-12 text-gray-400">Đang tải thành viên...</div>
         ) : members.length === 0 ? (
           <EmptyState
             icon="👥"
-            title="Chua co thanh vien"
-            description="Them thanh vien bang loi moi, ho se vao nhom sau khi chap nhan."
+            title="Chưa có thành viên"
+            description="Thêm thành viên bằng lời mời, họ sẽ vào nhóm sau khi chấp nhận."
           />
         ) : (
           <div className="space-y-2">
@@ -468,7 +468,7 @@ export default function MembersPage() {
                     className="text-red-500 hover:bg-red-50 hover:text-red-600"
                     onClick={() => handleRemoveMember(member)}
                     disabled={actingUserId === member.userId}
-                    aria-label="Xoa khoi nhom"
+                    aria-label="Xóa khỏi nhóm"
                   >
                     <UserMinus size={16} />
                   </Button>
@@ -479,26 +479,26 @@ export default function MembersPage() {
         )}
       </section>
 
-      <Dialog open={createDialogOpen} onClose={() => setCreateDialogOpen(false)} title="Tao nhom moi">
+      <Dialog open={createDialogOpen} onClose={() => setCreateDialogOpen(false)} title="Tạo nhóm mới">
         <div className="space-y-4">
           <div>
-            <label className="mb-1 block text-sm font-medium text-gray-700">Ten nhom *</label>
-            <Input value={groupName} onChange={(event) => setGroupName(event.target.value)} placeholder="Nhom cau long cuoi tuan" />
+            <label className="mb-1 block text-sm font-medium text-gray-700">Tên nhóm *</label>
+            <Input value={groupName} onChange={(event) => setGroupName(event.target.value)} placeholder="Nhóm cầu lông cuối tuần" />
           </div>
           <div>
-            <label className="mb-1 block text-sm font-medium text-gray-700">Mo ta</label>
+            <label className="mb-1 block text-sm font-medium text-gray-700">Mô tả</label>
             <Input
               value={groupDescription}
               onChange={(event) => setGroupDescription(event.target.value)}
-              placeholder="Khu vuc, lich choi, san quen..."
+              placeholder="Khu vực, lịch chơi, sân quen..."
             />
           </div>
           <div className="flex gap-2 pt-2">
             <Button variant="outline" className="flex-1" onClick={() => setCreateDialogOpen(false)}>
-              Huy
+              Hủy
             </Button>
             <Button className="flex-1" onClick={handleCreateGroup} disabled={creatingGroup || !groupName.trim()}>
-              {creatingGroup ? "Dang tao..." : "Tao nhom"}
+              {creatingGroup ? "Đang tạo..." : "Tạo nhóm"}
             </Button>
           </div>
         </div>
