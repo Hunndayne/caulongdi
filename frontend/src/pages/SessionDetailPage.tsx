@@ -26,14 +26,14 @@ import { useMembersStore } from "@/stores/membersStore";
 import { useSessionsStore } from "@/stores/sessionsStore";
 import type { Cost, Member } from "@/types";
 
-const TABS = ["Check-in", "Chi phi", "Thanh toan"] as const;
+const TABS = ["Điểm danh", "Chi phí", "Thanh toán"] as const;
 type Tab = (typeof TABS)[number];
 
 const COST_TYPES = [
-  { value: "court", label: "Tien san" },
-  { value: "water", label: "Nuoc" },
-  { value: "shuttle", label: "Cau" },
-  { value: "other", label: "Khac" },
+  { value: "court", label: "Tiền sân" },
+  { value: "water", label: "Nước" },
+  { value: "shuttle", label: "Cầu" },
+  { value: "other", label: "Khác" },
 ] as const;
 
 function parseManagers(raw?: string | null) {
@@ -63,7 +63,7 @@ export default function SessionDetailPage() {
   const groups = useGroupsStore((state) => state.groups);
   const fetchGroups = useGroupsStore((state) => state.fetch);
 
-  const [tab, setTab] = useState<Tab>("Check-in");
+  const [tab, setTab] = useState<Tab>("Điểm danh");
   const [costForm, setCostForm] = useState({
     label: "",
     amount: "",
@@ -113,11 +113,11 @@ export default function SessionDetailPage() {
   const s = currentSession;
 
   if (loading && !s) {
-    return <div className="py-16 text-center text-gray-400">Dang tai...</div>;
+    return <div className="py-16 text-center text-gray-400">Đang tải...</div>;
   }
 
   if (!s) {
-    return <div className="py-16 text-center text-gray-400">Khong tim thay buoi choi</div>;
+    return <div className="py-16 text-center text-gray-400">Không tìm thấy buổi chơi</div>;
   }
 
   const checkedInIds = new Set(s.members.map((member) => member.id));
@@ -202,7 +202,7 @@ export default function SessionDetailPage() {
       if (navigator.share) {
         await navigator.share({
           title: `${s.venue} - ${formatDate(s.date)}`,
-          text: `Buoi choi tai ${s.venue}`,
+          text: `Buổi chơi tại ${s.venue}`,
           url,
         });
       } else {
@@ -217,7 +217,7 @@ export default function SessionDetailPage() {
         setShareCopied(true);
         setTimeout(() => setShareCopied(false), 2000);
       } catch (clipboardError: any) {
-        alert(`Khong the chia se link: ${clipboardError.message}`);
+        alert(`Không thể chia sẻ link: ${clipboardError.message}`);
       }
     }
   };
@@ -225,7 +225,7 @@ export default function SessionDetailPage() {
   const handleAddCost = async () => {
     if (!costForm.label.trim() || !costForm.amount) return;
     if (costForm.consumerId && !costForm.payerId) {
-      alert("Khoan chi rieng can chon nguoi ung tien.");
+      alert("Khoản chi riêng cần chọn người ứng tiền.");
       return;
     }
 
@@ -272,7 +272,7 @@ export default function SessionDetailPage() {
   };
 
   const handleDeleteSession = async () => {
-    if (!window.confirm("Xoa buoi choi nay?")) return;
+    if (!window.confirm("Xóa buổi chơi này?")) return;
     await remove(s.id);
     navigate("/sessions");
   };
@@ -287,7 +287,7 @@ export default function SessionDetailPage() {
   const buildQrUrl = (debtor: Member, recipient: Member, amount: number) => {
     if (!recipient.user_bank_bin || !recipient.user_bank_account_number || !recipient.user_bank_account_name) return null;
     if (amount <= 0 || debtor.id === recipient.id) return null;
-    const note = `${debtor.name} chuyen ${recipient.name} ${formatDate(s.date)}`;
+    const note = `${debtor.name} chuyển ${recipient.name} ${formatDate(s.date)}`;
     return `https://img.vietqr.io/image/${recipient.user_bank_bin}-${recipient.user_bank_account_number}-compact.png?amount=${Math.ceil(amount)}&addInfo=${encodeURIComponent(note)}&accountName=${encodeURIComponent(recipient.user_bank_account_name)}`;
   };
 
@@ -299,30 +299,30 @@ export default function SessionDetailPage() {
 
   const getPaymentActionLabel = (paid: number, debtor: Member | null, recipient: Member | null) => {
     const isRecipientUser = Boolean(currentUserId && recipient?.user_id === currentUserId && debtor?.user_id !== currentUserId);
-    if (paid) return isRecipientUser ? "Da nhan ✓" : "Da tra ✓";
-    return isRecipientUser ? "Xac nhan nhan" : "Danh dau da tra";
+    if (paid) return isRecipientUser ? "Đã nhận ✓" : "Đã trả ✓";
+    return isRecipientUser ? "Xác nhận nhận" : "Đánh dấu đã trả";
   };
 
   const copyNotification = async () => {
     const costBreakdown = s.costs.length > 0
       ? s.costs.map((cost) => `${cost.label}: ${formatCurrency(cost.amount)}`).join(" | ")
-      : "Chua co khoan chi";
+      : "Chưa có khoản chi";
     const paymentLines = paymentRows.length > 0
       ? paymentRows.map(({ payment, debtor, recipient }) => {
         const debtorName = debtor?.name ?? payment.member_id;
-        const recipientName = recipient?.name ?? payment.recipient_member_id ?? "nguoi nhan";
-        return `- ${debtorName} -> ${recipientName}: ${formatCurrency(payment.amount_owed)}${payment.paid ? " (da xong)" : ""}`;
+        const recipientName = recipient?.name ?? payment.recipient_member_id ?? "người nhận";
+        return `- ${debtorName} -> ${recipientName}: ${formatCurrency(payment.amount_owed)}${payment.paid ? " (đã xong)" : ""}`;
       }).join("\n")
-      : "- Chua tinh tien";
+      : "- Chưa tính tiền";
 
     const text = [
-      `Buoi choi ${formatDate(s.date)} tai ${s.venue}`,
-      `Dia diem: ${s.location ?? "-"}`,
+      `Buổi chơi ${formatDate(s.date)} tại ${s.venue}`,
+      `Địa điểm: ${s.location ?? "-"}`,
       `Tham gia: ${s.members.map((member) => member.name).join(", ")}`,
       "",
-      `Chi phi: ${costBreakdown}`,
+      `Chi phí: ${costBreakdown}`,
       "",
-      "Can chuyen:",
+      "Cần chuyển:",
       paymentLines,
     ].join("\n");
 
@@ -331,7 +331,7 @@ export default function SessionDetailPage() {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const creatorName = s.members.find((member) => member.user_id === s.created_by)?.name ?? "An danh";
+  const creatorName = s.members.find((member) => member.user_id === s.created_by)?.name ?? "Ẩn danh";
 
   return (
     <div>
@@ -347,7 +347,7 @@ export default function SessionDetailPage() {
         </div>
         <div className="flex items-center gap-2">
           <Badge variant={s.status === "upcoming" ? "green" : "gray"}>
-            {s.status === "upcoming" ? "Sap toi" : "Hoan thanh"}
+            {s.status === "upcoming" ? "Sắp tới" : "Hoàn thành"}
           </Badge>
           {canManageSession && (
             <Button variant="ghost" size="icon" onClick={handleDeleteSession} className="text-red-500">
@@ -362,7 +362,7 @@ export default function SessionDetailPage() {
           onClick={handleMarkComplete}
           className="mb-4 w-full rounded-xl border border-green-200 bg-green-50 py-2 text-sm font-medium text-green-700 transition-colors hover:bg-green-100"
         >
-          Danh dau hoan thanh
+          Đánh dấu hoàn thành
         </button>
       )}
 
@@ -374,11 +374,11 @@ export default function SessionDetailPage() {
           className="w-full"
         >
           {hasJoined ? <UserMinus size={16} className="mr-2" /> : <UserPlus size={16} className="mr-2" />}
-          {joining ? "Dang xu ly..." : hasJoined ? "Roi buoi" : "Tham gia"}
+          {joining ? "Đang xử lý..." : hasJoined ? "Rời buổi" : "Tham gia"}
         </Button>
         <Button variant="outline" onClick={handleShare} className="w-full">
           {shareCopied ? <Check size={16} className="mr-2 text-green-600" /> : <Share2 size={16} className="mr-2" />}
-          {shareCopied ? "Da copy" : "Chia se"}
+          {shareCopied ? "Đã copy" : "Chia sẻ"}
         </Button>
       </div>
 
@@ -390,15 +390,15 @@ export default function SessionDetailPage() {
               className="flex w-full items-center justify-center gap-2 py-1.5 text-sm text-gray-500 transition-colors hover:text-gray-700"
             >
               <ArrowRightLeft size={14} />
-              Cai dat quan ly
+              Cài đặt quản lý
             </button>
           ) : (
             <div className="space-y-3 rounded-xl border border-gray-200 bg-gray-50 p-3">
-              <div className="text-xs font-semibold text-gray-700">Nguoi tao: {creatorName}</div>
+              <div className="text-xs font-semibold text-gray-700">Người tạo: {creatorName}</div>
 
               {managersList.length > 0 && (
                 <div>
-                  <div className="mb-1 text-xs text-gray-500">Dong quan ly:</div>
+                  <div className="mb-1 text-xs text-gray-500">Đồng quản lý:</div>
                   <div className="flex flex-wrap gap-2">
                     {managersList.map((userId) => {
                       const managerMember = s.members.find((member) => member.user_id === userId);
@@ -408,7 +408,7 @@ export default function SessionDetailPage() {
                           {managerMember.name}
                           <button
                             onClick={async () => {
-                              if (!window.confirm(`Xoa quyen quan ly cua ${managerMember.name}?`)) return;
+                              if (!window.confirm(`Xóa quyền quản lý của ${managerMember.name}?`)) return;
                               setManagingSettings(true);
                               try {
                                 await api.removeSessionManager(s.id, managerMember.id);
@@ -437,7 +437,7 @@ export default function SessionDetailPage() {
                   defaultValue=""
                 >
                   <option value="" disabled>
-                    Chon thanh vien
+                    Chọn thành viên
                   </option>
                   {s.members
                     .filter((member) => member.user_id && member.user_id !== s.created_by && !managersList.includes(member.user_id))
@@ -466,7 +466,7 @@ export default function SessionDetailPage() {
                   }}
                 >
                   <Plus size={14} className="mr-1" />
-                  Them
+                  Thêm
                 </Button>
                 <Button
                   size="sm"
@@ -474,7 +474,7 @@ export default function SessionDetailPage() {
                   onClick={async () => {
                     const selectedId = (document.getElementById("manager-select") as HTMLSelectElement | null)?.value;
                     if (!selectedId) return;
-                    if (!window.confirm("Chuyen quyen so huu buoi choi nay?")) return;
+                    if (!window.confirm("Chuyển quyền sở hữu buổi chơi này?")) return;
                     setManagingSettings(true);
                     try {
                       await api.transferSession(s.id, selectedId);
@@ -487,7 +487,7 @@ export default function SessionDetailPage() {
                     }
                   }}
                 >
-                  Chuyen giao
+                  Chuyển giao
                 </Button>
               </div>
 
@@ -495,7 +495,7 @@ export default function SessionDetailPage() {
                 onClick={() => setShowManagerSettings(false)}
                 className="mt-2 w-full text-center text-xs text-gray-500 hover:text-gray-700"
               >
-                Dong
+                Đóng
               </button>
             </div>
           )}
@@ -514,10 +514,10 @@ export default function SessionDetailPage() {
         ))}
       </div>
 
-      {tab === "Check-in" && (
+      {tab === "Điểm danh" && (
         <div>
           <div className="mb-3 flex items-center justify-between">
-            <span className="text-sm text-gray-500">{s.members.length} nguoi tham gia</span>
+            <span className="text-sm text-gray-500">{s.members.length} người tham gia</span>
           </div>
           <div className="space-y-2">
             {(canManageSession ? members.filter((member) => member.is_active) : s.members).map((member) => {
@@ -541,7 +541,7 @@ export default function SessionDetailPage() {
         </div>
       )}
 
-      {tab === "Chi phi" && (
+      {tab === "Chi phí" && (
         <div className="space-y-4">
           {canManageSession && (
             <div className="space-y-3 rounded-xl bg-gray-50 p-4">
@@ -566,7 +566,7 @@ export default function SessionDetailPage() {
                 <Input
                   value={costForm.amount}
                   onChange={(event) => setCostForm((current) => ({ ...current, amount: event.target.value }))}
-                  placeholder="So tien"
+                  placeholder="Số tiền"
                   type="number"
                   min="0"
                 />
@@ -575,18 +575,18 @@ export default function SessionDetailPage() {
               <Input
                 value={costForm.label}
                 onChange={(event) => setCostForm((current) => ({ ...current, label: event.target.value }))}
-                placeholder="Mo ta"
+                placeholder="Mô tả"
               />
 
               <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <label className="mb-1 block text-xs text-gray-500">Nguoi ung tien</label>
+                  <label className="mb-1 block text-xs text-gray-500">Người ứng tiền</label>
                   <select
                     value={costForm.payerId}
                     onChange={(event) => setCostForm((current) => ({ ...current, payerId: event.target.value }))}
                     className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
                   >
-                    <option value="">Nguoi nhan chung</option>
+                    <option value="">Người nhận chung</option>
                     {s.members.map((member) => (
                       <option key={member.id} value={member.id}>
                         {member.name}
@@ -595,13 +595,13 @@ export default function SessionDetailPage() {
                   </select>
                 </div>
                 <div>
-                  <label className="mb-1 block text-xs text-gray-500">Nguoi dung rieng</label>
+                  <label className="mb-1 block text-xs text-gray-500">Người dùng riêng</label>
                   <select
                     value={costForm.consumerId}
                     onChange={(event) => setCostForm((current) => ({ ...current, consumerId: event.target.value }))}
                     className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
                   >
-                    <option value="">Dung chung</option>
+                    <option value="">Dùng chung</option>
                     {s.members.map((member) => (
                       <option key={member.id} value={member.id}>
                         {member.name}
@@ -613,26 +613,26 @@ export default function SessionDetailPage() {
 
               <Button className="w-full" onClick={handleAddCost} disabled={addingCost || !costForm.label || !costForm.amount}>
                 <Plus size={16} className="mr-1" />
-                {addingCost ? "Dang them..." : "Them khoan chi"}
+                {addingCost ? "Đang thêm..." : "Thêm khoản chi"}
               </Button>
             </div>
           )}
 
           {s.costs.length === 0 ? (
-            <div className="py-8 text-center text-sm text-gray-400">Chua co khoan chi nao</div>
+            <div className="py-8 text-center text-sm text-gray-400">Chưa có khoản chi nào</div>
           ) : (
             <div className="space-y-2">
               {s.costs.map((cost) => {
                 const payerMember = cost.payer_id ? memberById.get(cost.payer_id) ?? null : null;
                 const consumerMember = cost.consumer_id ? memberById.get(cost.consumer_id) ?? null : null;
 
-                let helperText = "Tra cho nguoi nhan chung";
+                let helperText = "Trả cho người nhận chung";
                 let helperClass = "text-green-500";
                 if (payerMember && consumerMember) {
-                  helperText = `${consumerMember.name} tra lai cho ${payerMember.name}`;
+                  helperText = `${consumerMember.name} trả lại cho ${payerMember.name}`;
                   helperClass = "text-orange-500";
                 } else if (payerMember) {
-                  helperText = `Ca nhom tra lai cho ${payerMember.name}`;
+                  helperText = `Cả nhóm trả lại cho ${payerMember.name}`;
                   helperClass = "text-blue-500";
                 }
 
@@ -663,7 +663,7 @@ export default function SessionDetailPage() {
               })}
 
               <div className="flex items-center justify-between rounded-xl border border-green-200 bg-green-50 p-3">
-                <span className="font-semibold text-green-800">Tong cong</span>
+                <span className="font-semibold text-green-800">Tổng cộng</span>
                 <span className="font-bold text-green-800">{formatCurrency(totalCost)}</span>
               </div>
             </div>
@@ -673,13 +673,13 @@ export default function SessionDetailPage() {
             <>
               {membersWithBank.length > 0 && (
                 <div className="space-y-2 rounded-xl border border-gray-200 bg-white p-3">
-                  <label className="block text-xs text-gray-500">Nguoi nhan chung / fallback</label>
+                  <label className="block text-xs text-gray-500">Người nhận chung / dự phòng</label>
                   <select
                     value={recipientId}
                     onChange={(event) => handleSetRecipient(event.target.value)}
                     className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
                   >
-                    <option value="">-- Chua chon --</option>
+                    <option value="">-- Chưa chọn --</option>
                     {membersWithBank.map((member) => (
                       <option key={member.id} value={member.id}>
                         {member.name}
@@ -687,50 +687,50 @@ export default function SessionDetailPage() {
                     ))}
                   </select>
                   <div className="text-xs text-gray-500">
-                    QR se uu tien hien theo nguoi ung tien. Neu nguoi do chua cap nhat STK, he thong moi dung nguoi nhan chung nay.
+                    QR sẽ ưu tiên hiện theo người ứng tiền. Nếu người đó chưa cập nhật STK, hệ thống mới dùng người nhận chung này.
                   </div>
                 </div>
               )}
 
               <Button variant="outline" className="w-full" onClick={handleRecalculate} disabled={recalculating}>
                 <RefreshCw size={16} className={`mr-2 ${recalculating ? "animate-spin" : ""}`} />
-                {recalculating ? "Dang tinh..." : "Tinh lai va cap nhat"}
+                {recalculating ? "Đang tính..." : "Tính lại và cập nhật"}
               </Button>
             </>
           )}
         </div>
       )}
 
-      {tab === "Thanh toan" && (
+      {tab === "Thanh toán" && (
         <div className="space-y-3">
           <Button variant="outline" size="sm" onClick={copyNotification} className="w-full">
             {copied ? (
               <>
                 <Check size={14} className="mr-1 text-green-600" />
-                Da copy
+                Đã copy
               </>
             ) : (
               <>
                 <Copy size={14} className="mr-1" />
-                Copy thong bao
+                Copy thông báo
               </>
             )}
           </Button>
 
           {paymentRows.length === 0 ? (
-            <div className="py-8 text-center text-sm text-gray-400">Chua tinh tien. Vao tab Chi phi de tinh lai.</div>
+            <div className="py-8 text-center text-sm text-gray-400">Chưa tính tiền. Vào tab Chi phí để tính lại.</div>
           ) : (
             <div className="space-y-2">
               {paymentRows.map(({ payment, debtor, recipient }) => {
                 const debtorName = debtor?.name ?? payment.member_id;
-                const recipientName = recipient?.name ?? payment.recipient_member_id ?? "nguoi nhan";
+                const recipientName = recipient?.name ?? payment.recipient_member_id ?? "người nhận";
                 const recipientHasBank = hasBankInfo(recipient);
                 const qrRecipient = recipientHasBank
                   ? recipient
                   : (fallbackRecipientMember && fallbackRecipientMember.id !== payment.member_id ? fallbackRecipientMember : null);
                 const qrUrl = debtor && qrRecipient ? buildQrUrl(debtor, qrRecipient, payment.amount_owed) : null;
                 const fallbackNotice = !recipientHasBank && qrRecipient && recipient
-                  ? `Nguoi ung tien chua cap nhat STK, tam chuyen qua ${qrRecipient.name}.`
+                  ? `Người ứng tiền chưa cập nhật STK, tạm chuyển qua ${qrRecipient.name}.`
                   : null;
                 const toggleAllowed = canTogglePaymentRow(debtor, recipient);
 
@@ -744,7 +744,7 @@ export default function SessionDetailPage() {
                         {debtor && <Avatar name={debtor.name} color={debtor.avatar_color} size="sm" />}
                         <div className="min-w-0">
                           <div className="font-medium text-gray-900">{debtorName}</div>
-                          <div className="text-sm text-gray-500">Tra cho {recipientName}</div>
+                          <div className="text-sm text-gray-500">Trả cho {recipientName}</div>
                           <div className="mt-0.5 text-sm font-semibold text-gray-800">
                             {formatCurrency(payment.amount_owed)}
                           </div>
@@ -752,7 +752,7 @@ export default function SessionDetailPage() {
                             <div className="mt-1 text-xs text-amber-600">{fallbackNotice}</div>
                           )}
                           {!qrUrl && !payment.paid && (
-                            <div className="mt-1 text-xs text-red-500">Chua co tai khoan nhan tien de tao QR.</div>
+                            <div className="mt-1 text-xs text-red-500">Chưa có tài khoản nhận tiền để tạo QR.</div>
                           )}
                         </div>
                       </div>
@@ -775,12 +775,12 @@ export default function SessionDetailPage() {
                       <div className="mt-3 flex flex-col items-center gap-2">
                         <img
                           src={qrUrl}
-                          alt={`QR chuyen khoan cho ${qrRecipient?.name ?? recipientName}`}
+                          alt={`QR chuyển khoản cho ${qrRecipient?.name ?? recipientName}`}
                           className="h-auto w-48 rounded-lg border border-gray-200"
                           loading="lazy"
                         />
                         <div className="text-center text-xs text-gray-500">
-                          QR nhan tien: {qrRecipient?.name ?? recipientName}
+                          QR nhận tiền: {qrRecipient?.name ?? recipientName}
                         </div>
                       </div>
                     )}
@@ -790,13 +790,13 @@ export default function SessionDetailPage() {
 
               <div className="space-y-1 rounded-xl bg-gray-50 p-3">
                 <div className="flex items-center justify-between">
-                  <span className="text-sm text-gray-600">Da xong</span>
+                  <span className="text-sm text-gray-600">Đã xong</span>
                   <span className="text-sm font-medium text-gray-900">
-                    {paymentRows.filter(({ payment }) => payment.paid).length}/{paymentRows.length} giao dich
+                    {paymentRows.filter(({ payment }) => payment.paid).length}/{paymentRows.length} giao dịch
                   </span>
                 </div>
                 <div className="flex items-center justify-between">
-                  <span className="text-sm text-gray-600">Tong can chuyen</span>
+                  <span className="text-sm text-gray-600">Tổng cần chuyển</span>
                   <span className="text-sm font-medium text-gray-900">
                     {formatCurrency(paymentRows.reduce((sum, row) => sum + row.payment.amount_owed, 0))}
                   </span>

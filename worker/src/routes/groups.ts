@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { sendGroupInviteNotification } from "../email";
 import { Env } from "../types";
 import { nanoid } from "../utils";
 
@@ -58,6 +59,13 @@ function isMissingGroupSchema(error: unknown) {
     message.includes("no such table: group_invites") ||
     message.includes("no such column: group_id")
   );
+}
+
+function queueTask(c: any, task: Promise<unknown>, label: string) {
+  const wrappedTask = task.catch((error) => {
+    console.error(`[mail:${label}]`, error);
+  });
+  c.executionCtx?.waitUntil?.(wrappedTask);
 }
 
 async function getMembership(c: any, groupId: string) {
@@ -435,6 +443,17 @@ groups.post("/:id/invites", async (c) => {
     `)
       .bind(id, invitedUserId)
       .first<GroupInviteRow>();
+
+    if (row?.invited_user_email) {
+      queueTask(c, sendGroupInviteNotification(c.env, {
+        groupName: row.group_name,
+        groupDescription: row.group_description ?? null,
+        invitedName: row.invited_user_name ?? null,
+        invitedEmail: row.invited_user_email,
+        invitedByName: row.invited_by_name,
+        role: row.role === "admin" ? "admin" : "member",
+      }), `group-invite:${row.invited_user_email}`);
+    }
 
     return c.json(toGroupInvite(row!), 201);
   } catch (error) {

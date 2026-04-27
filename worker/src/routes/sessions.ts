@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { sendNewSessionNotification, sendPaymentDueNotification } from "../email";
 import { Env } from "../types";
 import { nanoid } from "../utils";
 
@@ -35,9 +36,29 @@ type CostRow = {
   consumer_id: string | null;
 };
 
+type GroupSessionNotificationRow = {
+  group_name: string;
+  creator_name?: string | null;
+  recipient_email?: string | null;
+};
+
+type PaymentNotificationRow = {
+  debtor_email?: string | null;
+  debtor_name: string;
+  recipient_name?: string | null;
+  amount_owed: number;
+};
+
 function normalizePaymentRecipient(value: string | null | undefined) {
   if (!value) return null;
   return value.startsWith("auto_") ? value.slice(5) : value;
+}
+
+function queueTask(c: any, task: Promise<unknown>, label: string) {
+  const wrappedTask = task.catch((error) => {
+    console.error(`[mail:${label}]`, error);
+  });
+  c.executionCtx?.waitUntil?.(wrappedTask);
 }
 
 function colorForUser(userId: string) {
@@ -202,6 +223,7 @@ sessions.post("/", async (c) => {
 
   const id = nanoid();
   const now = new Date().toISOString();
+  let notifyGroupId: string | null = null;
 
   if (groupId) {
     try {
@@ -215,6 +237,7 @@ sessions.post("/", async (c) => {
       `)
         .bind(id, groupId, c.get("userId"), body.date, startTime, venue, body.location ?? null, body.note ?? null, now)
         .run();
+      notifyGroupId = groupId;
     } catch (error) {
       if (!isMissingGroupSchema(error)) throw error;
 
@@ -235,6 +258,44 @@ sessions.post("/", async (c) => {
   }
 
   const row = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first();
+
+  if (notifyGroupId) {
+    const notificationRows = await c.env.DB.prepare(`
+      SELECT
+        g.name AS group_name,
+        creator.name AS creator_name,
+        recipient.email AS recipient_email
+      FROM groups g
+      LEFT JOIN users creator ON creator.id = ?
+      JOIN group_members gm ON gm.group_id = g.id
+      JOIN users recipient ON recipient.id = gm.user_id
+      WHERE g.id = ?
+        AND recipient.id <> ?
+    `)
+      .bind(c.get("userId"), notifyGroupId, c.get("userId"))
+      .all<GroupSessionNotificationRow>();
+
+    const recipients = notificationRows.results
+      .map((item) => item.recipient_email?.trim())
+      .filter((value): value is string => Boolean(value));
+
+    if (recipients.length > 0) {
+      const groupName = notificationRows.results[0]?.group_name ?? "Nhóm cầu lông";
+      const creatorName = notificationRows.results[0]?.creator_name?.trim() || "Một thành viên";
+      queueTask(c, sendNewSessionNotification(c.env, {
+        groupName,
+        creatorName,
+        venue,
+        date: body.date,
+        startTime,
+        location: body.location ?? null,
+        note: body.note ?? null,
+        sessionId: id,
+        recipients,
+      }), "new-session");
+    }
+  }
+
   return c.json(row, 201);
 });
 
@@ -647,6 +708,51 @@ sessions.post("/:id/recalculate", async (c) => {
   if (stmts.length > 0) await c.env.DB.batch(stmts);
 
   const payments = await c.env.DB.prepare("SELECT * FROM payments WHERE session_id = ?").bind(id).all();
+
+  const paymentNotificationRows = await c.env.DB.prepare(`
+    SELECT
+      debtor_user.email AS debtor_email,
+      debtor_member.name AS debtor_name,
+      recipient_member.name AS recipient_name,
+      p.amount_owed
+    FROM payments p
+    JOIN members debtor_member ON debtor_member.id = p.member_id
+    LEFT JOIN users debtor_user ON debtor_user.id = debtor_member.user_id
+    LEFT JOIN members recipient_member ON recipient_member.id = p.recipient_member_id
+    WHERE p.session_id = ?
+      AND p.amount_owed > 0
+      AND debtor_user.email IS NOT NULL
+  `)
+    .bind(id)
+    .all<PaymentNotificationRow>();
+
+  if (paymentNotificationRows.results.length > 0) {
+    const grouped = new Map<string, { debtorName: string; lines: { recipientName: string; amount: number }[] }>();
+
+    for (const item of paymentNotificationRows.results) {
+      const email = item.debtor_email?.trim();
+      if (!email) continue;
+      const existing = grouped.get(email) ?? { debtorName: item.debtor_name, lines: [] };
+      existing.lines.push({
+        recipientName: item.recipient_name?.trim() || "người nhận",
+        amount: item.amount_owed,
+      });
+      grouped.set(email, existing);
+    }
+
+    for (const [debtorEmail, payload] of grouped.entries()) {
+      queueTask(c, sendPaymentDueNotification(c.env, {
+        debtorEmail,
+        debtorName: payload.debtorName,
+        venue: String((session as any).venue ?? ""),
+        date: String((session as any).date ?? ""),
+        startTime: String((session as any).start_time ?? ""),
+        sessionId: id,
+        lines: payload.lines,
+      }), `payment-due:${debtorEmail}`);
+    }
+  }
+
   return c.json(payments.results);
 });
 
