@@ -728,11 +728,13 @@ export default function SessionDetailPage() {
                 const qrRecipient = recipientHasBank
                   ? recipient
                   : (fallbackRecipientMember && fallbackRecipientMember.id !== payment.member_id ? fallbackRecipientMember : null);
-                const qrUrl = debtor && qrRecipient ? buildQrUrl(debtor, qrRecipient, payment.amount_owed) : null;
+                const canViewQr = Boolean(currentUserId && debtor?.user_id === currentUserId);
+                const qrUrl = canViewQr && debtor && qrRecipient ? buildQrUrl(debtor, qrRecipient, payment.amount_owed) : null;
                 const fallbackNotice = !recipientHasBank && qrRecipient && recipient
                   ? `Người ứng tiền chưa cập nhật STK, tạm chuyển qua ${qrRecipient.name}.`
                   : null;
                 const toggleAllowed = canTogglePaymentRow(debtor, recipient);
+                const showMissingQrNotice = canViewQr && !qrUrl && !payment.paid;
 
                 return (
                   <div
@@ -751,7 +753,7 @@ export default function SessionDetailPage() {
                           {fallbackNotice && (
                             <div className="mt-1 text-xs text-amber-600">{fallbackNotice}</div>
                           )}
-                          {!qrUrl && !payment.paid && (
+                          {showMissingQrNotice && (
                             <div className="mt-1 text-xs text-red-500">Chưa có tài khoản nhận tiền để tạo QR.</div>
                           )}
                         </div>
