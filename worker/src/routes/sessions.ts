@@ -492,8 +492,6 @@ sessions.post("/:id/join", async (c) => {
   if (!session) return c.json({ error: "Not found" }, 404);
   if (session.status !== "upcoming") return c.json({ error: "Session is not open for joining" }, 400);
   if (!(await canAccessSession(c, session))) return c.json({ error: "Forbidden" }, 403);
-  const lockedResponse = await blockIfSessionHasConfirmedPayments(c, id);
-  if (lockedResponse) return lockedResponse;
 
   const userId = c.get("userId");
   const user = await c.env.DB.prepare("SELECT id, name, email FROM users WHERE id = ?")
@@ -549,7 +547,7 @@ sessions.post("/:id/join", async (c) => {
     c.env.DB.prepare("UPDATE session_members SET attended = 1 WHERE session_id = ? AND member_id = ?")
       .bind(id, memberId),
   ]);
-  await c.env.DB.prepare("DELETE FROM payments WHERE session_id = ?").bind(id).run();
+  await c.env.DB.prepare("DELETE FROM payments WHERE session_id = ? AND paid = 0").bind(id).run();
 
   return c.json({ success: true, memberId });
 });
@@ -564,8 +562,6 @@ sessions.delete("/:id/join", async (c) => {
   if (session.group_id && !(await canAccessSession(c, { ...session, id, status: session.status } as SessionRow))) {
     return c.json({ error: "Forbidden" }, 403);
   }
-  const lockedResponse = await blockIfSessionHasConfirmedPayments(c, id);
-  if (lockedResponse) return lockedResponse;
 
   const member = await c.env.DB.prepare(`
     SELECT m.id
@@ -597,7 +593,7 @@ sessions.delete("/:id/join", async (c) => {
     c.env.DB.prepare("DELETE FROM session_members WHERE session_id = ? AND member_id = ?")
       .bind(id, member.id),
   ]);
-  await c.env.DB.prepare("DELETE FROM payments WHERE session_id = ?").bind(id).run();
+  await c.env.DB.prepare("DELETE FROM payments WHERE session_id = ? AND paid = 0").bind(id).run();
 
   return c.json({ success: true });
 });
@@ -607,8 +603,6 @@ sessions.post("/:id/members", async (c) => {
   const session = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first<SessionRow>();
   if (!session) return c.json({ error: "Not found" }, 404);
   if (!(await canManageSession(c, session))) return c.json({ error: "Forbidden" }, 403);
-  const lockedResponse = await blockIfSessionHasConfirmedPayments(c, id);
-  if (lockedResponse) return lockedResponse;
 
   const body = await c.req.json<{ memberIds: string[] }>();
   await c.env.DB.prepare("DELETE FROM session_members WHERE session_id = ?").bind(id).run();
@@ -620,7 +614,7 @@ sessions.post("/:id/members", async (c) => {
     );
     await c.env.DB.batch(stmts);
   }
-  await c.env.DB.prepare("DELETE FROM payments WHERE session_id = ?").bind(id).run();
+  await c.env.DB.prepare("DELETE FROM payments WHERE session_id = ? AND paid = 0").bind(id).run();
 
   return c.json({ success: true });
 });
@@ -630,12 +624,9 @@ sessions.post("/:id/costs", async (c) => {
   const session = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first<SessionRow>();
   if (!session) return c.json({ error: "Not found" }, 404);
   if (!(await canManageSession(c, session))) return c.json({ error: "Forbidden" }, 403);
-  const lockedResponse = await blockIfSessionHasConfirmedPayments(c, id);
-  if (lockedResponse) return lockedResponse;
-
   const body = await c.req.json<CostBody>();
   const label = body.label?.trim();
-  const amount = Number(body.amount);
+  const amount = Math.round(Number(body.amount));
   if (!label || !Number.isFinite(amount) || amount <= 0) return c.json({ error: "label, positive amount required" }, 400);
 
   const costId = nanoid();
@@ -648,7 +639,7 @@ sessions.post("/:id/costs", async (c) => {
   `)
     .bind(costId, id, label, amount, body.type ?? "other", payerId, consumerId)
     .run();
-  await c.env.DB.prepare("DELETE FROM payments WHERE session_id = ?").bind(id).run();
+  await c.env.DB.prepare("DELETE FROM payments WHERE session_id = ? AND paid = 0").bind(id).run();
 
   const row = await c.env.DB.prepare("SELECT * FROM costs WHERE id = ?").bind(costId).first();
   return c.json(row, 201);
@@ -659,8 +650,6 @@ sessions.put("/:id/costs/:costId", async (c) => {
   const session = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first<SessionRow>();
   if (!session) return c.json({ error: "Not found" }, 404);
   if (!(await canManageSession(c, session))) return c.json({ error: "Forbidden" }, 403);
-  const lockedResponse = await blockIfSessionHasConfirmedPayments(c, id);
-  if (lockedResponse) return lockedResponse;
 
   const existing = await c.env.DB.prepare("SELECT * FROM costs WHERE id = ? AND session_id = ?")
     .bind(costId, id)
@@ -669,7 +658,7 @@ sessions.put("/:id/costs/:costId", async (c) => {
 
   const body = await c.req.json<CostBody>();
   const label = body.label?.trim();
-  const amount = Number(body.amount);
+  const amount = Math.round(Number(body.amount));
   if (!label || !Number.isFinite(amount) || amount <= 0) return c.json({ error: "label, positive amount required" }, 400);
 
   const payerId = body.payerId ?? body.payer_id ?? null;
@@ -682,7 +671,7 @@ sessions.put("/:id/costs/:costId", async (c) => {
   `)
     .bind(label, amount, body.type ?? existing.type, payerId, consumerId, costId, id)
     .run();
-  await c.env.DB.prepare("DELETE FROM payments WHERE session_id = ?").bind(id).run();
+  await c.env.DB.prepare("DELETE FROM payments WHERE session_id = ? AND paid = 0").bind(id).run();
 
   const row = await c.env.DB.prepare("SELECT * FROM costs WHERE id = ?").bind(costId).first();
   return c.json(row);
@@ -693,10 +682,8 @@ sessions.delete("/:id/costs/:costId", async (c) => {
   const session = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first<SessionRow>();
   if (!session) return c.json({ error: "Not found" }, 404);
   if (!(await canManageSession(c, session))) return c.json({ error: "Forbidden" }, 403);
-  const lockedResponse = await blockIfSessionHasConfirmedPayments(c, id);
-  if (lockedResponse) return lockedResponse;
   await c.env.DB.prepare("DELETE FROM costs WHERE id = ?").bind(costId).run();
-  await c.env.DB.prepare("DELETE FROM payments WHERE session_id = ?").bind(id).run();
+  await c.env.DB.prepare("DELETE FROM payments WHERE session_id = ? AND paid = 0").bind(id).run();
   return c.json({ success: true });
 });
 
@@ -705,8 +692,6 @@ sessions.post("/:id/recalculate", async (c) => {
   const session = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first<SessionRow>();
   if (!session) return c.json({ error: "Not found" }, 404);
   if (!(await canManageSession(c, session))) return c.json({ error: "Forbidden" }, 403);
-  const lockedResponse = await blockIfSessionHasConfirmedPayments(c, id);
-  if (lockedResponse) return lockedResponse;
 
   const attendees = await c.env.DB.prepare(
     "SELECT member_id FROM session_members WHERE session_id = ? AND attended = 1"
@@ -774,15 +759,28 @@ sessions.post("/:id/recalculate", async (c) => {
     addPayment(cost.consumer_id, recipientId, Math.round(cost.amount));
   }
 
-  await c.env.DB.prepare("DELETE FROM payments WHERE session_id = ?").bind(id).run();
+  const confirmedRows = await c.env.DB.prepare(
+    "SELECT member_id, recipient_member_id, SUM(amount_owed) as confirmed_total FROM payments WHERE session_id = ? AND paid = 1 GROUP BY member_id, recipient_member_id"
+  ).bind(id).all<{ member_id: string; recipient_member_id: string; confirmed_total: number }>();
+  const confirmedMap = new Map<string, number>();
+  for (const row of confirmedRows.results) {
+    confirmedMap.set(`${row.member_id}:${row.recipient_member_id}`, row.confirmed_total);
+  }
 
-  const stmts = Array.from(paymentMap.entries()).map(([key, amountOwed]) => {
-    const [memberId, recipientMemberId] = key.split(":");
-    return c.env.DB.prepare(`
-      INSERT INTO payments (id, session_id, member_id, recipient_member_id, amount_owed, paid)
-      VALUES (?, ?, ?, ?, ?, 0)
-    `).bind(nanoid(), id, memberId, recipientMemberId, amountOwed);
-  });
+  await c.env.DB.prepare("DELETE FROM payments WHERE session_id = ? AND paid = 0").bind(id).run();
+
+  const stmts: D1PreparedStatement[] = [];
+  for (const [key, calculatedAmount] of paymentMap.entries()) {
+    const confirmedAmount = confirmedMap.get(key) ?? 0;
+    const remaining = calculatedAmount - confirmedAmount;
+    if (remaining > 0) {
+      const [memberId, recipientMemberId] = key.split(":");
+      stmts.push(c.env.DB.prepare(`
+        INSERT INTO payments (id, session_id, member_id, recipient_member_id, amount_owed, paid)
+        VALUES (?, ?, ?, ?, ?, 0)
+      `).bind(nanoid(), id, memberId, recipientMemberId, remaining));
+    }
+  }
   if (stmts.length > 0) await c.env.DB.batch(stmts);
 
   const payments = await c.env.DB.prepare("SELECT * FROM payments WHERE session_id = ?").bind(id).all();

@@ -801,10 +801,18 @@ export default function SessionDetailPage() {
                 </select>
                 <Input
                   value={costForm.amount}
-                  onChange={(event) => setCostForm((current) => ({ ...current, amount: event.target.value }))}
-                  placeholder="Số tiền"
+                  onChange={(event) => {
+                    const raw = event.target.value;
+                    const parsed = parseInt(raw, 10);
+                    setCostForm((current) => ({
+                      ...current,
+                      amount: Number.isFinite(parsed) && parsed > 0 ? String(parsed) : raw.replace(/[^\d]/g, ""),
+                    }));
+                  }}
+                  placeholder="Số tiền (VNĐ)"
                   type="number"
                   min="0"
+                  step="1"
                 />
               </div>
 
@@ -837,13 +845,16 @@ export default function SessionDetailPage() {
                     onChange={(event) => setCostForm((current) => ({ ...current, consumerId: event.target.value }))}
                     className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
                   >
-                    <option value="">Dùng chung</option>
+                    <option value="">Dùng chung (chia đều)</option>
                     {s.members.map((member) => (
                       <option key={member.id} value={member.id}>
                         {member.name}
                       </option>
                     ))}
                   </select>
+                  <div className="mt-1 text-xs text-gray-400">
+                    Chọn thành viên nếu khoản chi này chỉ dành riêng cho người đó (vd: mua vợt, giày...). Để "Dùng chung" nếu chia đều cả nhóm.
+                  </div>
                 </div>
               </div>
 
