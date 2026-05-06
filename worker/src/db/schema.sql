@@ -147,6 +147,8 @@ CREATE TABLE IF NOT EXISTS payments (
   member_id TEXT NOT NULL,
   recipient_member_id TEXT,
   amount_owed REAL NOT NULL,
+  payer_marked_paid INTEGER NOT NULL DEFAULT 0,
+  payer_marked_paid_at TEXT,
   paid INTEGER NOT NULL DEFAULT 0,
   paid_at TEXT,
   FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,

@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { Env } from "../types";
+import { sendPaymentMarkedPaidForPayment, sendPaymentReceivedForPayment } from "../paymentNotifications";
 
 const payments = new Hono<{ Bindings: Env; Variables: { userId: string; userRole: string } }>();
 
@@ -8,6 +9,8 @@ type PaymentRow = {
   session_id: string;
   member_id: string;
   recipient_member_id?: string | null;
+  payer_marked_paid?: number;
+  payer_marked_paid_at?: string | null;
   paid: number;
   created_by?: string | null;
   group_id?: string | null;
@@ -15,6 +18,13 @@ type PaymentRow = {
   debtor_user_id?: string | null;
   recipient_user_id?: string | null;
 };
+
+function queueTask(c: any, task: Promise<unknown>, label: string) {
+  const wrappedTask = task.catch((error) => {
+    console.error(`[mail:${label}]`, error);
+  });
+  c.executionCtx?.waitUntil?.(wrappedTask);
+}
 
 async function canTogglePayment(c: any, payment: PaymentRow) {
   const userId = c.get("userId");
@@ -68,13 +78,45 @@ payments.post("/:id/toggle", async (c) => {
 
   if (!row) return c.json({ error: "Not found" }, 404);
   if (!(await canTogglePayment(c, row))) return c.json({ error: "Forbidden" }, 403);
+  if (row.paid === 1) {
+    return c.json({ error: "Payment is already confirmed and cannot be changed" }, 409);
+  }
 
-  const newPaid = row.paid === 0 ? 1 : 0;
-  const paidAt = newPaid === 1 ? new Date().toISOString() : null;
+  const userId = c.get("userId");
+  const isDebtorUser = row.debtor_user_id === userId;
+  const isRecipientUser = row.recipient_user_id === userId;
 
-  await c.env.DB.prepare("UPDATE payments SET paid = ?, paid_at = ? WHERE id = ?")
-    .bind(newPaid, paidAt, id)
+  if (isDebtorUser) {
+    if (row.payer_marked_paid === 1) {
+      const updated = await c.env.DB.prepare("SELECT * FROM payments WHERE id = ?").bind(id).first();
+      return c.json(updated);
+    }
+
+    const markedAt = new Date().toISOString();
+    await c.env.DB.prepare("UPDATE payments SET payer_marked_paid = 1, payer_marked_paid_at = ? WHERE id = ?")
+      .bind(markedAt, id)
+      .run();
+
+    queueTask(c, sendPaymentMarkedPaidForPayment(c.env, id, { markedAt }), `payment-marked-paid:${id}`);
+
+    const updated = await c.env.DB.prepare("SELECT * FROM payments WHERE id = ?").bind(id).first();
+    return c.json(updated);
+  }
+
+  if (!isRecipientUser) {
+    return c.json({ error: "Only the payer or recipient can update this payment" }, 403);
+  }
+
+  if (row.payer_marked_paid !== 1) {
+    return c.json({ error: "The payer must mark this payment as paid before the recipient can confirm it" }, 409);
+  }
+
+  const paidAt = new Date().toISOString();
+  await c.env.DB.prepare("UPDATE payments SET paid = 1, paid_at = ? WHERE id = ?")
+    .bind(paidAt, id)
     .run();
+
+  queueTask(c, sendPaymentReceivedForPayment(c.env, id, { paidAt }), `payment-received:${id}`);
 
   const updated = await c.env.DB.prepare("SELECT * FROM payments WHERE id = ?").bind(id).first();
   return c.json(updated);

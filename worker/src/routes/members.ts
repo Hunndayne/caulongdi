@@ -13,6 +13,20 @@ function isMissingGroupSchema(error: unknown) {
   );
 }
 
+async function memberHasConfirmedPayments(c: any, memberId: string) {
+  const row = await c.env.DB.prepare(`
+    SELECT id
+    FROM payments
+    WHERE (paid = 1 OR payer_marked_paid = 1)
+      AND (member_id = ? OR recipient_member_id = ?)
+    LIMIT 1
+  `)
+    .bind(memberId, memberId)
+    .first() as { id: string } | null;
+
+  return Boolean(row);
+}
+
 members.get("/", async (c) => {
   const groupId = c.req.query("groupId")?.trim();
   const memberSelect = `
@@ -122,6 +136,11 @@ members.put("/:id", async (c) => {
 members.delete("/:id", async (c) => {
   if (c.get("userRole") !== "admin") return c.json({ error: "Forbidden" }, 403);
   const { id } = c.req.param();
+  if (await memberHasConfirmedPayments(c, id)) {
+    return c.json({
+      error: "This member has confirmed payments and cannot be deleted",
+    }, 409);
+  }
   await c.env.DB.prepare("DELETE FROM members WHERE id = ?").bind(id).run();
   return c.json({ success: true });
 });

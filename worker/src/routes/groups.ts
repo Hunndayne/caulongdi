@@ -81,6 +81,27 @@ async function getMembership(c: any, groupId: string) {
   return c.get("userRole") === "admin" ? "admin" : null;
 }
 
+async function userHasConfirmedGroupPayments(c: any, groupId: string, userId: string) {
+  const row = await c.env.DB.prepare(`
+    SELECT p.id
+    FROM payments p
+    WHERE (p.paid = 1 OR p.payer_marked_paid = 1)
+      AND (
+        p.member_id IN (
+          SELECT id FROM members WHERE group_id = ? AND user_id = ?
+        )
+        OR p.recipient_member_id IN (
+          SELECT id FROM members WHERE group_id = ? AND user_id = ?
+        )
+      )
+    LIMIT 1
+  `)
+    .bind(groupId, userId, groupId, userId)
+    .first() as { id: string } | null;
+
+  return Boolean(row);
+}
+
 function toGroup(row: GroupRow) {
   return {
     id: row.id,
@@ -633,6 +654,12 @@ groups.delete("/:id/members/:userId", async (c) => {
       if ((adminCount?.count ?? 0) <= 1) {
         return c.json({ error: "Cannot remove the last admin from the group" }, 400);
       }
+    }
+
+    if (await userHasConfirmedGroupPayments(c, id, userId)) {
+      return c.json({
+        error: "This member has confirmed payments and cannot be removed from the group",
+      }, 409);
     }
 
     await c.env.DB.batch([

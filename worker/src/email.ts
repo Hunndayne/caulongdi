@@ -30,6 +30,30 @@ type PaymentNotificationInput = {
   lines: { recipientName: string; amount: number }[];
 };
 
+type PaymentReceivedNotificationInput = {
+  debtorName: string;
+  debtorEmail: string;
+  recipientName: string;
+  amount: number;
+  venue: string;
+  date: string;
+  startTime: string;
+  sessionId: string;
+  paidAt?: string | null;
+};
+
+type PaymentMarkedPaidNotificationInput = {
+  debtorName: string;
+  recipientName: string;
+  recipientEmail: string;
+  amount: number;
+  venue: string;
+  date: string;
+  startTime: string;
+  sessionId: string;
+  markedAt?: string | null;
+};
+
 type GroupInviteNotificationInput = {
   groupName: string;
   groupDescription?: string | null;
@@ -73,6 +97,21 @@ function formatCurrency(amount: number) {
     currency: "VND",
     maximumFractionDigits: 0,
   }).format(amount);
+}
+
+function formatDateTime(value?: string | null) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString("vi-VN", {
+    timeZone: "Asia/Ho_Chi_Minh",
+    hour12: false,
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 function toBase64(value: string) {
@@ -489,6 +528,77 @@ export async function sendPaymentDueNotification(env: Env, input: PaymentNotific
       ctaHref: sessionUrl,
       ctaLabel: "Xem công nợ",
       footerNote: "Nếu bạn đã thanh toán, trạng thái trong ứng dụng sẽ được cập nhật khi người quản lý xác nhận.",
+    }),
+  });
+}
+
+export async function sendPaymentReceivedNotification(env: Env, input: PaymentReceivedNotificationInput) {
+  const sessionUrl = normalizeUrl(env.FRONTEND_URL, `/sessions/${input.sessionId}`);
+  const paidAt = formatDateTime(input.paidAt);
+
+  await sendMail(env, {
+    to: input.debtorEmail,
+    subject: `Bên nhận đã xác nhận thanh toán ${formatCurrency(input.amount)}`,
+    text: [
+      `Chào ${input.debtorName},`,
+      "",
+      `${input.recipientName} đã xác nhận đã nhận khoản thanh toán của bạn cho buổi chơi ${input.venue}.`,
+      "",
+      `Số tiền: ${formatCurrency(input.amount)}`,
+      `Buổi chơi: ${input.venue} - ${formatDate(input.date)} lúc ${input.startTime}`,
+      paidAt ? `Thời điểm xác nhận: ${paidAt}` : "",
+      "",
+      `Xem chi tiết: ${sessionUrl}`,
+    ].filter(Boolean).join("\n"),
+    html: renderEmailShell({
+      preheader: `${input.recipientName} đã xác nhận đã nhận ${formatCurrency(input.amount)}.`,
+      title: "Thanh toán đã được xác nhận",
+      intro: `${input.recipientName} đã xác nhận đã nhận khoản thanh toán của bạn cho buổi chơi ${input.venue}.`,
+      facts: [
+        { label: "Người nhận", value: input.recipientName },
+        { label: "Số tiền", value: formatCurrency(input.amount) },
+        { label: "Buổi chơi", value: `${input.venue} - ${formatDate(input.date)} lúc ${input.startTime}` },
+        ...(paidAt ? [{ label: "Xác nhận lúc", value: paidAt }] : []),
+      ],
+      ctaHref: sessionUrl,
+      ctaLabel: "Xem thanh toán",
+      footerNote: "Email này xác nhận phía nhận tiền đã đánh dấu khoản thanh toán là hoàn tất trong ứng dụng.",
+    }),
+  });
+}
+
+export async function sendPaymentMarkedPaidNotification(env: Env, input: PaymentMarkedPaidNotificationInput) {
+  const sessionUrl = normalizeUrl(env.FRONTEND_URL, `/sessions/${input.sessionId}`);
+  const markedAt = formatDateTime(input.markedAt);
+
+  await sendMail(env, {
+    to: input.recipientEmail,
+    subject: `${input.debtorName} đã đánh dấu đã trả ${formatCurrency(input.amount)}`,
+    text: [
+      `Chào ${input.recipientName},`,
+      "",
+      `${input.debtorName} đã đánh dấu đã trả khoản thanh toán cho bạn trong buổi chơi ${input.venue}.`,
+      "",
+      `Số tiền: ${formatCurrency(input.amount)}`,
+      `Buổi chơi: ${input.venue} - ${formatDate(input.date)} lúc ${input.startTime}`,
+      markedAt ? `Thời điểm báo đã trả: ${markedAt}` : "",
+      "",
+      "Khi bạn đã nhận tiền, hãy mở ứng dụng và bấm xác nhận đã nhận để hoàn tất giao dịch.",
+      `Xem chi tiết: ${sessionUrl}`,
+    ].filter(Boolean).join("\n"),
+    html: renderEmailShell({
+      preheader: `${input.debtorName} đã báo đã trả ${formatCurrency(input.amount)} cho bạn.`,
+      title: "Có khoản thanh toán chờ xác nhận",
+      intro: `${input.debtorName} đã đánh dấu đã trả khoản thanh toán cho bạn. Giao dịch chỉ hoàn tất sau khi bạn xác nhận đã nhận tiền.`,
+      facts: [
+        { label: "Người trả", value: input.debtorName },
+        { label: "Số tiền", value: formatCurrency(input.amount) },
+        { label: "Buổi chơi", value: `${input.venue} - ${formatDate(input.date)} lúc ${input.startTime}` },
+        ...(markedAt ? [{ label: "Báo đã trả lúc", value: markedAt }] : []),
+      ],
+      ctaHref: sessionUrl,
+      ctaLabel: "Xác nhận đã nhận",
+      footerNote: "Chỉ xác nhận khi bạn đã thật sự nhận được tiền.",
     }),
   });
 }

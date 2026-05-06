@@ -19,6 +19,8 @@
     "db:patch:payment-recipient:prod": "wrangler d1 execute caulong --remote --file=src/db/patch-payment-recipient.sql",
     "db:patch:payments-recipient": "wrangler d1 execute caulong --local --file=src/db/patch-payments-recipient.sql",
     "db:patch:payments-recipient:prod": "wrangler d1 execute caulong --remote --file=src/db/patch-payments-recipient.sql",
+    "db:patch:payment-two-step": "wrangler d1 execute caulong --local --file=src/db/patch-payment-two-step.sql",
+    "db:patch:payment-two-step:prod": "wrangler d1 execute caulong --remote --file=src/db/patch-payment-two-step.sql",
     "db:patch:managers": "wrangler d1 execute caulong --local --file=src/db/patch-managers.sql",
     "db:patch:managers:prod": "wrangler d1 execute caulong --remote --file=src/db/patch-managers.sql",
     "db:patch:invite-links": "wrangler d1 execute caulong --local --file=src/db/patch-invite-links.sql",

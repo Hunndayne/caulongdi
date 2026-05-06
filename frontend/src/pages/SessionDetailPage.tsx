@@ -24,7 +24,7 @@ import { formatCurrency, formatDate } from "@/lib/utils";
 import { useGroupsStore } from "@/stores/groupsStore";
 import { useMembersStore } from "@/stores/membersStore";
 import { useSessionsStore } from "@/stores/sessionsStore";
-import type { Cost, Member } from "@/types";
+import type { Cost, Member, Payment } from "@/types";
 
 const TABS = ["Điểm danh", "Chi phí", "Thanh toán"] as const;
 type Tab = (typeof TABS)[number];
@@ -155,7 +155,9 @@ export default function SessionDetailPage() {
       recipient: payment.recipient_member_id ? memberById.get(payment.recipient_member_id) ?? null : null,
     }))
     .sort((a, b) => {
-      if (a.payment.paid !== b.payment.paid) return a.payment.paid - b.payment.paid;
+      const rank = (payment: Payment) => payment.paid ? 2 : payment.payer_marked_paid ? 1 : 0;
+      const rankDiff = rank(a.payment) - rank(b.payment);
+      if (rankDiff !== 0) return rankDiff;
       return b.payment.amount_owed - a.payment.amount_owed;
     });
 
@@ -291,16 +293,21 @@ export default function SessionDetailPage() {
     return `https://img.vietqr.io/image/${recipient.user_bank_bin}-${recipient.user_bank_account_number}-compact.png?amount=${Math.ceil(amount)}&addInfo=${encodeURIComponent(note)}&accountName=${encodeURIComponent(recipient.user_bank_account_name)}`;
   };
 
-  const canTogglePaymentRow = (debtor: Member | null, recipient: Member | null) => {
-    if (canManageSession) return true;
+  const canTogglePaymentRow = (payment: Payment, debtor: Member | null, recipient: Member | null) => {
+    if (payment.paid) return false;
     if (!currentUserId) return false;
-    return debtor?.user_id === currentUserId || recipient?.user_id === currentUserId;
+    if (debtor?.user_id === currentUserId) return payment.payer_marked_paid !== 1;
+    if (recipient?.user_id === currentUserId) return payment.payer_marked_paid === 1;
+    return false;
   };
 
-  const getPaymentActionLabel = (paid: number, debtor: Member | null, recipient: Member | null) => {
+  const getPaymentActionLabel = (payment: Payment, debtor: Member | null, recipient: Member | null) => {
     const isRecipientUser = Boolean(currentUserId && recipient?.user_id === currentUserId && debtor?.user_id !== currentUserId);
-    if (paid) return isRecipientUser ? "Đã nhận ✓" : "Đã trả ✓";
-    return isRecipientUser ? "Xác nhận nhận" : "Đánh dấu đã trả";
+    const isDebtorUser = Boolean(currentUserId && debtor?.user_id === currentUserId);
+    if (payment.paid) return isRecipientUser ? "Đã nhận ✓" : "Đã xong ✓";
+    if (isRecipientUser) return payment.payer_marked_paid ? "Xác nhận đã nhận" : "Chờ người trả";
+    if (isDebtorUser) return payment.payer_marked_paid ? "Chờ xác nhận" : "Đánh dấu đã trả";
+    return payment.payer_marked_paid ? "Chờ xác nhận" : "Chưa trả";
   };
 
   const copyNotification = async () => {
@@ -311,7 +318,12 @@ export default function SessionDetailPage() {
       ? paymentRows.map(({ payment, debtor, recipient }) => {
         const debtorName = debtor?.name ?? payment.member_id;
         const recipientName = recipient?.name ?? payment.recipient_member_id ?? "người nhận";
-        return `- ${debtorName} -> ${recipientName}: ${formatCurrency(payment.amount_owed)}${payment.paid ? " (đã xong)" : ""}`;
+        const status = payment.paid
+          ? " (đã xong)"
+          : payment.payer_marked_paid
+            ? " (chờ người nhận xác nhận)"
+            : "";
+        return `- ${debtorName} -> ${recipientName}: ${formatCurrency(payment.amount_owed)}${status}`;
       }).join("\n")
       : "- Chưa tính tiền";
 
@@ -733,13 +745,21 @@ export default function SessionDetailPage() {
                 const fallbackNotice = !recipientHasBank && qrRecipient && recipient
                   ? `Người ứng tiền chưa cập nhật STK, tạm chuyển qua ${qrRecipient.name}.`
                   : null;
-                const toggleAllowed = canTogglePaymentRow(debtor, recipient);
+                const pendingNotice = payment.payer_marked_paid && !payment.paid
+                  ? `${debtorName} đã báo đã trả, chờ ${recipientName} xác nhận đã nhận.`
+                  : null;
+                const toggleAllowed = canTogglePaymentRow(payment, debtor, recipient);
                 const showMissingQrNotice = canViewQr && !qrUrl && !payment.paid;
 
                 return (
                   <div
                     key={payment.id}
-                    className={`rounded-xl border p-3 transition-colors ${payment.paid ? "border-green-200 bg-green-50" : "border-gray-100 bg-white"}`}
+                    className={`rounded-xl border p-3 transition-colors ${payment.paid
+                      ? "border-green-200 bg-green-50"
+                      : payment.payer_marked_paid
+                        ? "border-amber-200 bg-amber-50"
+                        : "border-gray-100 bg-white"
+                      }`}
                   >
                     <div className="flex items-start justify-between gap-3">
                       <div className="flex min-w-0 items-start gap-3">
@@ -752,6 +772,9 @@ export default function SessionDetailPage() {
                           </div>
                           {fallbackNotice && (
                             <div className="mt-1 text-xs text-amber-600">{fallbackNotice}</div>
+                          )}
+                          {pendingNotice && (
+                            <div className="mt-1 text-xs text-amber-700">{pendingNotice}</div>
                           )}
                           {showMissingQrNotice && (
                             <div className="mt-1 text-xs text-red-500">Chưa có tài khoản nhận tiền để tạo QR.</div>
@@ -769,7 +792,7 @@ export default function SessionDetailPage() {
                             : "cursor-not-allowed bg-gray-100 text-gray-400"
                           }`}
                       >
-                        {getPaymentActionLabel(payment.paid, debtor, recipient)}
+                        {getPaymentActionLabel(payment, debtor, recipient)}
                       </button>
                     </div>
 
@@ -795,6 +818,12 @@ export default function SessionDetailPage() {
                   <span className="text-sm text-gray-600">Đã xong</span>
                   <span className="text-sm font-medium text-gray-900">
                     {paymentRows.filter(({ payment }) => payment.paid).length}/{paymentRows.length} giao dịch
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-600">Chờ xác nhận</span>
+                  <span className="text-sm font-medium text-gray-900">
+                    {paymentRows.filter(({ payment }) => payment.payer_marked_paid && !payment.paid).length}/{paymentRows.length} giao dịch
                   </span>
                 </div>
                 <div className="flex items-center justify-between">

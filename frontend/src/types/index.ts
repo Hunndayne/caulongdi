@@ -149,6 +149,8 @@ export interface Payment {
   member_id: string;
   recipient_member_id?: string | null;
   amount_owed: number;
+  payer_marked_paid?: number;
+  payer_marked_paid_at?: string;
   paid: number;
   paid_at?: string;
 }

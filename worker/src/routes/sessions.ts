@@ -119,6 +119,24 @@ async function canManageSession(c: any, session: SessionRow) {
   return isGroupAdmin(c, session.group_id);
 }
 
+async function blockIfSessionHasConfirmedPayments(c: any, sessionId: string) {
+  const confirmed = await c.env.DB.prepare(`
+    SELECT id
+    FROM payments
+    WHERE session_id = ?
+      AND (paid = 1 OR payer_marked_paid = 1)
+    LIMIT 1
+  `)
+    .bind(sessionId)
+    .first() as { id: string } | null;
+
+  if (!confirmed) return null;
+
+  return c.json({
+    error: "This session has confirmed payments and money-related records are locked",
+  }, 409);
+}
+
 sessions.get("/", async (c) => {
   const groupId = c.req.query("groupId")?.trim();
   const joinedOnly = c.req.query("joined") === "true";
@@ -342,6 +360,13 @@ sessions.put("/:id", async (c) => {
   const normalizedPaymentRecipient = paymentRecipient === undefined
     ? undefined
     : normalizePaymentRecipient(paymentRecipient);
+  const paymentRecipientChanged = normalizedPaymentRecipient !== undefined
+    && normalizedPaymentRecipient !== ((existing as any).payment_recipient ?? null);
+
+  if (paymentRecipientChanged) {
+    const lockedResponse = await blockIfSessionHasConfirmedPayments(c, id);
+    if (lockedResponse) return lockedResponse;
+  }
 
   await c.env.DB.prepare(`
     UPDATE sessions
@@ -360,7 +385,7 @@ sessions.put("/:id", async (c) => {
     )
     .run();
 
-  if (normalizedPaymentRecipient !== undefined && normalizedPaymentRecipient !== ((existing as any).payment_recipient ?? null)) {
+  if (paymentRecipientChanged) {
     await c.env.DB.prepare("DELETE FROM payments WHERE session_id = ?").bind(id).run();
   }
 
@@ -373,6 +398,8 @@ sessions.delete("/:id", async (c) => {
   const existing = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first<SessionRow>();
   if (!existing) return c.json({ error: "Not found" }, 404);
   if (!(await canManageSession(c, existing))) return c.json({ error: "Forbidden" }, 403);
+  const lockedResponse = await blockIfSessionHasConfirmedPayments(c, id);
+  if (lockedResponse) return lockedResponse;
   await c.env.DB.prepare("DELETE FROM sessions WHERE id = ?").bind(id).run();
   return c.json({ success: true });
 });
@@ -455,6 +482,8 @@ sessions.post("/:id/join", async (c) => {
   if (!session) return c.json({ error: "Not found" }, 404);
   if (session.status !== "upcoming") return c.json({ error: "Session is not open for joining" }, 400);
   if (!(await canAccessSession(c, session))) return c.json({ error: "Forbidden" }, 403);
+  const lockedResponse = await blockIfSessionHasConfirmedPayments(c, id);
+  if (lockedResponse) return lockedResponse;
 
   const userId = c.get("userId");
   const user = await c.env.DB.prepare("SELECT id, name, email FROM users WHERE id = ?")
@@ -525,6 +554,8 @@ sessions.delete("/:id/join", async (c) => {
   if (session.group_id && !(await canAccessSession(c, { ...session, id, status: session.status } as SessionRow))) {
     return c.json({ error: "Forbidden" }, 403);
   }
+  const lockedResponse = await blockIfSessionHasConfirmedPayments(c, id);
+  if (lockedResponse) return lockedResponse;
 
   const member = await c.env.DB.prepare(`
     SELECT m.id
@@ -566,6 +597,8 @@ sessions.post("/:id/members", async (c) => {
   const session = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first<SessionRow>();
   if (!session) return c.json({ error: "Not found" }, 404);
   if (!(await canManageSession(c, session))) return c.json({ error: "Forbidden" }, 403);
+  const lockedResponse = await blockIfSessionHasConfirmedPayments(c, id);
+  if (lockedResponse) return lockedResponse;
 
   const body = await c.req.json<{ memberIds: string[] }>();
   await c.env.DB.prepare("DELETE FROM session_members WHERE session_id = ?").bind(id).run();
@@ -587,6 +620,8 @@ sessions.post("/:id/costs", async (c) => {
   const session = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first<SessionRow>();
   if (!session) return c.json({ error: "Not found" }, 404);
   if (!(await canManageSession(c, session))) return c.json({ error: "Forbidden" }, 403);
+  const lockedResponse = await blockIfSessionHasConfirmedPayments(c, id);
+  if (lockedResponse) return lockedResponse;
 
   const body = await c.req.json<{
     label: string;
@@ -620,6 +655,8 @@ sessions.delete("/:id/costs/:costId", async (c) => {
   const session = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first<SessionRow>();
   if (!session) return c.json({ error: "Not found" }, 404);
   if (!(await canManageSession(c, session))) return c.json({ error: "Forbidden" }, 403);
+  const lockedResponse = await blockIfSessionHasConfirmedPayments(c, id);
+  if (lockedResponse) return lockedResponse;
   await c.env.DB.prepare("DELETE FROM costs WHERE id = ?").bind(costId).run();
   await c.env.DB.prepare("DELETE FROM payments WHERE session_id = ?").bind(id).run();
   return c.json({ success: true });
@@ -630,6 +667,8 @@ sessions.post("/:id/recalculate", async (c) => {
   const session = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first<SessionRow>();
   if (!session) return c.json({ error: "Not found" }, 404);
   if (!(await canManageSession(c, session))) return c.json({ error: "Forbidden" }, 403);
+  const lockedResponse = await blockIfSessionHasConfirmedPayments(c, id);
+  if (lockedResponse) return lockedResponse;
 
   const attendees = await c.env.DB.prepare(
     "SELECT member_id FROM session_members WHERE session_id = ? AND attended = 1"

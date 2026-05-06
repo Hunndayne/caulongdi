@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { Env } from "../types";
+import { sendPaymentReceivedForPayment } from "../paymentNotifications";
 
 const DEFAULT_AUTOCONFIRM_EMAIL = "tranthanhhung1641@gmail.com";
 
@@ -19,15 +20,19 @@ type PaymentMatchRow = {
   member_id: string;
   recipient_member_id?: string | null;
   amount_owed: number;
+  payer_marked_paid?: number;
+  payer_marked_paid_at?: string | null;
   paid: number;
   paid_at?: string | null;
   payment_recipient?: string | null;
   recipient_id?: string | null;
+  recipient_name?: string | null;
   recipient_email?: string | null;
   recipient_bank_bin?: string | null;
   recipient_bank_account_number?: string | null;
   recipient_bank_account_name?: string | null;
   fallback_id?: string | null;
+  fallback_name?: string | null;
   fallback_email?: string | null;
   fallback_bank_bin?: string | null;
   fallback_bank_account_number?: string | null;
@@ -41,6 +46,13 @@ function normalizeEmail(value?: string | null) {
 function bearerToken(header: string | undefined | null) {
   const match = header?.match(/^Bearer\s+(.+)$/i);
   return match?.[1]?.trim() ?? "";
+}
+
+function queueTask(c: any, task: Promise<unknown>, label: string) {
+  const wrappedTask = task.catch((error) => {
+    console.error(`[mail:${label}]`, error);
+  });
+  c.executionCtx?.waitUntil?.(wrappedTask);
 }
 
 function parseAmount(value: BankTransferWebhookBody["amount"]) {
@@ -77,16 +89,22 @@ function hasBankInfo(row: PaymentMatchRow, prefix: "recipient" | "fallback") {
   );
 }
 
-function getQrRecipientEmail(row: PaymentMatchRow) {
+function getQrRecipient(row: PaymentMatchRow) {
   if (row.recipient_id && hasBankInfo(row, "recipient")) {
-    return normalizeEmail(row.recipient_email);
+    return {
+      email: normalizeEmail(row.recipient_email),
+      name: row.recipient_name?.trim() || null,
+    };
   }
 
   if (row.fallback_id && row.fallback_id !== row.member_id && hasBankInfo(row, "fallback")) {
-    return normalizeEmail(row.fallback_email);
+    return {
+      email: normalizeEmail(row.fallback_email),
+      name: row.fallback_name?.trim() || null,
+    };
   }
 
-  return "";
+  return { email: "", name: null };
 }
 
 paymentWebhooks.post("/bank-transfer", async (c) => {
@@ -120,15 +138,19 @@ paymentWebhooks.post("/bank-transfer", async (c) => {
       p.member_id,
       p.recipient_member_id,
       p.amount_owed,
+      p.payer_marked_paid,
+      p.payer_marked_paid_at,
       p.paid,
       p.paid_at,
       s.payment_recipient,
       recipient.id AS recipient_id,
+      recipient.name AS recipient_name,
       recipient_user.email AS recipient_email,
       recipient_user.bank_bin AS recipient_bank_bin,
       recipient_user.bank_account_number AS recipient_bank_account_number,
       recipient_user.bank_account_name AS recipient_bank_account_name,
       fallback.id AS fallback_id,
+      fallback.name AS fallback_name,
       fallback_user.email AS fallback_email,
       fallback_user.bank_bin AS fallback_bank_bin,
       fallback_user.bank_account_number AS fallback_bank_account_number,
@@ -146,9 +168,9 @@ paymentWebhooks.post("/bank-transfer", async (c) => {
 
   if (!row) return c.json({ error: "Payment not found" }, 404);
 
-  const qrRecipientEmail = getQrRecipientEmail(row);
-  if (!qrRecipientEmail) return c.json({ error: "Payment has no QR recipient" }, 409);
-  if (qrRecipientEmail !== autoConfirmEmail) {
+  const qrRecipient = getQrRecipient(row);
+  if (!qrRecipient.email) return c.json({ error: "Payment has no QR recipient" }, 409);
+  if (qrRecipient.email !== autoConfirmEmail) {
     return c.json({ error: "Payment QR recipient is not eligible for auto confirmation" }, 409);
   }
 
@@ -171,9 +193,22 @@ paymentWebhooks.post("/bank-transfer", async (c) => {
   }
 
   const paidAt = validIsoOrNow(body.receivedAt);
-  await c.env.DB.prepare("UPDATE payments SET paid = 1, paid_at = ? WHERE id = ?")
-    .bind(paidAt, row.id)
+  await c.env.DB.prepare(`
+    UPDATE payments
+    SET payer_marked_paid = 1,
+        payer_marked_paid_at = COALESCE(payer_marked_paid_at, ?),
+        paid = 1,
+        paid_at = ?
+    WHERE id = ?
+  `)
+    .bind(paidAt, paidAt, row.id)
     .run();
+
+  queueTask(
+    c,
+    sendPaymentReceivedForPayment(c.env, row.id, { recipientName: qrRecipient.name, paidAt }),
+    `payment-received:${row.id}`
+  );
 
   console.info("[payment-webhook] confirmed payment", {
     paymentId: row.id,
