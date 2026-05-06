@@ -140,7 +140,8 @@ export interface Cost {
   amount: number;
   type: "court" | "water" | "shuttle" | "other";
   payer_id?: string | null;   // ai trả tiền hộ; null = quỹ chung trả
-  consumer_id?: string | null; // ai dùng riêng; null = chia đều
+  consumer_id?: string | null; // ai dùng riêng; null = chia đều hoặc chưa rõ
+  consumer_pending?: number;   // 1 = chưa rõ ai dùng, không tính vào chia đều
 }
 
 export interface Payment {

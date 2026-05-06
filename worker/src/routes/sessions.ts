@@ -44,6 +44,7 @@ type CostBody = {
   consumerId?: string | null;
   payer_id?: string | null;
   consumer_id?: string | null;
+  consumer_pending?: number;
 };
 
 type GroupSessionNotificationRow = {
@@ -632,12 +633,13 @@ sessions.post("/:id/costs", async (c) => {
   const costId = nanoid();
   const payerId = body.payerId ?? body.payer_id ?? null;
   const consumerId = body.consumerId ?? body.consumer_id ?? null;
+  const consumerPending = body.consumer_pending ?? 0;
 
   await c.env.DB.prepare(`
-    INSERT INTO costs (id, session_id, label, amount, type, payer_id, consumer_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO costs (id, session_id, label, amount, type, payer_id, consumer_id, consumer_pending)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `)
-    .bind(costId, id, label, amount, body.type ?? "other", payerId, consumerId)
+    .bind(costId, id, label, amount, body.type ?? "other", payerId, consumerId, consumerPending)
     .run();
   await c.env.DB.prepare("DELETE FROM payments WHERE session_id = ? AND paid = 0").bind(id).run();
 
@@ -663,13 +665,14 @@ sessions.put("/:id/costs/:costId", async (c) => {
 
   const payerId = body.payerId ?? body.payer_id ?? null;
   const consumerId = body.consumerId ?? body.consumer_id ?? null;
+  const consumerPending = body.consumer_pending ?? (existing as any).consumer_pending ?? 0;
 
   await c.env.DB.prepare(`
     UPDATE costs
-    SET label = ?, amount = ?, type = ?, payer_id = ?, consumer_id = ?
+    SET label = ?, amount = ?, type = ?, payer_id = ?, consumer_id = ?, consumer_pending = ?
     WHERE id = ? AND session_id = ?
   `)
-    .bind(label, amount, body.type ?? existing.type, payerId, consumerId, costId, id)
+    .bind(label, amount, body.type ?? existing.type, payerId, consumerId, consumerPending, costId, id)
     .run();
   await c.env.DB.prepare("DELETE FROM payments WHERE session_id = ? AND paid = 0").bind(id).run();
 
@@ -707,13 +710,12 @@ sessions.post("/:id/recalculate", async (c) => {
   if (count === 0) return c.json({ error: "No attendees" }, 400);
 
   const attendeeIds = attendees.results.map((item) => item.member_id);
-  const attendeeSet = new Set(attendeeIds);
   const eligibleMemberSet = new Set(eligibleMembers.results.map((item) => item.id));
   const costs = await c.env.DB.prepare(
-    "SELECT id, amount, payer_id, consumer_id FROM costs WHERE session_id = ?"
-  ).bind(id).all<CostRow>();
+    "SELECT id, amount, payer_id, consumer_id, consumer_pending FROM costs WHERE session_id = ?"
+  ).bind(id).all<CostRow & { consumer_pending?: number }>();
 
-  const sharedCosts = costs.results.filter((cost) => cost.consumer_id === null);
+  const sharedCosts = costs.results.filter((cost) => cost.consumer_id === null && !(cost as any).consumer_pending);
   const directCosts = costs.results.filter((cost) => cost.consumer_id !== null);
   const fallbackRecipientId = normalizePaymentRecipient((session as any).payment_recipient as string | null | undefined);
 

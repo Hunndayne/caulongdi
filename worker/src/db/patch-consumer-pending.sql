@@ -1,0 +1,1 @@
+ALTER TABLE costs ADD COLUMN consumer_pending INTEGER NOT NULL DEFAULT 0;

@@ -24,7 +24,9 @@
     "db:patch:managers": "wrangler d1 execute caulong --local --file=src/db/patch-managers.sql",
     "db:patch:managers:prod": "wrangler d1 execute caulong --remote --file=src/db/patch-managers.sql",
     "db:patch:invite-links": "wrangler d1 execute caulong --local --file=src/db/patch-invite-links.sql",
-    "db:patch:invite-links:prod": "wrangler d1 execute caulong --remote --file=src/db/patch-invite-links.sql"
+    "db:patch:invite-links:prod": "wrangler d1 execute caulong --remote --file=src/db/patch-invite-links.sql",
+    "db:patch:consumer-pending": "wrangler d1 execute caulong --local --file=src/db/patch-consumer-pending.sql",
+    "db:patch:consumer-pending:prod": "wrangler d1 execute caulong --remote --file=src/db/patch-consumer-pending.sql"
   },
   "dependencies": {
     "better-auth": "^1.2.7",

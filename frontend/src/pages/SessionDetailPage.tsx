@@ -105,6 +105,7 @@ export default function SessionDetailPage() {
     type: "court",
     payerId: "",
     consumerId: "",
+    consumerPending: 0,
   });
   const [addingCost, setAddingCost] = useState(false);
   const [editingCostId, setEditingCostId] = useState<string | null>(null);
@@ -282,14 +283,14 @@ export default function SessionDetailPage() {
     const XLSX = await import("xlsx");
     const costRows = s.costs.map((cost) => {
       const payer = cost.payer_id ? memberById.get(cost.payer_id) : null;
-      const consumer = cost.consumer_id ? memberById.get(cost.consumer_id) : null;
+      const consumer = cost.consumer_pending ? null : (cost.consumer_id ? memberById.get(cost.consumer_id) : null);
       return [
         cost.id,
         getCostTypeLabel(cost.type),
         cost.label,
         cost.amount,
         payer?.name ?? "",
-        consumer?.name ?? "",
+        cost.consumer_pending ? "Chưa rõ" : (consumer?.name ?? ""),
       ];
     });
 
@@ -353,7 +354,9 @@ export default function SessionDetailPage() {
           )?.value ?? "other") as Cost["type"];
           const label = String(labelRaw || getCostTypeLabel(type)).trim();
           const payer = resolveImportedMember(payerRaw, rowNumber, "Người ứng tiền");
-          const consumer = resolveImportedMember(consumerRaw, rowNumber, "Người dùng riêng");
+          const consumerRawNormalized = normalizeImportText(consumerRaw);
+          const isPending = consumerRawNormalized === "chua ro" || consumerRawNormalized === "chưa rõ";
+          const consumer = isPending ? null : resolveImportedMember(consumerRaw, rowNumber, "Người dùng riêng");
 
           return {
             label,
@@ -361,6 +364,7 @@ export default function SessionDetailPage() {
             type,
             payer_id: payer?.id ?? null,
             consumer_id: consumer?.id ?? null,
+            consumer_pending: isPending ? 1 : 0,
             costId: costId || null,
           };
         })
@@ -370,6 +374,7 @@ export default function SessionDetailPage() {
           type: Cost["type"];
           payer_id: string | null;
           consumer_id: string | null;
+          consumer_pending: number;
           costId: string | null;
         } => Boolean(item));
 
@@ -395,7 +400,7 @@ export default function SessionDetailPage() {
   };
 
   const resetCostForm = () => {
-    setCostForm({ label: "", amount: "", type: "court", payerId: "", consumerId: "" });
+    setCostForm({ label: "", amount: "", type: "court", payerId: "", consumerId: "", consumerPending: 0 });
     setEditingCostId(null);
   };
 
@@ -407,6 +412,7 @@ export default function SessionDetailPage() {
       type: cost.type,
       payerId: cost.payer_id ?? "",
       consumerId: cost.consumer_id ?? "",
+      consumerPending: cost.consumer_pending ?? 0,
     });
   };
 
@@ -421,6 +427,7 @@ export default function SessionDetailPage() {
         type: costForm.type as Cost["type"],
         payer_id: costForm.payerId || null,
         consumer_id: costForm.consumerId || null,
+        consumer_pending: costForm.consumerPending,
       };
 
       if (editingCostId) {
@@ -841,20 +848,25 @@ export default function SessionDetailPage() {
                 <div>
                   <label className="mb-1 block text-xs text-gray-500">Người dùng riêng</label>
                   <select
-                    value={costForm.consumerId}
-                    onChange={(event) => setCostForm((current) => ({ ...current, consumerId: event.target.value }))}
+                    value={costForm.consumerPending ? "__pending__" : (costForm.consumerId || "")}
+                    onChange={(event) => {
+                      const val = event.target.value;
+                      if (val === "__pending__") {
+                        setCostForm((current) => ({ ...current, consumerId: "", consumerPending: 1 }));
+                      } else {
+                        setCostForm((current) => ({ ...current, consumerId: val, consumerPending: 0 }));
+                      }
+                    }}
                     className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
                   >
-                    <option value="">Dùng chung (chia đều)</option>
+                    <option value="">Dùng chung</option>
+                    <option value="__pending__">Chưa rõ</option>
                     {s.members.map((member) => (
                       <option key={member.id} value={member.id}>
                         {member.name}
                       </option>
                     ))}
                   </select>
-                  <div className="mt-1 text-xs text-gray-400">
-                    Chọn thành viên nếu khoản chi này chỉ dành riêng cho người đó (vd: mua vợt, giày...). Để "Dùng chung" nếu chia đều cả nhóm.
-                  </div>
                 </div>
               </div>
 
@@ -884,7 +896,10 @@ export default function SessionDetailPage() {
 
                 let helperText = "Trả cho người nhận chung";
                 let helperClass = "text-green-500";
-                if (payerMember && consumerMember) {
+                if (cost.consumer_pending) {
+                  helperText = "Chưa rõ ai dùng — chưa tính vào chia tiền";
+                  helperClass = "text-amber-500";
+                } else if (payerMember && consumerMember) {
                   helperText = `${consumerMember.name} trả lại cho ${payerMember.name}`;
                   helperClass = "text-orange-500";
                 } else if (consumerMember) {
