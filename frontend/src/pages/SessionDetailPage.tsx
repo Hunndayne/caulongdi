@@ -815,7 +815,7 @@ export default function SessionDetailPage() {
             )}
           </div>
 
-          {canManageSession && (
+          {canManageSession && !editingCostId && (
             <div className="space-y-3 rounded-xl bg-gray-50 p-4">
               <div className="grid grid-cols-2 gap-2">
                 <select
@@ -937,6 +937,94 @@ export default function SessionDetailPage() {
                 } else if (payerMember) {
                   helperText = `Cả nhóm trả lại cho ${payerMember.name}`;
                   helperClass = "text-blue-500";
+                }
+
+                if (cost.id === editingCostId) {
+                  return (
+                    <div key={cost.id} className="space-y-3 rounded-xl border-2 border-green-300 bg-green-50 p-4">
+                      <div className="grid grid-cols-2 gap-2">
+                        <select
+                          value={costForm.type}
+                          onChange={(event) =>
+                            setCostForm((current) => ({
+                              ...current,
+                              type: event.target.value,
+                              label: COST_TYPES.find((item) => item.value === event.target.value)?.label ?? current.label,
+                            }))
+                          }
+                          className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                        >
+                          {COST_TYPES.map((item) => (
+                            <option key={item.value} value={item.value}>{item.label}</option>
+                          ))}
+                        </select>
+                        <Input
+                          value={costForm.amount}
+                          onChange={(event) => {
+                            const raw = event.target.value;
+                            const parsed = parseInt(raw, 10);
+                            setCostForm((current) => ({
+                              ...current,
+                              amount: Number.isFinite(parsed) && parsed > 0 ? String(parsed) : raw.replace(/[^\d]/g, ""),
+                            }));
+                          }}
+                          placeholder="Số tiền (VNĐ)"
+                          type="number"
+                          min="0"
+                          step="1"
+                        />
+                      </div>
+                      <Input
+                        value={costForm.label}
+                        onChange={(event) => setCostForm((current) => ({ ...current, label: event.target.value }))}
+                        placeholder="Mô tả"
+                      />
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="mb-1 block text-xs text-gray-500">Người ứng tiền</label>
+                          <select
+                            value={costForm.payerId}
+                            onChange={(event) => setCostForm((current) => ({ ...current, payerId: event.target.value }))}
+                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                          >
+                            <option value="">Người nhận chung</option>
+                            {s.members.map((member) => (
+                              <option key={member.id} value={member.id}>{member.name}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="mb-1 block text-xs text-gray-500">Người dùng riêng</label>
+                          <select
+                            value={costForm.consumerPending ? "__pending__" : (costForm.consumerId || "")}
+                            onChange={(event) => {
+                              const val = event.target.value;
+                              if (val === "__pending__") {
+                                setCostForm((current) => ({ ...current, consumerId: "", consumerPending: 1 }));
+                              } else {
+                                setCostForm((current) => ({ ...current, consumerId: val, consumerPending: 0 }));
+                              }
+                            }}
+                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                          >
+                            <option value="">Dùng chung</option>
+                            <option value="__pending__">Chưa rõ</option>
+                            {s.members.map((member) => (
+                              <option key={member.id} value={member.id}>{member.name}</option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+                      <div className="flex gap-2">
+                        <Button className="flex-1" onClick={handleSaveCost} disabled={addingCost || !costForm.label || !costForm.amount}>
+                          {addingCost ? "Đang lưu..." : "Lưu"}
+                        </Button>
+                        <Button variant="outline" size="icon" onClick={resetCostForm} disabled={addingCost}>
+                          <X size={16} />
+                        </Button>
+                      </div>
+                    </div>
+                  );
                 }
 
                 return (
