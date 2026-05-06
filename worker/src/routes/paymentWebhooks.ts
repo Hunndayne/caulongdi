@@ -57,7 +57,7 @@ function parseAmount(value: BankTransferWebhookBody["amount"]) {
 }
 
 function extractPaymentId(content: string) {
-  const match = content.match(/\bCLD[-\s]+([A-Za-z0-9]+)\b/i);
+  const match = content.match(/\bCLD[-\s]*([A-Za-z0-9]{8,40})\b/i);
   return match?.[1] ?? null;
 }
 
@@ -105,7 +105,7 @@ paymentWebhooks.post("/bank-transfer", async (c) => {
 
   if (!amount || amount <= 0) return c.json({ error: "amount must be a positive number" }, 400);
   if (!content) return c.json({ error: "content is required" }, 400);
-  if (!paymentId) return c.json({ error: "Payment code CLD-<paymentId> not found" }, 400);
+  if (!paymentId) return c.json({ error: "Payment code CLD<id> not found" }, 400);
 
   const autoConfirmEmail = normalizeEmail(c.env.PAYMENT_AUTOCONFIRM_EMAIL || DEFAULT_AUTOCONFIRM_EMAIL);
   const reportedRecipientEmail = normalizeEmail(body.recipientEmail);
