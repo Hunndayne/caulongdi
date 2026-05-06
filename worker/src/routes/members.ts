@@ -40,6 +40,8 @@ members.get("/", async (c) => {
     LEFT JOIN users u ON u.id = m.user_id
   `;
 
+  const MEMBER_COLORS = ["#22c55e", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4"];
+
   try {
     if (groupId) {
       const membership = await c.env.DB.prepare(`
@@ -61,7 +63,43 @@ members.get("/", async (c) => {
       `)
         .bind(groupId)
         .all();
-      return c.json(rows.results);
+
+      const existingMembers = rows.results as any[];
+      const existingUserIds = new Set(existingMembers.map((m: any) => m.user_id).filter(Boolean));
+
+      // Find group members who don't have a members record yet
+      const ungrouped = await c.env.DB.prepare(`
+        SELECT gm.user_id, u.name, u.email
+        FROM group_members gm
+        JOIN users u ON u.id = gm.user_id
+        WHERE gm.group_id = ?
+          AND gm.user_id NOT IN (
+            SELECT user_id FROM members WHERE group_id = ? AND user_id IS NOT NULL
+          )
+      `).bind(groupId, groupId).all<{ user_id: string; name: string | null; email: string }>();
+
+      const newMembers: any[] = [];
+      const now = new Date().toISOString();
+      for (const gm of ungrouped.results) {
+        if (existingUserIds.has(gm.user_id)) continue;
+        const total = [...gm.user_id].reduce((sum, ch) => sum + ch.charCodeAt(0), 0);
+        const avatarColor = MEMBER_COLORS[total % MEMBER_COLORS.length];
+        const memberId = nanoid();
+        await c.env.DB.prepare(
+          "INSERT INTO members (id, group_id, user_id, name, phone, avatar_color, is_active, created_at) VALUES (?, ?, ?, ?, NULL, ?, 1, ?)"
+        ).bind(memberId, groupId, gm.user_id, gm.name || gm.email, avatarColor, now).run();
+
+        const newMember = await c.env.DB.prepare(`${memberSelect} WHERE m.id = ?`).bind(memberId).first();
+        if (newMember) newMembers.push(newMember);
+      }
+
+      const allMembers = [...existingMembers, ...newMembers];
+      allMembers.sort((a: any, b: any) => {
+        if (b.is_active !== a.is_active) return b.is_active - a.is_active;
+        return (a.name ?? "").localeCompare(b.name ?? "");
+      });
+
+      return c.json(allMembers);
     }
 
     if (c.get("userRole") === "admin") {

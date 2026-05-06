@@ -761,10 +761,10 @@ export default function SessionDetailPage() {
       {tab === "Điểm danh" && (
         <div>
           <div className="mb-3 flex items-center justify-between">
-            <span className="text-sm text-gray-500">{s.members.length} người tham gia</span>
+            <span className="text-sm text-gray-500">{checkedInIds.size} người tham gia</span>
           </div>
           <div className="space-y-2">
-            {(canManageSession ? members.filter((member) => member.is_active) : s.members).map((member) => {
+            {(s.group_id && members.filter((member) => member.is_active).length > 0 ? members.filter((member) => member.is_active) : s.members).map((member) => {
               const checked = checkedInIds.has(member.id);
               return (
                 <button
