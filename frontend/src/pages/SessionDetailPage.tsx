@@ -5,12 +5,14 @@ import {
   ArrowRightLeft,
   Check,
   Copy,
+  Pencil,
   Plus,
   RefreshCw,
   Share2,
   Trash2,
   UserMinus,
   UserPlus,
+  X,
 } from "lucide-react";
 
 import { api } from "@/api/client";
@@ -72,6 +74,7 @@ export default function SessionDetailPage() {
     consumerId: "",
   });
   const [addingCost, setAddingCost] = useState(false);
+  const [editingCostId, setEditingCostId] = useState<string | null>(null);
   const [recalculating, setRecalculating] = useState(false);
   const [joining, setJoining] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -224,7 +227,23 @@ export default function SessionDetailPage() {
     }
   };
 
-  const handleAddCost = async () => {
+  const resetCostForm = () => {
+    setCostForm({ label: "", amount: "", type: "court", payerId: "", consumerId: "" });
+    setEditingCostId(null);
+  };
+
+  const handleStartEditCost = (cost: Cost) => {
+    setEditingCostId(cost.id);
+    setCostForm({
+      label: cost.label,
+      amount: String(cost.amount),
+      type: cost.type,
+      payerId: cost.payer_id ?? "",
+      consumerId: cost.consumer_id ?? "",
+    });
+  };
+
+  const handleSaveCost = async () => {
     if (!costForm.label.trim() || !costForm.amount) return;
     if (costForm.consumerId && !costForm.payerId) {
       alert("Khoản chi riêng cần chọn người ứng tiền.");
@@ -233,23 +252,37 @@ export default function SessionDetailPage() {
 
     setAddingCost(true);
     try {
-      await api.addCost(s.id, {
+      const payload = {
         label: costForm.label.trim(),
         amount: parseFloat(costForm.amount),
         type: costForm.type as Cost["type"],
         payer_id: costForm.payerId || null,
         consumer_id: costForm.consumerId || null,
-      });
-      setCostForm({ label: "", amount: "", type: "court", payerId: "", consumerId: "" });
+      };
+
+      if (editingCostId) {
+        await api.updateCost(s.id, editingCostId, payload);
+      } else {
+        await api.addCost(s.id, payload);
+      }
+
+      resetCostForm();
       await refresh(s.id);
+    } catch (error: any) {
+      alert(error.message);
     } finally {
       setAddingCost(false);
     }
   };
 
   const handleDeleteCost = async (costId: string) => {
-    await api.deleteCost(s.id, costId);
-    await refresh(s.id);
+    try {
+      await api.deleteCost(s.id, costId);
+      if (editingCostId === costId) resetCostForm();
+      await refresh(s.id);
+    } catch (error: any) {
+      alert(error.message);
+    }
   };
 
   const handleRecalculate = async () => {
@@ -623,10 +656,19 @@ export default function SessionDetailPage() {
                 </div>
               </div>
 
-              <Button className="w-full" onClick={handleAddCost} disabled={addingCost || !costForm.label || !costForm.amount}>
-                <Plus size={16} className="mr-1" />
-                {addingCost ? "Đang thêm..." : "Thêm khoản chi"}
-              </Button>
+              <div className="flex gap-2">
+                <Button className="flex-1" onClick={handleSaveCost} disabled={addingCost || !costForm.label || !costForm.amount}>
+                  {editingCostId ? <Check size={16} className="mr-1" /> : <Plus size={16} className="mr-1" />}
+                  {addingCost
+                    ? (editingCostId ? "Đang lưu..." : "Đang thêm...")
+                    : (editingCostId ? "Lưu khoản chi" : "Thêm khoản chi")}
+                </Button>
+                {editingCostId && (
+                  <Button variant="outline" size="icon" onClick={resetCostForm} disabled={addingCost}>
+                    <X size={16} />
+                  </Button>
+                )}
+              </div>
             </div>
           )}
 
@@ -660,14 +702,24 @@ export default function SessionDetailPage() {
                     <div className="flex flex-shrink-0 items-center gap-2">
                       <span className="font-semibold text-gray-900">{formatCurrency(cost.amount)}</span>
                       {canManageSession && (
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          onClick={() => handleDeleteCost(cost.id)}
-                          className="text-red-400 hover:text-red-600"
-                        >
-                          <Trash2 size={14} />
-                        </Button>
+                        <>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => handleStartEditCost(cost)}
+                            className="text-gray-400 hover:text-gray-700"
+                          >
+                            <Pencil size={14} />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => handleDeleteCost(cost.id)}
+                            className="text-red-400 hover:text-red-600"
+                          >
+                            <Trash2 size={14} />
+                          </Button>
+                        </>
                       )}
                     </div>
                   </div>

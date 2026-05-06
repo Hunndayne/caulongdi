@@ -36,6 +36,16 @@ type CostRow = {
   consumer_id: string | null;
 };
 
+type CostBody = {
+  label: string;
+  amount: number;
+  type?: string;
+  payerId?: string | null;
+  consumerId?: string | null;
+  payer_id?: string | null;
+  consumer_id?: string | null;
+};
+
 type GroupSessionNotificationRow = {
   group_name: string;
   creator_name?: string | null;
@@ -623,16 +633,10 @@ sessions.post("/:id/costs", async (c) => {
   const lockedResponse = await blockIfSessionHasConfirmedPayments(c, id);
   if (lockedResponse) return lockedResponse;
 
-  const body = await c.req.json<{
-    label: string;
-    amount: number;
-    type?: string;
-    payerId?: string | null;
-    consumerId?: string | null;
-    payer_id?: string | null;
-    consumer_id?: string | null;
-  }>();
-  if (!body.label || body.amount == null) return c.json({ error: "label, amount required" }, 400);
+  const body = await c.req.json<CostBody>();
+  const label = body.label?.trim();
+  const amount = Number(body.amount);
+  if (!label || !Number.isFinite(amount) || amount <= 0) return c.json({ error: "label, positive amount required" }, 400);
 
   const costId = nanoid();
   const payerId = body.payerId ?? body.payer_id ?? null;
@@ -642,12 +646,46 @@ sessions.post("/:id/costs", async (c) => {
     INSERT INTO costs (id, session_id, label, amount, type, payer_id, consumer_id)
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `)
-    .bind(costId, id, body.label, body.amount, body.type ?? "other", payerId, consumerId)
+    .bind(costId, id, label, amount, body.type ?? "other", payerId, consumerId)
     .run();
   await c.env.DB.prepare("DELETE FROM payments WHERE session_id = ?").bind(id).run();
 
   const row = await c.env.DB.prepare("SELECT * FROM costs WHERE id = ?").bind(costId).first();
   return c.json(row, 201);
+});
+
+sessions.put("/:id/costs/:costId", async (c) => {
+  const { id, costId } = c.req.param();
+  const session = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first<SessionRow>();
+  if (!session) return c.json({ error: "Not found" }, 404);
+  if (!(await canManageSession(c, session))) return c.json({ error: "Forbidden" }, 403);
+  const lockedResponse = await blockIfSessionHasConfirmedPayments(c, id);
+  if (lockedResponse) return lockedResponse;
+
+  const existing = await c.env.DB.prepare("SELECT * FROM costs WHERE id = ? AND session_id = ?")
+    .bind(costId, id)
+    .first<CostRow & { label: string; type: string }>();
+  if (!existing) return c.json({ error: "Cost not found" }, 404);
+
+  const body = await c.req.json<CostBody>();
+  const label = body.label?.trim();
+  const amount = Number(body.amount);
+  if (!label || !Number.isFinite(amount) || amount <= 0) return c.json({ error: "label, positive amount required" }, 400);
+
+  const payerId = body.payerId ?? body.payer_id ?? null;
+  const consumerId = body.consumerId ?? body.consumer_id ?? null;
+
+  await c.env.DB.prepare(`
+    UPDATE costs
+    SET label = ?, amount = ?, type = ?, payer_id = ?, consumer_id = ?
+    WHERE id = ? AND session_id = ?
+  `)
+    .bind(label, amount, body.type ?? existing.type, payerId, consumerId, costId, id)
+    .run();
+  await c.env.DB.prepare("DELETE FROM payments WHERE session_id = ?").bind(id).run();
+
+  const row = await c.env.DB.prepare("SELECT * FROM costs WHERE id = ?").bind(costId).first();
+  return c.json(row);
 });
 
 sessions.delete("/:id/costs/:costId", async (c) => {

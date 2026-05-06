@@ -74,6 +74,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify(data),
     }),
+  updateCost: (sessionId: string, costId: string, data: Partial<Cost>) =>
+    request<Cost>(`/api/sessions/${sessionId}/costs/${costId}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
   deleteCost: (sessionId: string, costId: string) =>
     request<{ success: boolean }>(`/api/sessions/${sessionId}/costs/${costId}`, { method: "DELETE" }),
   recalculate: (sessionId: string) =>
