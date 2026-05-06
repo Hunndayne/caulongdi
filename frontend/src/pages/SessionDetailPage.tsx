@@ -1,15 +1,18 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { ChangeEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeft,
   ArrowRightLeft,
   Check,
   Copy,
+  Download,
   Pencil,
   Plus,
   RefreshCw,
   Share2,
   Trash2,
+  Upload,
   UserMinus,
   UserPlus,
   X,
@@ -38,6 +41,8 @@ const COST_TYPES = [
   { value: "other", label: "Khác" },
 ] as const;
 
+const COST_EXCEL_HEADERS = ["Mã", "Loại", "Mô tả", "Số tiền", "Người ứng tiền", "Người dùng riêng"] as const;
+
 function parseManagers(raw?: string | null) {
   if (!raw) return [] as string[];
   try {
@@ -50,6 +55,34 @@ function parseManagers(raw?: string | null) {
 
 function getCostTypeLabel(type: string) {
   return COST_TYPES.find((item) => item.value === type)?.label ?? type;
+}
+
+function normalizeImportText(value: unknown) {
+  return String(value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase();
+}
+
+function readImportCell(row: Record<string, unknown>, aliases: string[]) {
+  const entries = Object.entries(row);
+  for (const alias of aliases) {
+    const normalizedAlias = normalizeImportText(alias);
+    const match = entries.find(([key]) => normalizeImportText(key) === normalizedAlias);
+    if (match) return match[1];
+  }
+  return "";
+}
+
+function parseImportAmount(value: unknown) {
+  if (typeof value === "number") return Number.isFinite(value) && value > 0 ? value : null;
+  const raw = String(value ?? "").trim();
+  if (!raw) return null;
+  const digits = raw.replace(/[^\d]/g, "");
+  if (!digits) return null;
+  const amount = Number(digits);
+  return Number.isFinite(amount) && amount > 0 ? amount : null;
 }
 
 function hasBankInfo(member: Member | null | undefined) {
@@ -75,6 +108,7 @@ export default function SessionDetailPage() {
   });
   const [addingCost, setAddingCost] = useState(false);
   const [editingCostId, setEditingCostId] = useState<string | null>(null);
+  const [importingCosts, setImportingCosts] = useState(false);
   const [recalculating, setRecalculating] = useState(false);
   const [joining, setJoining] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -82,6 +116,7 @@ export default function SessionDetailPage() {
   const [managingSettings, setManagingSettings] = useState(false);
   const [showManagerSettings, setShowManagerSettings] = useState(false);
   const [recipientId, setRecipientId] = useState("");
+  const costImportInputRef = useRef<HTMLInputElement | null>(null);
 
   const currentUserId = (authSession?.user as { id?: string } | undefined)?.id;
   const managersList = useMemo(() => parseManagers(currentSession?.managers), [currentSession?.managers]);
@@ -150,6 +185,11 @@ export default function SessionDetailPage() {
 
   const membersWithBank = Array.from(memberById.values()).filter(hasBankInfo);
   const fallbackRecipientMember = recipientId ? memberById.get(recipientId) ?? null : null;
+  const memberByImportName = new Map<string, Member>();
+  for (const member of memberById.values()) {
+    memberByImportName.set(normalizeImportText(member.name), member);
+    if (member.user_email) memberByImportName.set(normalizeImportText(member.user_email), member);
+  }
 
   const paymentRows = [...s.payments]
     .map((payment) => ({
@@ -227,6 +267,133 @@ export default function SessionDetailPage() {
     }
   };
 
+  const resolveImportedMember = (value: unknown, rowNumber: number, columnName: string) => {
+    const raw = String(value ?? "").trim();
+    if (!raw) return null;
+
+    const member = memberByImportName.get(normalizeImportText(raw));
+    if (!member) {
+      throw new Error(`Dòng ${rowNumber}: không tìm thấy thành viên "${raw}" ở cột ${columnName}.`);
+    }
+    return member;
+  };
+
+  const handleExportCosts = async () => {
+    const XLSX = await import("xlsx");
+    const costRows = s.costs.map((cost) => {
+      const payer = cost.payer_id ? memberById.get(cost.payer_id) : null;
+      const consumer = cost.consumer_id ? memberById.get(cost.consumer_id) : null;
+      return [
+        cost.id,
+        getCostTypeLabel(cost.type),
+        cost.label,
+        cost.amount,
+        payer?.name ?? "",
+        consumer?.name ?? "",
+      ];
+    });
+
+    const workbook = XLSX.utils.book_new();
+    const costSheet = XLSX.utils.aoa_to_sheet([[...COST_EXCEL_HEADERS], ...costRows]);
+    costSheet["!cols"] = [
+      { wch: 24 },
+      { wch: 14 },
+      { wch: 28 },
+      { wch: 14 },
+      { wch: 24 },
+      { wch: 24 },
+    ];
+    XLSX.utils.book_append_sheet(workbook, costSheet, "Chi phí");
+
+    const memberSheet = XLSX.utils.aoa_to_sheet([
+      ["Tên thành viên", "Email"],
+      ...Array.from(memberById.values()).map((member) => [member.name, member.user_email ?? ""]),
+    ]);
+    memberSheet["!cols"] = [{ wch: 28 }, { wch: 32 }];
+    XLSX.utils.book_append_sheet(workbook, memberSheet, "Thành viên");
+
+    const safeDate = s.date.replace(/[^\d-]/g, "");
+    XLSX.writeFile(workbook, `chi-phi-${safeDate || s.id}.xlsx`);
+  };
+
+  const handleImportCosts = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+
+    setImportingCosts(true);
+    try {
+      const XLSX = await import("xlsx");
+      const workbook = XLSX.read(await file.arrayBuffer(), { type: "array" });
+      const sheet = workbook.Sheets["Chi phí"] ?? workbook.Sheets[workbook.SheetNames[0]];
+      if (!sheet) throw new Error("Không tìm thấy sheet chi phí trong file.");
+
+      const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: "" });
+      const parsedCosts = rows
+        .map((row, index) => {
+          const rowNumber = index + 2;
+          const costIdRaw = readImportCell(row, ["Mã", "Ma", "ID", "Cost ID"]);
+          const typeRaw = readImportCell(row, ["Loại", "Loai", "Type"]);
+          const labelRaw = readImportCell(row, ["Mô tả", "Mo ta", "Mô tả khoản chi", "Label"]);
+          const amountRaw = readImportCell(row, ["Số tiền", "So tien", "Amount"]);
+          const payerRaw = readImportCell(row, ["Người ứng tiền", "Nguoi ung tien", "Người trả", "Payer"]);
+          const consumerRaw = readImportCell(row, ["Người dùng riêng", "Nguoi dung rieng", "Người dùng", "Consumer"]);
+
+          const isEmpty = [costIdRaw, typeRaw, labelRaw, amountRaw, payerRaw, consumerRaw]
+            .every((value) => String(value ?? "").trim() === "");
+          if (isEmpty) return null;
+
+          const costId = String(costIdRaw ?? "").trim();
+          const amount = parseImportAmount(amountRaw);
+          if (!amount) throw new Error(`Dòng ${rowNumber}: số tiền không hợp lệ.`);
+
+          const typeKey = normalizeImportText(typeRaw);
+          const type = (COST_TYPES.find((item) =>
+            normalizeImportText(item.label) === typeKey || normalizeImportText(item.value) === typeKey
+          )?.value ?? "other") as Cost["type"];
+          const label = String(labelRaw || getCostTypeLabel(type)).trim();
+          const payer = resolveImportedMember(payerRaw, rowNumber, "Người ứng tiền");
+          const consumer = resolveImportedMember(consumerRaw, rowNumber, "Người dùng riêng");
+
+          return {
+            label,
+            amount,
+            type,
+            payer_id: payer?.id ?? null,
+            consumer_id: consumer?.id ?? null,
+            costId: costId || null,
+          };
+        })
+        .filter((item): item is {
+          label: string;
+          amount: number;
+          type: Cost["type"];
+          payer_id: string | null;
+          consumer_id: string | null;
+          costId: string | null;
+        } => Boolean(item));
+
+      if (parsedCosts.length === 0) throw new Error("File không có dòng chi phí hợp lệ.");
+
+      for (const cost of parsedCosts) {
+        const { costId, ...payload } = cost;
+        if (costId) {
+          await api.updateCost(s.id, costId, payload);
+        } else {
+          await api.addCost(s.id, payload);
+        }
+      }
+
+      resetCostForm();
+      await refresh(s.id);
+      alert(`Đã nhập ${parsedCosts.length} khoản chi.`);
+    } catch (error: any) {
+      alert(error.message);
+    } finally {
+      setImportingCosts(false);
+    }
+  };
+
   const resetCostForm = () => {
     setCostForm({ label: "", amount: "", type: "court", payerId: "", consumerId: "" });
     setEditingCostId(null);
@@ -245,10 +412,6 @@ export default function SessionDetailPage() {
 
   const handleSaveCost = async () => {
     if (!costForm.label.trim() || !costForm.amount) return;
-    if (costForm.consumerId && !costForm.payerId) {
-      alert("Khoản chi riêng cần chọn người ứng tiền.");
-      return;
-    }
 
     setAddingCost(true);
     try {
@@ -588,6 +751,34 @@ export default function SessionDetailPage() {
 
       {tab === "Chi phí" && (
         <div className="space-y-4">
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" onClick={handleExportCosts} className="flex-1">
+              <Download size={14} className="mr-1" />
+              Xuất Excel
+            </Button>
+            {canManageSession && (
+              <>
+                <input
+                  ref={costImportInputRef}
+                  type="file"
+                  accept=".xlsx,.xls,.csv"
+                  onChange={handleImportCosts}
+                  className="hidden"
+                />
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => costImportInputRef.current?.click()}
+                  disabled={importingCosts}
+                  className="flex-1"
+                >
+                  <Upload size={14} className="mr-1" />
+                  {importingCosts ? "Đang nhập..." : "Nhập Excel"}
+                </Button>
+              </>
+            )}
+          </div>
+
           {canManageSession && (
             <div className="space-y-3 rounded-xl bg-gray-50 p-4">
               <div className="grid grid-cols-2 gap-2">
@@ -684,6 +875,9 @@ export default function SessionDetailPage() {
                 let helperClass = "text-green-500";
                 if (payerMember && consumerMember) {
                   helperText = `${consumerMember.name} trả lại cho ${payerMember.name}`;
+                  helperClass = "text-orange-500";
+                } else if (consumerMember) {
+                  helperText = `${consumerMember.name} trả lại cho người nhận chung`;
                   helperClass = "text-orange-500";
                 } else if (payerMember) {
                   helperText = `Cả nhóm trả lại cho ${payerMember.name}`;

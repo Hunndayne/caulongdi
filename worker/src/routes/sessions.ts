@@ -764,13 +764,14 @@ sessions.post("/:id/recalculate", async (c) => {
   }
 
   for (const cost of directCosts) {
-    if (!cost.payer_id || !cost.consumer_id) {
-      return c.json({ error: "Direct costs need both payer and consumer" }, 400);
+    const recipientId = cost.payer_id ?? fallbackRecipientId;
+    if (!recipientId || !cost.consumer_id) {
+      return c.json({ error: "Direct costs need a consumer and either a payer or a common payment recipient" }, 400);
     }
-    if (!eligibleMemberSet.has(cost.payer_id) || !eligibleMemberSet.has(cost.consumer_id)) {
+    if (!eligibleMemberSet.has(recipientId) || !eligibleMemberSet.has(cost.consumer_id)) {
       return c.json({ error: "Payer and consumer must both be existing members" }, 400);
     }
-    addPayment(cost.consumer_id, cost.payer_id, Math.round(cost.amount));
+    addPayment(cost.consumer_id, recipientId, Math.round(cost.amount));
   }
 
   await c.env.DB.prepare("DELETE FROM payments WHERE session_id = ?").bind(id).run();
