@@ -65,6 +65,7 @@ Tạo file `worker/.dev.vars`:
 GOOGLE_CLIENT_ID=your_google_client_id
 GOOGLE_CLIENT_SECRET=your_google_client_secret
 BETTER_AUTH_SECRET=any_random_string_32chars_minimum
+PAYMENT_WEBHOOK_SECRET=another_random_string_32chars_minimum
 FRONTEND_URL=http://localhost:5173
 ```
 
@@ -116,10 +117,12 @@ npx wrangler d1 execute badminton-db --file=src/db/schema.sql
 npx wrangler secret put GOOGLE_CLIENT_ID
 npx wrangler secret put GOOGLE_CLIENT_SECRET
 npx wrangler secret put BETTER_AUTH_SECRET
+npx wrangler secret put PAYMENT_WEBHOOK_SECRET
 ```
 
 > `BETTER_AUTH_SECRET` có thể là bất kỳ chuỗi random nào, tối thiểu 32 ký tự.
 > Tạo nhanh: `openssl rand -base64 32`
+> `PAYMENT_WEBHOOK_SECRET` là chuỗi bí mật dài dùng cho Google Apps Script gọi webhook thanh toán.
 
 ### Bước 3 — Deploy Worker
 
@@ -252,9 +255,29 @@ DELETE /api/sessions/:id/costs/:cid Xóa khoản chi (admin)
 POST   /api/sessions/:id/recalculate Tính lại payments (admin)
 
 POST   /api/payments/:id/toggle     Toggle đã trả / chưa trả
+POST   /api/payment-webhooks/bank-transfer  Auto-confirm QR payment webhook
 
 GET    /api/stats                   Tổng hợp thống kê
 ```
+
+---
+
+## Google Apps Script cho Timo
+
+Script mẫu nằm ở `scripts/timo-gmail-webhook.gs`.
+
+1. Tạo một Google Apps Script gắn với Gmail của `tranthanhhung1641@gmail.com`.
+2. Dán nội dung file script vào Apps Script.
+3. Thay `PASTE_PAYMENT_WEBHOOK_SECRET_HERE` bằng đúng secret đã set trong Worker qua `PAYMENT_WEBHOOK_SECRET`.
+4. Tạo trigger chạy hàm `scanTimoPaymentEmails` mỗi 1-5 phút.
+
+Webhook production cố định:
+
+```txt
+https://caulong.hunn.io.vn/api/payment-webhooks/bank-transfer
+```
+
+Script chỉ gửi email Timo có dòng tiền vào `vừa tăng ... VND`, có `Mô tả: ...`, và phần mô tả chứa mã `CLD-<paymentId>` được nhúng trong QR.
 
 ---
 
@@ -263,7 +286,7 @@ GET    /api/stats                   Tổng hợp thống kê
 - [ ] Tạo Google Cloud Console project, bật Google OAuth API
 - [ ] Lấy `GOOGLE_CLIENT_ID` và `GOOGLE_CLIENT_SECRET`
 - [ ] Chạy `wrangler d1 create` và schema migration
-- [ ] Set 3 secrets: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `BETTER_AUTH_SECRET`
+- [ ] Set 4 secrets: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `BETTER_AUTH_SECRET`, `PAYMENT_WEBHOOK_SECRET`
 - [ ] Cập nhật `FRONTEND_URL` trong `wrangler.toml`
 - [ ] Deploy worker và frontend
 - [ ] Thêm domain vào Google Console (origins + redirect URI)

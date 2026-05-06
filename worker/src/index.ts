@@ -9,6 +9,7 @@ import paymentsRouter from "./routes/payments";
 import statsRouter from "./routes/stats";
 import profilesRouter from "./routes/profiles";
 import groupsRouter from "./routes/groups";
+import paymentWebhooksRouter from "./routes/paymentWebhooks";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -146,6 +147,8 @@ app.get("/sessions/:id", async (c) => {
   const session = await getPreviewSession(c, c.req.param("id"));
   return renderSessionHtml(c, session);
 });
+
+app.route("/api/payment-webhooks", paymentWebhooksRouter);
 
 // Auth middleware for protected routes
 app.use("/api/*", async (c, next) => {

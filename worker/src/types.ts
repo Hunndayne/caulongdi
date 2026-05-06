@@ -5,6 +5,8 @@ export interface Env {
   GOOGLE_CLIENT_ID: string;
   GOOGLE_CLIENT_SECRET: string;
   BETTER_AUTH_SECRET: string;
+  PAYMENT_WEBHOOK_SECRET?: string;
+  PAYMENT_AUTOCONFIRM_EMAIL?: string;
   SMTP_SERVER: string;
   SMTP_PORT: string;
   SMTP_LOGIN: string;

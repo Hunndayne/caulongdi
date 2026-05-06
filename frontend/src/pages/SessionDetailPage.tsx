@@ -284,10 +284,10 @@ export default function SessionDetailPage() {
 
   const totalCost = s.costs.reduce((sum, cost) => sum + cost.amount, 0);
 
-  const buildQrUrl = (debtor: Member, recipient: Member, amount: number) => {
+  const buildQrUrl = (paymentId: string, debtor: Member, recipient: Member, amount: number) => {
     if (!recipient.user_bank_bin || !recipient.user_bank_account_number || !recipient.user_bank_account_name) return null;
     if (amount <= 0 || debtor.id === recipient.id) return null;
-    const note = `${debtor.name} chuyển ${recipient.name} ${formatDate(s.date)}`;
+    const note = `CLD-${paymentId} ${debtor.name} ${formatDate(s.date)}`;
     return `https://img.vietqr.io/image/${recipient.user_bank_bin}-${recipient.user_bank_account_number}-compact.png?amount=${Math.ceil(amount)}&addInfo=${encodeURIComponent(note)}&accountName=${encodeURIComponent(recipient.user_bank_account_name)}`;
   };
 
@@ -729,7 +729,7 @@ export default function SessionDetailPage() {
                   ? recipient
                   : (fallbackRecipientMember && fallbackRecipientMember.id !== payment.member_id ? fallbackRecipientMember : null);
                 const canViewQr = Boolean(currentUserId && debtor?.user_id === currentUserId);
-                const qrUrl = canViewQr && debtor && qrRecipient ? buildQrUrl(debtor, qrRecipient, payment.amount_owed) : null;
+                const qrUrl = canViewQr && debtor && qrRecipient ? buildQrUrl(payment.id, debtor, qrRecipient, payment.amount_owed) : null;
                 const fallbackNotice = !recipientHasBank && qrRecipient && recipient
                   ? `Người ứng tiền chưa cập nhật STK, tạm chuyển qua ${qrRecipient.name}.`
                   : null;
