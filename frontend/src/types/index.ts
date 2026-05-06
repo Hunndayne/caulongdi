@@ -122,6 +122,7 @@ export interface Session {
   status: "upcoming" | "completed";
   payment_recipient?: string | null;
   managers?: string | null;
+  allow_all_edit?: number;
   created_at: string;
   attendee_count?: number;
   total_cost?: number;

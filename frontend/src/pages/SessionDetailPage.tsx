@@ -129,6 +129,14 @@ export default function SessionDetailPage() {
     isAdminUser(authSession?.user) ||
     (currentUserId && currentSession?.created_by === currentUserId) ||
     (currentUserId && managersList.includes(currentUserId)) ||
+    currentSession?.allow_all_edit ||
+    groupRole === "admin"
+  );
+
+  const canManageSessionStrict = Boolean(
+    isAdminUser(authSession?.user) ||
+    (currentUserId && currentSession?.created_by === currentUserId) ||
+    (currentUserId && managersList.includes(currentUserId)) ||
     groupRole === "admin"
   );
 
@@ -564,7 +572,7 @@ export default function SessionDetailPage() {
           <Badge variant={s.status === "upcoming" ? "green" : "gray"}>
             {s.status === "upcoming" ? "Sắp tới" : "Hoàn thành"}
           </Badge>
-          {canManageSession && (
+          {canManageSessionStrict && (
             <Button variant="ghost" size="icon" onClick={handleDeleteSession} className="text-red-500">
               <Trash2 size={16} />
             </Button>
@@ -572,7 +580,7 @@ export default function SessionDetailPage() {
         </div>
       </div>
 
-      {canManageSession && s.status === "upcoming" && (
+      {canManageSessionStrict && s.status === "upcoming" && (
         <button
           onClick={handleMarkComplete}
           className="mb-4 w-full rounded-xl border border-green-200 bg-green-50 py-2 text-sm font-medium text-green-700 transition-colors hover:bg-green-100"
@@ -597,7 +605,7 @@ export default function SessionDetailPage() {
         </Button>
       </div>
 
-      {canManageSession && (
+      {canManageSessionStrict && (
         <div className="mb-4">
           {!showManagerSettings ? (
             <button
@@ -610,6 +618,27 @@ export default function SessionDetailPage() {
           ) : (
             <div className="space-y-3 rounded-xl border border-gray-200 bg-gray-50 p-3">
               <div className="text-xs font-semibold text-gray-700">Người tạo: {creatorName}</div>
+
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={Boolean(currentSession?.allow_all_edit)}
+                  onChange={async () => {
+                    const nextValue = currentSession?.allow_all_edit ? 0 : 1;
+                    setManagingSettings(true);
+                    try {
+                      await api.updateSession(s.id, { allow_all_edit: nextValue } as any);
+                      await refresh(s.id);
+                    } catch (error: any) {
+                      alert(error.message);
+                    } finally {
+                      setManagingSettings(false);
+                    }
+                  }}
+                  className="rounded border-gray-300"
+                />
+                <span className="text-gray-700">Cho phép tất cả thành viên chỉnh sửa</span>
+              </label>
 
               {managersList.length > 0 && (
                 <div>

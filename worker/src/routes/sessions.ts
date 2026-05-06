@@ -19,6 +19,7 @@ type SessionBody = {
   status?: string;
   paymentRecipient?: string | null;
   payment_recipient?: string | null;
+  allow_all_edit?: number;
 };
 
 type SessionRow = {
@@ -109,6 +110,34 @@ async function canAccessSession(c: any, session: SessionRow) {
 }
 
 async function canManageSession(c: any, session: SessionRow) {
+  if (c.get("userRole") === "admin") return true;
+
+  const userId = c.get("userId");
+  if (session.created_by && session.created_by === userId) {
+    if (!session.group_id) return true;
+    return isGroupMember(c, session.group_id);
+  }
+
+  const managersRaw = (session as any).managers;
+  if (managersRaw) {
+    try {
+      const managers: string[] = JSON.parse(managersRaw);
+      if (managers.includes(userId)) return true;
+    } catch {
+      // ignore bad legacy data
+    }
+  }
+
+  if ((session as any).allow_all_edit) {
+    if (!session.group_id) return true;
+    return isGroupMember(c, session.group_id);
+  }
+
+  return isGroupAdmin(c, session.group_id);
+}
+
+// Không tính allow_all_edit — chỉ creator, managers, admin mới được làm các thao tác nhạy cảm (tính tiền, gửi mail, xóa)
+async function canManageSessionStrict(c: any, session: SessionRow) {
   if (c.get("userRole") === "admin") return true;
 
   const userId = c.get("userId");
@@ -381,7 +410,7 @@ sessions.put("/:id", async (c) => {
 
   await c.env.DB.prepare(`
     UPDATE sessions
-    SET date = ?, start_time = ?, venue = ?, location = ?, note = ?, status = ?, payment_recipient = ?
+    SET date = ?, start_time = ?, venue = ?, location = ?, note = ?, status = ?, payment_recipient = ?, allow_all_edit = ?
     WHERE id = ?
   `)
     .bind(
@@ -392,6 +421,7 @@ sessions.put("/:id", async (c) => {
       body.note !== undefined ? body.note : existing.note,
       body.status ?? existing.status,
       normalizedPaymentRecipient !== undefined ? normalizedPaymentRecipient : (existing as any).payment_recipient ?? null,
+      body.allow_all_edit !== undefined ? body.allow_all_edit : ((existing as any).allow_all_edit ?? 0),
       id
     )
     .run();
@@ -408,7 +438,7 @@ sessions.delete("/:id", async (c) => {
   const { id } = c.req.param();
   const existing = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first<SessionRow>();
   if (!existing) return c.json({ error: "Not found" }, 404);
-  if (!(await canManageSession(c, existing))) return c.json({ error: "Forbidden" }, 403);
+  if (!(await canManageSessionStrict(c, existing))) return c.json({ error: "Forbidden" }, 403);
   const lockedResponse = await blockIfSessionHasConfirmedPayments(c, id);
   if (lockedResponse) return lockedResponse;
   await c.env.DB.prepare("DELETE FROM sessions WHERE id = ?").bind(id).run();
@@ -419,7 +449,7 @@ sessions.post("/:id/transfer", async (c) => {
   const { id } = c.req.param();
   const session = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first<SessionRow>();
   if (!session) return c.json({ error: "Not found" }, 404);
-  if (!(await canManageSession(c, session))) return c.json({ error: "Forbidden" }, 403);
+  if (!(await canManageSessionStrict(c, session))) return c.json({ error: "Forbidden" }, 403);
 
   const body = await c.req.json<{ memberId: string }>();
   if (!body.memberId) return c.json({ error: "memberId required" }, 400);
@@ -442,7 +472,7 @@ sessions.post("/:id/managers", async (c) => {
   const { id } = c.req.param();
   const session = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first<SessionRow>();
   if (!session) return c.json({ error: "Not found" }, 404);
-  if (!(await canManageSession(c, session))) return c.json({ error: "Forbidden" }, 403);
+  if (!(await canManageSessionStrict(c, session))) return c.json({ error: "Forbidden" }, 403);
 
   const body = await c.req.json<{ memberId: string }>();
   if (!body.memberId) return c.json({ error: "memberId required" }, 400);
@@ -469,7 +499,7 @@ sessions.delete("/:id/managers/:memberId", async (c) => {
   const { id, memberId } = c.req.param();
   const session = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first<SessionRow>();
   if (!session) return c.json({ error: "Not found" }, 404);
-  if (!(await canManageSession(c, session))) return c.json({ error: "Forbidden" }, 403);
+  if (!(await canManageSessionStrict(c, session))) return c.json({ error: "Forbidden" }, 403);
 
   const member = await c.env.DB.prepare("SELECT * FROM members WHERE id = ?")
     .bind(memberId)
@@ -804,7 +834,9 @@ sessions.post("/:id/recalculate", async (c) => {
     .bind(id)
     .all<PaymentNotificationRow>();
 
-  if (paymentNotificationRows.results.length > 0) {
+  const isStrictManager = await canManageSessionStrict(c, session);
+
+  if (isStrictManager && paymentNotificationRows.results.length > 0) {
     const grouped = new Map<string, { debtorName: string; lines: { recipientName: string; amount: number }[] }>();
 
     for (const item of paymentNotificationRows.results) {

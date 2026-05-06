@@ -1,0 +1,1 @@
+ALTER TABLE sessions ADD COLUMN allow_all_edit INTEGER NOT NULL DEFAULT 0;
