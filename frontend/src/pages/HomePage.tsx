@@ -140,7 +140,6 @@ function eventTop(session: Session) {
   return Math.max(0, Math.min(top, HOURS.length * 60 - 56));
 }
 
-type CalendarMode = "group" | "mine";
 type CalendarView = "month" | "week";
 
 function StatCard({
@@ -165,7 +164,7 @@ function StatCard({
   }[tone];
 
   return (
-    <div className={cn("rounded-[14px] border border-[#e8e7e2] bg-white px-[18px] py-4", className)}>
+    <div className={cn("flex flex-col gap-2.5 rounded-[14px] border border-[#e8e7e2] bg-white px-[18px] py-4", className)}>
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 text-[12.5px] font-medium text-[#71717a]">
           <Icon size={14} />
@@ -175,7 +174,7 @@ function StatCard({
           i
         </span>
       </div>
-      <div className="mt-3 flex flex-wrap items-baseline gap-2.5">
+      <div className="flex flex-wrap items-baseline gap-2.5">
         <div className="text-[26px] font-bold leading-none tracking-normal text-[#18181b]">{value}</div>
         <span className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11.5px] font-semibold ${toneClass}`}>
           {tone === "green" && <ChevronRight size={11} className="-rotate-90" />}
@@ -187,28 +186,30 @@ function StatCard({
 }
 
 function SessionThumb({ kind }: { kind: "personal" | "group" }) {
+  if (kind === "personal") {
+    return (
+      <div className="relative flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-[9px] bg-gradient-to-br from-[#16a34a] to-[#064e1d] text-white">
+        <span className="absolute inset-1.5 rounded-[3px] border border-white/50" />
+        <span className="absolute bottom-1.5 top-1.5 h-auto w-px bg-white/50" />
+      </div>
+    );
+  }
+
   return (
-    <div
-      className={`relative flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-[9px] text-white ${
-        kind === "personal"
-          ? "bg-gradient-to-br from-[#16a34a] to-[#065f46]"
-          : "bg-gradient-to-br from-[#dc2626] to-[#7f1d1d]"
-      }`}
-    >
-      {kind === "personal" ? <Calendar size={17} /> : <Users size={17} />}
-      <span className="absolute left-1/2 top-1.5 h-7 w-px bg-white/45" />
+    <div className="relative flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-[9px] bg-gradient-to-br from-[#dc2626] to-[#7f1d1d] text-white">
+      <Users size={18} />
     </div>
   );
 }
 
-function StatusChip({ children, tone }: { children: React.ReactNode; tone: "green" | "red" | "gray" }) {
+function StatusChip({ children, tone }: { children: React.ReactNode; tone: "upcoming" | "confirmed" | "pending" }) {
   const classes = {
-    green: "bg-[#e7f6ec] text-[#16a34a]",
-    red: "bg-[#fdecec] text-[#dc2626]",
-    gray: "bg-[#f2f2ef] text-[#71717a]",
+    upcoming: "bg-[#e7f6ec] text-[#16a34a]",
+    confirmed: "border border-[#e8e7e2] bg-[#f7f7f5] text-[#3f3f46]",
+    pending: "bg-[#fbf2dc] text-[#b07410]",
   }[tone];
 
-  return <span className={`whitespace-nowrap rounded-md px-2 py-1 text-[11px] font-semibold ${classes}`}>{children}</span>;
+  return <span className={`whitespace-nowrap rounded-full px-[9px] py-1 text-[11px] font-semibold ${classes}`}>{children}</span>;
 }
 
 function SessionRow({
@@ -221,7 +222,7 @@ function SessionRow({
   joined?: boolean;
 }) {
   return (
-    <div className="flex items-center gap-3 rounded-xl border border-[#e8e7e2] bg-white px-3 py-3 transition-colors hover:border-[#18181b] min-[769px]:px-3.5">
+    <div className="flex items-center gap-3 rounded-xl border border-[#e8e7e2] bg-white px-3.5 py-3 transition-colors hover:border-[#18181b]">
       <SessionThumb kind={kind} />
       <Link to={`/sessions/${session.id}`} className="min-w-0 flex-1">
         <div className="truncate text-[13.5px] font-semibold text-[#18181b]">{session.venue}</div>
@@ -231,9 +232,9 @@ function SessionRow({
       </Link>
       <div className="flex shrink-0 items-center gap-2">
         {kind === "group" ? (
-          joined ? <StatusChip tone="green">Đã đăng ký</StatusChip> : <StatusChip tone="gray">Chưa đăng ký</StatusChip>
+          joined ? <StatusChip tone="confirmed">Đã đăng ký</StatusChip> : <StatusChip tone="pending">Chưa đăng ký</StatusChip>
         ) : (
-          <StatusChip tone="green">Sắp tới</StatusChip>
+          <StatusChip tone="upcoming">Sắp tới</StatusChip>
         )}
         {kind === "group" && !joined ? (
           <Link
@@ -246,7 +247,7 @@ function SessionRow({
           <button
             type="button"
             onClick={() => downloadCalendarFile(session)}
-            className="flex h-8 w-8 items-center justify-center rounded-lg border border-[#e8e7e2] bg-white text-[#3f3f46] transition-colors hover:bg-[#f7f7f5]"
+            className="flex h-[30px] w-[30px] items-center justify-center rounded-lg border border-[#e8e7e2] bg-white text-[#3f3f46] transition-colors hover:bg-[#f7f7f5] hover:text-[#18181b]"
             aria-label="Thêm vào lịch"
             title="Thêm vào lịch"
           >
@@ -264,7 +265,6 @@ export default function HomePage() {
   const [selectedGroupId, setSelectedGroupId] = useState<string | undefined>(undefined);
   const [myStats, setMyStats] = useState<MemberStats | null>(null);
   const [calendarMonth, setCalendarMonth] = useState(() => new Date());
-  const [calendarMode, setCalendarMode] = useState<CalendarMode>("mine");
   const [calendarView, setCalendarView] = useState<CalendarView>("month");
   const [joinedSessions, setJoinedSessions] = useState<Session[]>([]);
   const [joinedLoading, setJoinedLoading] = useState(true);
@@ -288,14 +288,12 @@ export default function HomePage() {
   }, [selectedGroupId]);
 
   const joinedIds = useMemo(() => new Set(joinedSessions.map((item) => item.id)), [joinedSessions]);
-  const calendarSessions = calendarMode === "mine" ? joinedSessions : sessions;
+  const calendarSessions = sessions;
   const thisMonth = monthKey(new Date());
   const activeMonth = monthKey(calendarMonth);
   const myThisMonthCount = joinedSessions.filter((item) => item.date.startsWith(thisMonth)).length;
   const myActiveMonthCount = joinedSessions.filter((item) => item.date.startsWith(activeMonth)).length;
   const groupActiveMonthCount = sessions.filter((item) => item.date.startsWith(activeMonth)).length;
-  const monthSessions = calendarSessions.filter((item) => item.date.startsWith(activeMonth));
-  const upcomingInMonth = monthSessions.filter((item) => item.status === "upcoming").length;
   const today = dateKey(new Date());
 
   const sessionsByDate = useMemo(() => {
@@ -328,23 +326,23 @@ export default function HomePage() {
   const debt = myStats?.debt ?? 0;
 
   return (
-    <div className="mx-auto max-w-[1440px]">
+    <div>
       <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold tracking-normal text-[#18181b]">Xin chào, {userName}</h1>
           <div className="mt-1 text-[13px] text-[#71717a]">Tổng quan hoạt động và buổi chơi sắp tới</div>
         </div>
-        <div className="flex w-full gap-2 min-[480px]:w-auto">
+        <div className="flex gap-2">
           <a
             href="#group-filter"
-            className="inline-flex flex-1 items-center justify-center gap-2 rounded-[9px] border border-[#e8e7e2] bg-white px-3 py-2 text-[13px] font-medium text-[#18181b] transition-colors hover:bg-[#f7f7f5] min-[480px]:flex-none"
+            className="inline-flex items-center gap-2 rounded-[9px] border border-[#e8e7e2] bg-white px-3 py-2 text-[13px] font-medium text-[#18181b] transition-colors hover:bg-[#f7f7f5]"
           >
             <SlidersHorizontal size={14} />
             Bộ lọc
           </a>
           <Link
             to="/sessions"
-            className="inline-flex flex-1 items-center justify-center gap-2 rounded-[9px] bg-[#18181b] px-3.5 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-[#3f3f46] min-[480px]:flex-none"
+            className="inline-flex items-center gap-2 rounded-[9px] bg-[#18181b] px-3.5 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-[#3f3f46]"
           >
             <Plus size={14} />
             Tạo buổi chơi
@@ -387,7 +385,7 @@ export default function HomePage() {
               <div>
                 <div className="text-base font-bold capitalize tracking-normal text-[#18181b]">{monthTitle(calendarMonth)}</div>
                 <div className="mt-0.5 text-xs text-[#71717a]">
-                  {myActiveMonthCount} buổi cá nhân · {groupActiveMonthCount} buổi nhóm · {upcomingInMonth} sắp tới
+                  {myActiveMonthCount} buổi cá nhân · {groupActiveMonthCount} buổi nhóm
                 </div>
               </div>
             </div>
@@ -416,21 +414,6 @@ export default function HomePage() {
               >
                 <ChevronRight size={14} />
               </button>
-
-              <div className="ml-1 flex rounded-[9px] border border-[#e8e7e2] bg-[#f7f7f5] p-[3px]">
-                {(["mine", "group"] as const).map((mode) => (
-                  <button
-                    key={mode}
-                    type="button"
-                    onClick={() => setCalendarMode(mode)}
-                    className={`rounded-md px-2.5 py-1 text-xs font-semibold transition-colors ${
-                      calendarMode === mode ? "bg-white text-[#18181b] shadow-sm" : "text-[#71717a] hover:text-[#18181b]"
-                    }`}
-                  >
-                    {mode === "mine" ? "Của tôi" : "Nhóm"}
-                  </button>
-                ))}
-              </div>
 
               <div className="flex rounded-[9px] border border-[#e8e7e2] bg-[#f7f7f5] p-[3px]">
                 {(["month", "week"] as const).map((view) => (
@@ -565,8 +548,8 @@ export default function HomePage() {
                               key={item.id}
                               to={`/sessions/${item.id}`}
                               style={{ top: `${eventTop(item)}px` }}
-                              className={`absolute left-1 right-1 rounded-md px-2 py-1 text-[11px] font-medium shadow-sm ${
-                                kind === "personal" ? "bg-[#e7f6ec] text-[#16a34a]" : "bg-[#fdecec] text-[#dc2626]"
+                              className={`absolute left-1 right-1 overflow-hidden rounded-md border-l-[3px] px-1.5 py-1 text-[11px] font-medium leading-[1.3] ${
+                                kind === "personal" ? "border-[#16a34a] bg-[#e7f6ec] text-[#16a34a]" : "border-[#dc2626] bg-[#fdecec] text-[#dc2626]"
                               }`}
                             >
                               <div className="truncate font-semibold">{item.venue}</div>
@@ -585,7 +568,7 @@ export default function HomePage() {
           <div className="mt-3.5 flex flex-wrap gap-4 border-t border-[#efeeea] pt-3.5 text-xs text-[#71717a]">
             <div className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-[#16a34a]" />Cá nhân</div>
             <div className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-[#dc2626]" />Nhóm</div>
-            <div className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-[#18181b]" />Hôm nay</div>
+            <div className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full border-2 border-[#18181b]" />Hôm nay</div>
           </div>
         </section>
 
@@ -596,7 +579,7 @@ export default function HomePage() {
                 <User size={16} className="text-[#16a34a]" />
                 Buổi của tôi sắp tới
               </div>
-              <Link to="/sessions" className="inline-flex items-center gap-1 text-xs font-medium text-[#71717a] hover:text-[#18181b]">
+              <Link to="/sessions" className="inline-flex items-center gap-1 text-xs font-medium text-[#18181b] hover:underline">
                 Xem tất cả <ChevronRight size={13} />
               </Link>
             </div>
@@ -621,7 +604,7 @@ export default function HomePage() {
                 <Users size={16} className="text-[#dc2626]" />
                 Buổi nhóm sắp tới
               </div>
-              <Link to="/sessions" className="inline-flex items-center gap-1 text-xs font-medium text-[#71717a] hover:text-[#18181b]">
+              <Link to="/sessions" className="inline-flex items-center gap-1 text-xs font-medium text-[#18181b] hover:underline">
                 Xem tất cả <ChevronRight size={13} />
               </Link>
             </div>

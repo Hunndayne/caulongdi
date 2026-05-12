@@ -115,7 +115,7 @@ export function Topbar() {
 
 export function BottomNav() {
   return (
-    <nav className="fixed bottom-6 left-1/2 z-40 w-[calc(100%-24px)] max-w-[420px] -translate-x-1/2 rounded-full border border-white/60 bg-white/25 p-[7px] shadow-[0_18px_50px_rgba(24,24,27,.20),0_4px_14px_rgba(24,24,27,.10),inset_0_1px_0_rgba(255,255,255,.85)] backdrop-blur-xl min-[769px]:hidden" aria-label="Điều hướng">
+    <nav className="fixed before:pointer-events-none before:absolute before:inset-0 before:rounded-full before:bg-[linear-gradient(180deg,rgba(255,255,255,.45)_0%,rgba(255,255,255,0)_35%,rgba(255,255,255,0)_65%,rgba(255,255,255,.18)_100%)] before:content-[''] bottom-6 left-1/2 z-40 w-[calc(100%-24px)] max-w-[420px] -translate-x-1/2 rounded-full border border-white/55 bg-white/[.18] p-[7px] shadow-[0_18px_50px_rgba(24,24,27,.20),0_4px_14px_rgba(24,24,27,.10),inset_0_1px_0_rgba(255,255,255,.85),inset_0_0_0_1px_rgba(255,255,255,.18),inset_0_-1px_0_rgba(24,24,27,.06)] backdrop-blur-[18px] min-[769px]:hidden" aria-label="Điều hướng">
       <div className="relative flex h-[54px] items-center gap-0.5">
         {navItems.map(({ to, icon: Icon, label, exact }) => (
           <NavLink
@@ -124,14 +124,14 @@ export function BottomNav() {
             end={exact}
             className={({ isActive }) =>
               cn(
-                "relative z-10 flex h-full min-w-11 flex-1 items-center justify-center gap-1.5 rounded-full px-2 text-[13px] font-semibold transition-all duration-300",
+                "relative z-10 flex h-full min-w-11 flex-1 items-center justify-center gap-[7px] rounded-full px-2 text-[13px] font-semibold transition-all duration-300",
                 isActive
-                  ? "flex-[1.7] border border-white/90 bg-white/60 text-[#18181b] shadow-[0_6px_18px_rgba(24,24,27,.14),inset_0_1px_0_rgba(255,255,255,1)] [&_.bn-label]:max-w-[110px] [&_.bn-label]:opacity-100"
+                  ? "flex-[1.7] border border-white/90 bg-white/55 text-[#18181b] shadow-[0_6px_18px_rgba(24,24,27,.14),0_1px_3px_rgba(24,24,27,.08),inset_0_1px_0_rgba(255,255,255,1),inset_0_-1px_0_rgba(24,24,27,.05)] [&_.bn-label]:max-w-[110px] [&_.bn-label]:opacity-100 [&_svg]:scale-[1.05]"
                   : "text-[#71717a] hover:text-[#18181b]"
               )
             }
           >
-            <Icon size={18} />
+            <Icon size={20} className="shrink-0 transition-transform duration-300" />
             <span className="bn-label max-w-0 overflow-hidden whitespace-nowrap opacity-0 transition-all duration-300">
               {label}
             </span>
@@ -144,11 +144,16 @@ export function BottomNav() {
 
 export function Sidebar() {
   const handleLogout = useLogout();
+  const location = useLocation();
   const { data: session } = useSession();
   const user = session?.user as { name?: string; email?: string } | undefined;
+  const activeIndex = Math.max(
+    0,
+    navItems.findIndex((item) => (item.exact ? location.pathname === item.to : location.pathname.startsWith(item.to)))
+  );
 
   return (
-    <aside className="fixed inset-y-0 left-0 z-40 hidden w-[232px] flex-col border-r border-[#e8e7e2] bg-[#f2f2ef] px-3.5 py-5 min-[769px]:flex">
+    <aside className="sticky top-0 z-40 hidden h-screen w-[232px] flex-col overflow-y-auto border-r border-[#e8e7e2] bg-[#f2f2ef] px-3.5 py-5 min-[769px]:flex">
       <div className="flex items-center gap-2.5 px-2 pb-[18px]">
         <BrandMark />
         <span className="text-base font-bold tracking-normal text-[#18181b]">TingTing</span>
@@ -156,6 +161,10 @@ export function Sidebar() {
 
       <nav className="relative flex flex-1 flex-col gap-0.5 rounded-[18px] border border-white/60 bg-white/25 p-[7px] shadow-[0_14px_36px_rgba(24,24,27,.10),0_2px_8px_rgba(24,24,27,.05),inset_0_1px_0_rgba(255,255,255,.85)] backdrop-blur-xl">
         <div className="pointer-events-none absolute inset-0 rounded-[18px] bg-gradient-to-b from-white/40 via-white/0 to-white/20" />
+        <div
+          className="pointer-events-none absolute left-[7px] right-[7px] z-0 h-[38px] rounded-[11px] border border-white/90 bg-white/55 shadow-[0_5px_14px_rgba(24,24,27,.12),0_1px_3px_rgba(24,24,27,.08),inset_0_1px_0_rgba(255,255,255,1)] transition-[top] duration-300"
+          style={{ top: `${7 + activeIndex * 40}px` }}
+        />
         {navItems.map(({ to, icon: Icon, label, exact }) => (
           <NavLink
             key={to}
@@ -165,7 +174,7 @@ export function Sidebar() {
               cn(
                 "relative z-10 flex h-[38px] items-center gap-2.5 rounded-[11px] px-3 text-[13.5px] font-medium text-[#3f3f46] transition-all hover:text-[#18181b]",
                 isActive &&
-                  "border border-white/90 bg-white/60 font-semibold text-[#18181b] shadow-[0_5px_14px_rgba(24,24,27,.12),inset_0_1px_0_rgba(255,255,255,1)]"
+                  "font-semibold text-[#18181b] [&_svg]:scale-[1.06]"
               )
             }
           >
