@@ -28,7 +28,9 @@
     "db:patch:consumer-pending": "wrangler d1 execute caulong --local --file=src/db/patch-consumer-pending.sql",
     "db:patch:consumer-pending:prod": "wrangler d1 execute caulong --remote --file=src/db/patch-consumer-pending.sql",
     "db:patch:allow-all-edit": "wrangler d1 execute caulong --local --file=src/db/patch-allow-all-edit.sql",
-    "db:patch:allow-all-edit:prod": "wrangler d1 execute caulong --remote --file=src/db/patch-allow-all-edit.sql"
+    "db:patch:allow-all-edit:prod": "wrangler d1 execute caulong --remote --file=src/db/patch-allow-all-edit.sql",
+    "db:patch:brand": "wrangler d1 execute caulong --local --file=src/db/patch-tingting-brand.sql",
+    "db:patch:brand:prod": "wrangler d1 execute caulong --remote --file=src/db/patch-tingting-brand.sql"
   },
   "dependencies": {
     "better-auth": "^1.2.7",

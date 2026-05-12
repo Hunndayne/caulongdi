@@ -35,9 +35,9 @@ const TABS = ["Điểm danh", "Chi phí", "Thanh toán"] as const;
 type Tab = (typeof TABS)[number];
 
 const COST_TYPES = [
-  { value: "court", label: "Tiền sân" },
+  { value: "court", label: "Phí địa điểm" },
   { value: "water", label: "Nước" },
-  { value: "shuttle", label: "Cầu" },
+  { value: "shuttle", label: "Dụng cụ" },
   { value: "other", label: "Khác" },
 ] as const;
 
@@ -500,7 +500,7 @@ export default function SessionDetailPage() {
   const buildQrUrl = (paymentId: string, debtor: Member, recipient: Member, amount: number) => {
     if (!recipient.user_bank_bin || !recipient.user_bank_account_number || !recipient.user_bank_account_name) return null;
     if (amount <= 0 || debtor.id === recipient.id) return null;
-    const note = `CLD-${paymentId} ${debtor.name} ${formatDate(s.date)}`;
+    const note = `TT-${paymentId} ${debtor.name} ${formatDate(s.date)}`;
     return `https://img.vietqr.io/image/${recipient.user_bank_bin}-${recipient.user_bank_account_number}-compact.png?amount=${Math.ceil(amount)}&addInfo=${encodeURIComponent(note)}&accountName=${encodeURIComponent(recipient.user_bank_account_name)}`;
   };
 

@@ -563,14 +563,14 @@ export default function MembersPage() {
         <div className="space-y-4">
           <div>
             <label className="mb-1 block text-sm font-medium text-gray-700">Tên nhóm *</label>
-            <Input value={groupName} onChange={(event) => setGroupName(event.target.value)} placeholder="Nhóm cầu lông cuối tuần" />
+            <Input value={groupName} onChange={(event) => setGroupName(event.target.value)} placeholder="Nhóm TingTing cuối tuần" />
           </div>
           <div>
             <label className="mb-1 block text-sm font-medium text-gray-700">Mô tả</label>
             <Input
               value={groupDescription}
               onChange={(event) => setGroupDescription(event.target.value)}
-              placeholder="Khu vực, lịch chơi, sân quen..."
+              placeholder="Khu vực, lịch hẹn, địa điểm quen..."
             />
           </div>
           <div className="flex gap-2 pt-2">

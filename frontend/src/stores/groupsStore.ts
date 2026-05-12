@@ -2,7 +2,8 @@ import { create } from "zustand";
 import { api } from "@/api/client";
 import type { PlayGroup } from "@/types";
 
-const ACTIVE_GROUP_KEY = "caulong.activeGroupId";
+const ACTIVE_GROUP_KEY = "tingting.activeGroupId";
+const LEGACY_ACTIVE_GROUP_KEY = "caulong.activeGroupId";
 
 interface GroupsState {
   groups: PlayGroup[];
@@ -16,13 +17,14 @@ interface GroupsState {
 
 function readActiveGroupId() {
   if (typeof localStorage === "undefined") return undefined;
-  return localStorage.getItem(ACTIVE_GROUP_KEY) ?? undefined;
+  return localStorage.getItem(ACTIVE_GROUP_KEY) ?? localStorage.getItem(LEGACY_ACTIVE_GROUP_KEY) ?? undefined;
 }
 
 function writeActiveGroupId(id?: string) {
   if (typeof localStorage === "undefined") return;
   if (id) localStorage.setItem(ACTIVE_GROUP_KEY, id);
   else localStorage.removeItem(ACTIVE_GROUP_KEY);
+  localStorage.removeItem(LEGACY_ACTIVE_GROUP_KEY);
 }
 
 export const useGroupsStore = create<GroupsState>((set, get) => ({

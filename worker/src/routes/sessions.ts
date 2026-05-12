@@ -338,7 +338,7 @@ sessions.post("/", async (c) => {
       .filter((value): value is string => Boolean(value));
 
     if (recipients.length > 0) {
-      const groupName = notificationRows.results[0]?.group_name ?? "Nhóm cầu lông";
+      const groupName = notificationRows.results[0]?.group_name ?? "Nhóm TingTing";
       const creatorName = notificationRows.results[0]?.creator_name?.trim() || "Một thành viên";
       queueTask(c, sendNewSessionNotification(c.env, {
         groupName,

@@ -25,7 +25,7 @@ ALTER TABLE sessions ADD COLUMN created_by TEXT;
 INSERT OR IGNORE INTO groups (id, name, description, owner_user_id, created_at, updated_at)
 SELECT
   'default',
-  'Hội cầu lông',
+  'TingTing',
   'Nhóm mặc định cho dữ liệu hiện tại',
   id,
   datetime('now'),

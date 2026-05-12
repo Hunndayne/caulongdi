@@ -80,7 +80,7 @@ export default function SessionsPage() {
         <div className="text-center py-12 text-gray-400">Đang tải...</div>
       ) : sessions.length === 0 ? (
         <EmptyState
-          icon="🏸"
+          icon="TT"
           title="Chưa có buổi chơi nào"
           action={<Button onClick={() => setDialogOpen(true)}>Tạo buổi đầu tiên</Button>}
         />
@@ -150,8 +150,8 @@ export default function SessionsPage() {
             </div>
           </div>
           <div>
-            <label className="text-sm font-medium text-gray-700 block mb-1">Tên sân *</label>
-            <Input value={form.venue} onChange={(e) => setForm((current) => ({ ...current, venue: e.target.value }))} placeholder="Sân cầu lông ABC" />
+            <label className="text-sm font-medium text-gray-700 block mb-1">Địa điểm *</label>
+            <Input value={form.venue} onChange={(e) => setForm((current) => ({ ...current, venue: e.target.value }))} placeholder="Địa điểm TingTing" />
           </div>
           <div>
             <label className="text-sm font-medium text-gray-700 block mb-1">Địa chỉ</label>
@@ -159,7 +159,7 @@ export default function SessionsPage() {
           </div>
           <div>
             <label className="text-sm font-medium text-gray-700 block mb-1">Ghi chú</label>
-            <Input value={form.note} onChange={(e) => setForm((current) => ({ ...current, note: e.target.value }))} placeholder="Mang vợt riêng..." />
+            <Input value={form.note} onChange={(e) => setForm((current) => ({ ...current, note: e.target.value }))} placeholder="Ghi chú cho nhóm..." />
           </div>
           <div className="flex gap-2 pt-2">
             <Button variant="outline" className="flex-1" onClick={() => setDialogOpen(false)}>

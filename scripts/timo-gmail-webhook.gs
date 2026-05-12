@@ -139,8 +139,8 @@ function parseTimoEmail(body) {
     return null;
   }
 
-  if (!/\bCLD[-\s]*[A-Za-z0-9]{8,40}\b/i.test(description)) {
-    logInfo("parse skipped: CLD payment code not found", { description: description });
+  if (!/\b(?:TT|CLD)[-\s]*[A-Za-z0-9]{8,40}\b/i.test(description)) {
+    logInfo("parse skipped: TingTing payment code not found", { description: description });
     return null;
   }
 

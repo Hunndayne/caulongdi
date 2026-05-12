@@ -54,8 +54,10 @@ export function Sidebar() {
     <aside className="hidden sm:flex w-56 flex-col fixed left-0 top-0 bottom-0 bg-white border-r border-gray-200 z-40">
       <div className="p-4 border-b">
         <div className="flex items-center gap-2">
-          <span className="text-2xl">🏸</span>
-          <span className="font-bold text-green-700 text-lg">Hội cầu lông</span>
+          <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-green-700 text-xs font-bold text-white">
+            TT
+          </span>
+          <span className="font-bold text-green-700 text-lg">TingTing</span>
         </div>
       </div>
       <nav className="flex-1 p-3 space-y-1">

@@ -19,7 +19,9 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="text-center">
-          <div className="text-4xl mb-3">🏸</div>
+          <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-green-700 text-base font-bold text-white">
+            TT
+          </div>
           <div className="text-gray-500 text-sm">Đang tải...</div>
         </div>
       </div>

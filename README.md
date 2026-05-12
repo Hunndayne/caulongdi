@@ -1,6 +1,6 @@
-# 🏸 Cầu Lông Đội
+# TingTing
 
-Web app quản lý lịch chơi cầu lông cho nhóm: check-in thành viên, chia tiền sân/nước/cầu, theo dõi công nợ, thống kê tham gia.
+Web app quản lý lịch hẹn cho nhóm: check-in thành viên, chia chi phí, theo dõi công nợ, thống kê tham gia.
 
 ## Tech Stack
 
@@ -39,7 +39,7 @@ pnpm install
 
 ```bash
 cd worker
-npx wrangler d1 create badminton-db
+npx wrangler d1 create tingting-db
 ```
 
 Copy `database_id` từ output, paste vào `worker/wrangler.toml`:
@@ -47,14 +47,14 @@ Copy `database_id` từ output, paste vào `worker/wrangler.toml`:
 ```toml
 [[d1_databases]]
 binding = "DB"
-database_name = "badminton-db"
+database_name = "tingting-db"
 database_id = "PASTE_YOUR_ID_HERE"
 ```
 
 ### 3. Chạy schema migration
 
 ```bash
-npx wrangler d1 execute badminton-db --local --file=src/db/schema.sql
+npx wrangler d1 execute tingting-db --local --file=src/db/schema.sql
 ```
 
 ### 4. Tạo file secrets cho local dev
@@ -107,8 +107,8 @@ Truy cập: http://localhost:5173
 
 ```bash
 cd worker
-npx wrangler d1 create badminton-db
-npx wrangler d1 execute badminton-db --file=src/db/schema.sql
+npx wrangler d1 create tingting-db
+npx wrangler d1 execute tingting-db --file=src/db/schema.sql
 ```
 
 ### Bước 2 — Set secrets
@@ -131,7 +131,7 @@ npx wrangler deploy
 ```
 
 Sau khi deploy xong, Wrangler sẽ in ra URL worker dạng:
-`https://badminton-api.your-subdomain.workers.dev`
+`https://tingting-api.your-subdomain.workers.dev`
 
 ### Bước 4 — Deploy Frontend lên Cloudflare Pages
 
@@ -154,16 +154,16 @@ Sau khi deploy xong, Wrangler sẽ in ra URL worker dạng:
 
 ```bash
 pnpm --filter frontend build
-npx wrangler pages deploy frontend/dist --project-name=badminton-manager
+npx wrangler pages deploy frontend/dist --project-name=tingting
 ```
 
 ### Bước 5 — Cập nhật config sau khi có domain
 
-Sau khi có domain Pages (vd: `https://badminton-manager.pages.dev`), cập nhật `worker/wrangler.toml`:
+Sau khi có domain Pages (vd: `https://tingting.pages.dev`), cập nhật `worker/wrangler.toml`:
 
 ```toml
 [vars]
-FRONTEND_URL = "https://badminton-manager.pages.dev"
+FRONTEND_URL = "https://tingting.pages.dev"
 ```
 
 Rồi deploy lại worker:
@@ -176,12 +176,12 @@ npx wrangler deploy
 
 Thêm vào Google Cloud Console → **Authorized JavaScript origins**:
 ```
-https://badminton-manager.pages.dev
+https://tingting.pages.dev
 ```
 
 Thêm vào **Authorized redirect URIs**:
 ```
-https://badminton-api.your-subdomain.workers.dev/api/auth/callback/google
+https://tingting-api.your-subdomain.workers.dev/api/auth/callback/google
 ```
 
 ---
@@ -277,7 +277,7 @@ Webhook production cố định:
 https://caulong.hunn.io.vn/api/payment-webhooks/bank-transfer
 ```
 
-Script chỉ gửi email Timo có dòng tiền vào `vừa tăng ... VND`, có `Mô tả: ...`, và phần mô tả chứa mã `CLD-<paymentId>` được nhúng trong QR.
+Script chỉ gửi email Timo có dòng tiền vào `vừa tăng ... VND`, có `Mô tả: ...`, và phần mô tả chứa mã `TT-<paymentId>` được nhúng trong QR.
 
 ---
 

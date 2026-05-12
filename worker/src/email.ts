@@ -156,7 +156,7 @@ function hostForMessageId(frontendUrl: string) {
 
 function buildMimeMessage(env: Env, message: MailMessage) {
   const senderEmail = env.SMTP_FROM_EMAIL || env.SMTP_LOGIN;
-  const senderName = env.SMTP_FROM_NAME || "Hội cầu lông";
+  const senderName = env.SMTP_FROM_NAME || "TingTing";
   const recipients = Array.isArray(message.to) ? message.to : [message.to];
   const toHeader = recipients.length === 1 ? formatAddress(recipients[0]) : "undisclosed-recipients:;";
   const boundary = `cf-worker-${crypto.randomUUID()}`;
@@ -271,7 +271,7 @@ function renderEmailShell(options: {
           <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="max-width: 640px;">
             <tr>
               <td style="padding: 0 0 16px; text-align: center; color: #166534; font-size: 13px; font-weight: 700; letter-spacing: 0.02em;">
-                HỘI CẦU LÔNG
+                TINGTING
               </td>
             </tr>
             <tr>
@@ -291,7 +291,7 @@ function renderEmailShell(options: {
             </tr>
             <tr>
               <td style="padding: 16px 8px 0; text-align: center; color: #9ca3af; font-size: 12px; line-height: 1.6;">
-                Email này được gửi tự động từ hệ thống quản lý lịch chơi của nhóm.
+                Email này được gửi tự động từ TingTing.
               </td>
             </tr>
           </table>
@@ -455,7 +455,7 @@ export async function sendNewSessionNotification(env: Env, input: SessionNotific
     `Nhóm ${input.groupName} vừa có lịch chơi mới.`,
     "",
     `Người tạo: ${input.creatorName}`,
-    `Sân: ${input.venue}`,
+    `Địa điểm: ${input.venue}`,
     `Thời gian: ${formatDate(input.date)} lúc ${input.startTime}`,
     input.location ? `Địa điểm: ${input.location}` : "",
     input.note ? `Ghi chú: ${input.note}` : "",
@@ -473,7 +473,7 @@ export async function sendNewSessionNotification(env: Env, input: SessionNotific
       intro: `Nhóm ${input.groupName} vừa có thêm một buổi chơi mới. Bạn có thể mở app để xem chi tiết và tham gia.`,
       facts: [
         { label: "Người tạo", value: input.creatorName },
-        { label: "Sân", value: input.venue },
+        { label: "Địa điểm", value: input.venue },
         { label: "Thời gian", value: `${formatDate(input.date)} lúc ${input.startTime}` },
         ...(input.location ? [{ label: "Địa điểm", value: input.location }] : []),
       ],

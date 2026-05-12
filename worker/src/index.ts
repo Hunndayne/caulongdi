@@ -55,11 +55,11 @@ async function getPreviewSession(c: Context<{ Bindings: Env }>, id: string) {
 }
 
 function previewTitle(session?: PreviewSession | null) {
-  return session ? `Cầu lông tại ${session.venue}` : "Hội cầu lông";
+  return session ? `TingTing tại ${session.venue}` : "TingTing";
 }
 
 function previewDescription(session?: PreviewSession | null) {
-  if (!session) return "Xem lịch chơi và tham gia buổi cầu lông của nhóm.";
+  if (!session) return "Xem lịch hẹn và tham gia nhóm trên TingTing.";
   const place = session.location ? ` tại ${session.location}` : "";
   const names = session.attendee_names ? ` (${session.attendee_names})` : "";
   const count = session.attendee_count ? ` · ${session.attendee_count} người tham gia${names}` : "";
@@ -68,7 +68,7 @@ function previewDescription(session?: PreviewSession | null) {
 
 function renderPreviewSvg(session: PreviewSession) {
   const dateLine = `${formatPreviewDate(session.date)} · ${session.start_time}`;
-  const location = session.location ?? "Hội cầu lông";
+  const location = session.location ?? "TingTing";
   const count = `${session.attendee_count} người tham gia`;
 
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -76,7 +76,7 @@ function renderPreviewSvg(session: PreviewSession) {
   <rect width="1200" height="630" fill="#ecfdf5"/>
   <rect x="72" y="72" width="1056" height="486" rx="32" fill="#ffffff"/>
   <circle cx="152" cy="150" r="28" fill="#16a34a"/>
-  <text x="198" y="161" font-family="Arial, sans-serif" font-size="34" font-weight="700" fill="#14532d">Hội cầu lông</text>
+  <text x="198" y="161" font-family="Arial, sans-serif" font-size="34" font-weight="700" fill="#14532d">TingTing</text>
   <text x="120" y="275" font-family="Arial, sans-serif" font-size="64" font-weight="800" fill="#111827">${escapeHtml(truncate(session.venue, 36))}</text>
   <text x="120" y="360" font-family="Arial, sans-serif" font-size="42" font-weight="700" fill="#16a34a">${escapeHtml(dateLine)}</text>
   <text x="120" y="430" font-family="Arial, sans-serif" font-size="32" fill="#4b5563">${escapeHtml(truncate(location, 54))}</text>
@@ -94,7 +94,7 @@ async function renderSessionHtml(c: Context<{ Bindings: Env }>, session: Preview
 
   const tags = `
     <meta property="og:type" content="website" />
-    <meta property="og:site_name" content="Hội cầu lông" />
+    <meta property="og:site_name" content="TingTing" />
     <meta property="og:url" content="${escapeHtml(pageUrl.href)}" />
     <meta property="og:title" content="${escapeHtml(title)}" />
     <meta property="og:description" content="${escapeHtml(description)}" />

@@ -72,17 +72,17 @@ function downloadCalendarFile(session: Session) {
   const ics = [
     "BEGIN:VCALENDAR",
     "VERSION:2.0",
-    "PRODID:-//Hoi Cau Long//Session Calendar//VI",
+    "PRODID:-//TingTing//Session Calendar//VI",
     "CALSCALE:GREGORIAN",
     "METHOD:PUBLISH",
     "BEGIN:VEVENT",
-    `UID:${session.id}@caulong.hunn.io.vn`,
+    `UID:${session.id}@tingting.app`,
     `DTSTAMP:${toIcsDate(new Date())}`,
     `DTSTART:${toIcsDate(start)}`,
     `DTEND:${toIcsDate(end)}`,
-    `SUMMARY:${escapeIcs(`Cầu lông - ${session.venue}`)}`,
+    `SUMMARY:${escapeIcs(`TingTing - ${session.venue}`)}`,
     `LOCATION:${escapeIcs(location)}`,
-    `DESCRIPTION:${escapeIcs(session.note || "Buổi chơi Hội cầu lông")}`,
+    `DESCRIPTION:${escapeIcs(session.note || "Buổi hẹn TingTing")}`,
     "END:VEVENT",
     "END:VCALENDAR",
   ].join("\r\n");
@@ -92,7 +92,7 @@ function downloadCalendarFile(session: Session) {
   const link = document.createElement("a");
   const safeVenue = session.venue.toLowerCase().replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "");
   link.href = url;
-  link.download = `${session.date}-${safeVenue || "cau-long"}.ics`;
+  link.download = `${session.date}-${safeVenue || "tingting"}.ics`;
   document.body.appendChild(link);
   link.click();
   link.remove();
