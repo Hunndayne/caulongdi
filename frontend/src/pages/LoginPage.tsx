@@ -20,7 +20,7 @@ function DecoRings() {
       viewBox="0 0 420 420"
       fill="none"
       aria-hidden="true"
-      className="pointer-events-none absolute -bottom-20 -right-24 hidden w-[420px] text-white opacity-[.08] md:block"
+      className="pointer-events-none absolute -bottom-20 -right-24 hidden w-[420px] text-white opacity-[.08] min-[769px]:block"
     >
       <circle cx="210" cy="210" r="190" stroke="currentColor" strokeWidth="18" />
       <circle cx="210" cy="210" r="128" stroke="currentColor" strokeWidth="10" />
@@ -37,7 +37,7 @@ function DecoPulse() {
       viewBox="0 0 88 88"
       fill="none"
       aria-hidden="true"
-      className="pointer-events-none absolute right-10 top-10 hidden w-20 text-white opacity-10 sm:block md:right-16 md:top-16"
+      className="pointer-events-none absolute right-16 top-16 hidden w-20 text-white opacity-10 min-[769px]:block"
     >
       <circle cx="44" cy="44" r="12" fill="currentColor" />
       <path d="M23 44C23 32.4 32.4 23 44 23" stroke="currentColor" strokeWidth="6" strokeLinecap="round" />
@@ -88,10 +88,10 @@ export default function LoginPage() {
 
   return (
     <div
-      className="grid min-h-screen bg-[#f7f4ef] text-[#1a1916] md:grid-cols-2"
+      className="grid min-h-screen grid-rows-[auto_1fr] bg-[#f7f4ef] text-[#1a1916] min-[769px]:grid-cols-2 min-[769px]:grid-rows-none"
       style={{ fontFamily: "'Be Vietnam Pro', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" }}
     >
-      <section className="relative flex overflow-hidden bg-[#1a3a2a] px-8 py-10 text-white sm:px-12 sm:py-12 md:min-h-screen md:items-center md:px-[72px] md:py-16">
+      <section className="relative flex overflow-hidden bg-[#1a3a2a] px-8 pb-9 pt-10 text-white max-[400px]:px-5 max-[400px]:pb-7 max-[400px]:pt-8 min-[769px]:min-h-screen min-[769px]:items-center min-[769px]:px-[72px] min-[769px]:py-16">
         <div
           className="absolute inset-0"
           style={{
@@ -103,13 +103,13 @@ export default function LoginPage() {
         <DecoRings />
         <DecoPulse />
 
-        <div className="relative z-10 mx-auto w-full max-w-[420px] text-center sm:max-w-[460px] md:mx-0 md:text-left">
-          <div className="mb-6 flex items-center justify-center gap-3.5 md:mb-12 md:justify-start">
+        <div className="relative z-10 mx-auto w-full max-w-[420px] text-center min-[769px]:mx-0 min-[769px]:max-w-[460px] min-[769px]:text-left">
+          <div className="mb-6 flex items-center justify-center gap-3.5 min-[769px]:mb-12 min-[769px]:justify-start">
             <TingTingLogo />
             <span className="text-lg font-bold tracking-[.2px]">TingTing</span>
           </div>
 
-          <h1 className="text-[26px] font-bold leading-tight tracking-normal sm:text-3xl md:text-[clamp(28px,3vw,40px)]">
+          <h1 className="text-[26px] font-bold leading-tight tracking-normal min-[769px]:text-[clamp(28px,3vw,40px)]">
             Quản lý nhóm
             <br />
             thật dễ dàng.
@@ -118,15 +118,15 @@ export default function LoginPage() {
             </span>
           </h1>
 
-          <p className="mx-auto mt-4 max-w-[340px] text-[13px] leading-7 text-white/45 md:mx-0 md:text-sm">
+          <p className="mx-auto mt-4 max-w-[280px] text-[13px] leading-7 text-white/45 min-[769px]:mx-0 min-[769px]:max-w-[340px] min-[769px]:text-sm">
             TingTing giúp các nhóm tổ chức lịch hẹn, quản lý thành viên và theo dõi tài chính trong cùng một nơi.
           </p>
         </div>
       </section>
 
-      <section className="flex items-center justify-center px-6 py-9 sm:px-10 md:min-h-screen md:py-12">
+      <section className="flex items-center justify-center px-6 pb-12 pt-9 max-[400px]:px-5 max-[400px]:pb-10 max-[400px]:pt-7 min-[769px]:min-h-screen min-[769px]:px-10 min-[769px]:py-12">
         <div className="w-full max-w-[360px]">
-          <h2 className="text-2xl font-bold tracking-normal text-[#1a1916]">Đăng nhập</h2>
+          <h2 className="text-xl font-bold tracking-normal text-[#1a1916] min-[769px]:text-2xl">Đăng nhập</h2>
           <p className="mb-9 mt-1.5 text-sm leading-6 text-[#9a9590]">Dùng tài khoản Google để tiếp tục.</p>
 
           <button

@@ -83,7 +83,7 @@ export function Topbar() {
 
   return (
     <>
-      <header className="hidden h-[65px] items-center justify-between gap-4 border-b border-[#e8e7e2] bg-white px-7 md:flex">
+      <header className="hidden h-[65px] items-center justify-between gap-4 border-b border-[#e8e7e2] bg-white px-7 min-[769px]:flex">
         <div className="flex items-center gap-2 text-[13px] text-[#71717a]">
           <Home size={14} />
           <span>TingTing</span>
@@ -91,7 +91,7 @@ export function Topbar() {
           <span className="font-medium text-[#18181b]">{currentLabel(location.pathname)}</span>
         </div>
 
-        <label className="flex w-[280px] items-center gap-2 rounded-[10px] border border-[#e8e7e2] bg-[#f7f7f5] px-3 py-2 text-[#71717a]">
+        <label className="flex w-[200px] items-center gap-2 rounded-[10px] border border-[#e8e7e2] bg-[#f7f7f5] px-3 py-2 text-[#71717a] min-[1100px]:w-[280px]">
           <Search size={14} />
           <input
             className="min-w-0 flex-1 bg-transparent text-[13px] text-[#18181b] outline-none placeholder:text-[#a1a1aa]"
@@ -101,7 +101,7 @@ export function Topbar() {
         </label>
       </header>
 
-      <header className="sticky top-0 z-30 flex items-center gap-3 border-b border-[#e8e7e2] bg-white px-4 py-3 md:hidden">
+      <header className="sticky top-0 z-30 flex items-center gap-3 border-b border-[#e8e7e2] bg-white px-4 py-3 min-[769px]:hidden">
         <BrandMark />
         <div className="min-w-0 flex-1">
           <div className="truncate text-base font-bold tracking-normal text-[#18181b]">TingTing</div>
@@ -115,8 +115,8 @@ export function Topbar() {
 
 export function BottomNav() {
   return (
-    <nav className="fixed bottom-3 left-0 right-0 z-40 px-3 md:hidden" aria-label="Điều hướng">
-      <div className="mx-auto grid max-w-[520px] grid-cols-6 gap-1 rounded-full border border-white/70 bg-white/40 p-1.5 shadow-[0_16px_38px_rgba(24,24,27,.16),inset_0_1px_0_rgba(255,255,255,.9)] backdrop-blur-xl">
+    <nav className="fixed bottom-6 left-1/2 z-40 w-[calc(100%-24px)] max-w-[420px] -translate-x-1/2 rounded-full border border-white/60 bg-white/25 p-[7px] shadow-[0_18px_50px_rgba(24,24,27,.20),0_4px_14px_rgba(24,24,27,.10),inset_0_1px_0_rgba(255,255,255,.85)] backdrop-blur-xl min-[769px]:hidden" aria-label="Điều hướng">
+      <div className="relative flex h-[54px] items-center gap-0.5">
         {navItems.map(({ to, icon: Icon, label, exact }) => (
           <NavLink
             key={to}
@@ -124,15 +124,17 @@ export function BottomNav() {
             end={exact}
             className={({ isActive }) =>
               cn(
-                "flex min-h-[48px] min-w-0 flex-col items-center justify-center gap-0.5 rounded-full px-1 text-[10px] font-semibold transition-all",
+                "relative z-10 flex h-full min-w-11 flex-1 items-center justify-center gap-1.5 rounded-full px-2 text-[13px] font-semibold transition-all duration-300",
                 isActive
-                  ? "bg-white text-[#18181b] shadow-[0_6px_18px_rgba(24,24,27,.14),inset_0_1px_0_rgba(255,255,255,1)]"
+                  ? "flex-[1.7] border border-white/90 bg-white/60 text-[#18181b] shadow-[0_6px_18px_rgba(24,24,27,.14),inset_0_1px_0_rgba(255,255,255,1)] [&_.bn-label]:max-w-[110px] [&_.bn-label]:opacity-100"
                   : "text-[#71717a] hover:text-[#18181b]"
               )
             }
           >
             <Icon size={18} />
-            <span className="max-w-full truncate">{label}</span>
+            <span className="bn-label max-w-0 overflow-hidden whitespace-nowrap opacity-0 transition-all duration-300">
+              {label}
+            </span>
           </NavLink>
         ))}
       </div>
@@ -146,7 +148,7 @@ export function Sidebar() {
   const user = session?.user as { name?: string; email?: string } | undefined;
 
   return (
-    <aside className="fixed inset-y-0 left-0 z-40 hidden w-[232px] flex-col border-r border-[#e8e7e2] bg-[#f2f2ef] px-3.5 py-5 md:flex">
+    <aside className="fixed inset-y-0 left-0 z-40 hidden w-[232px] flex-col border-r border-[#e8e7e2] bg-[#f2f2ef] px-3.5 py-5 min-[769px]:flex">
       <div className="flex items-center gap-2.5 px-2 pb-[18px]">
         <BrandMark />
         <span className="text-base font-bold tracking-normal text-[#18181b]">TingTing</span>

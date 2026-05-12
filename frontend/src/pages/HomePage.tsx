@@ -20,7 +20,7 @@ import { useSession } from "@/lib/auth-client";
 import { useSessionsStore } from "@/stores/sessionsStore";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { GroupSelector } from "@/components/shared/GroupSelector";
-import { formatCurrency, formatDate } from "@/lib/utils";
+import { cn, formatCurrency, formatDate } from "@/lib/utils";
 import type { MemberStats, Session } from "@/types";
 
 const WEEKDAYS = ["T2", "T3", "T4", "T5", "T6", "T7", "CN"];
@@ -149,12 +149,14 @@ function StatCard({
   value,
   trend,
   tone = "green",
+  className,
 }: {
   icon: typeof Calendar;
   label: string;
   value: string | number;
   trend: string;
   tone?: "green" | "amber" | "red";
+  className?: string;
 }) {
   const toneClass = {
     green: "bg-[#e7f6ec] text-[#16a34a]",
@@ -163,7 +165,7 @@ function StatCard({
   }[tone];
 
   return (
-    <div className="rounded-[14px] border border-[#e8e7e2] bg-white px-[18px] py-4">
+    <div className={cn("rounded-[14px] border border-[#e8e7e2] bg-white px-[18px] py-4", className)}>
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 text-[12.5px] font-medium text-[#71717a]">
           <Icon size={14} />
@@ -219,7 +221,7 @@ function SessionRow({
   joined?: boolean;
 }) {
   return (
-    <div className="flex items-center gap-3 rounded-xl border border-[#e8e7e2] bg-white px-3.5 py-3 transition-colors hover:border-[#18181b]">
+    <div className="flex items-center gap-3 rounded-xl border border-[#e8e7e2] bg-white px-3 py-3 transition-colors hover:border-[#18181b] min-[769px]:px-3.5">
       <SessionThumb kind={kind} />
       <Link to={`/sessions/${session.id}`} className="min-w-0 flex-1">
         <div className="truncate text-[13.5px] font-semibold text-[#18181b]">{session.venue}</div>
@@ -236,7 +238,7 @@ function SessionRow({
         {kind === "group" && !joined ? (
           <Link
             to={`/sessions/${session.id}`}
-            className="rounded-lg bg-[#18181b] px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-[#3f3f46]"
+            className="hidden rounded-lg bg-[#18181b] px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-[#3f3f46] min-[769px]:inline-flex"
           >
             Đăng ký
           </Link>
@@ -332,17 +334,17 @@ export default function HomePage() {
           <h1 className="text-2xl font-bold tracking-normal text-[#18181b]">Xin chào, {userName}</h1>
           <div className="mt-1 text-[13px] text-[#71717a]">Tổng quan hoạt động và buổi chơi sắp tới</div>
         </div>
-        <div className="flex gap-2">
+        <div className="flex w-full gap-2 min-[480px]:w-auto">
           <a
             href="#group-filter"
-            className="inline-flex items-center gap-2 rounded-[9px] border border-[#e8e7e2] bg-white px-3 py-2 text-[13px] font-medium text-[#18181b] transition-colors hover:bg-[#f7f7f5]"
+            className="inline-flex flex-1 items-center justify-center gap-2 rounded-[9px] border border-[#e8e7e2] bg-white px-3 py-2 text-[13px] font-medium text-[#18181b] transition-colors hover:bg-[#f7f7f5] min-[480px]:flex-none"
           >
             <SlidersHorizontal size={14} />
             Bộ lọc
           </a>
           <Link
             to="/sessions"
-            className="inline-flex items-center gap-2 rounded-[9px] bg-[#18181b] px-3.5 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-[#3f3f46]"
+            className="inline-flex flex-1 items-center justify-center gap-2 rounded-[9px] bg-[#18181b] px-3.5 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-[#3f3f46] min-[480px]:flex-none"
           >
             <Plus size={14} />
             Tạo buổi chơi
@@ -350,7 +352,7 @@ export default function HomePage() {
         </div>
       </div>
 
-      <section className="mb-[18px] grid gap-3.5 md:grid-cols-3">
+      <section className="mb-[18px] grid gap-3.5 min-[769px]:grid-cols-2 min-[1025px]:grid-cols-3">
         <StatCard icon={CalendarDays} label="Buổi tháng này" value={myThisMonthCount} trend={`${myUpcoming.length} sắp tới`} />
         <StatCard icon={CheckCircle2} label="Đã tham gia" value={joinedSessions.length} trend={`${myCompleted.length} đã hoàn thành`} />
         <StatCard
@@ -359,6 +361,7 @@ export default function HomePage() {
           value={formatCurrency(debt)}
           trend={debt > 0 ? "Cần nộp" : "Đã ổn"}
           tone={debt > 0 ? "amber" : "green"}
+          className="min-[769px]:col-span-2 min-[1025px]:col-span-1"
         />
       </section>
 
@@ -371,8 +374,8 @@ export default function HomePage() {
         />
       </div>
 
-      <div className="grid gap-[18px] xl:grid-cols-[1.6fr_1fr]">
-        <section className="rounded-[14px] border border-[#e8e7e2] bg-white p-[18px]">
+      <div className="grid gap-[18px] min-[1101px]:grid-cols-[1.6fr_1fr]">
+        <section className="rounded-[14px] border border-[#e8e7e2] bg-white p-3.5 min-[769px]:p-[18px]">
           <div className="mb-3.5 flex flex-wrap items-start justify-between gap-3">
             <div className="flex items-center gap-3">
               <div className="min-w-11 overflow-hidden rounded-[9px] border border-[#e8e7e2] bg-white text-center">
@@ -389,7 +392,7 @@ export default function HomePage() {
               </div>
             </div>
 
-            <div className="flex flex-wrap items-center gap-1.5">
+            <div className="flex w-full flex-wrap items-center justify-start gap-1.5 min-[640px]:w-auto min-[640px]:justify-end">
               <button
                 type="button"
                 onClick={() => changeMonth(-1)}
@@ -447,8 +450,8 @@ export default function HomePage() {
           </div>
 
           {calendarView === "month" ? (
-            <div className="overflow-x-auto">
-              <div className="min-w-[720px] md:min-w-0">
+            <div>
+              <div className="min-w-0">
                 <div className="grid grid-cols-7 border-b border-[#e8e7e2]">
                   {WEEKDAYS.map((day) => (
                     <div key={day} className="py-2 text-center text-[11px] font-semibold uppercase tracking-[.5px] text-[#71717a]">
@@ -462,7 +465,7 @@ export default function HomePage() {
                       return (
                         <div
                           key={`empty-${index}`}
-                          className="min-h-[96px] border-b border-r border-[#efeeea] bg-[#fafafa]"
+                          className="min-h-16 border-b border-r border-[#efeeea] bg-[#fafafa] min-[769px]:min-h-[96px]"
                         />
                       );
                     }
@@ -470,11 +473,13 @@ export default function HomePage() {
                     const key = dateKey(day);
                     const daySessions = sessionsByDate[key] ?? [];
                     const isToday = key === today;
+                    const hasPersonal = daySessions.some((item) => joinedIds.has(item.id));
+                    const hasGroup = daySessions.some((item) => !joinedIds.has(item.id));
 
                     return (
                       <div
                         key={key}
-                        className="min-h-[96px] border-b border-r border-[#efeeea] bg-white px-2 py-1.5 transition-colors hover:bg-[#f7f7f5]"
+                        className="flex min-h-16 flex-col border-b border-r border-[#efeeea] bg-white px-1 py-1 transition-colors hover:bg-[#f7f7f5] min-[769px]:min-h-[96px] min-[769px]:px-2 min-[769px]:py-1.5"
                       >
                         <div
                           className={`mb-1 flex h-[22px] w-[22px] items-center justify-center text-[12.5px] font-semibold ${
@@ -483,14 +488,14 @@ export default function HomePage() {
                         >
                           {day.getDate()}
                         </div>
-                        <div className="space-y-1">
+                        <div className="flex flex-1 flex-col space-y-1">
                           {daySessions.slice(0, 2).map((item) => {
                             const kind = joinedIds.has(item.id) ? "personal" : "group";
                             return (
                               <Link
                                 key={item.id}
                                 to={`/sessions/${item.id}`}
-                                className={`flex min-w-0 items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium ${
+                                className={`hidden min-w-0 items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium min-[769px]:flex ${
                                   kind === "personal" ? "bg-[#e7f6ec] text-[#16a34a]" : "bg-[#fdecec] text-[#dc2626]"
                                 }`}
                               >
@@ -500,7 +505,19 @@ export default function HomePage() {
                             );
                           })}
                           {daySessions.length > 2 && (
-                            <div className="px-1.5 text-[10.5px] text-[#71717a]">+{daySessions.length - 2} thêm</div>
+                            <div className="hidden px-1.5 text-[10.5px] text-[#71717a] min-[769px]:block">+{daySessions.length - 2} thêm</div>
+                          )}
+                          {(hasPersonal || hasGroup) && (
+                            <div className="mt-auto flex h-2 items-center min-[769px]:hidden">
+                              {hasPersonal && hasGroup ? (
+                                <span
+                                  className="h-1 w-3 rounded-sm"
+                                  style={{ background: "linear-gradient(90deg, #16a34a 0 50%, #dc2626 50% 100%)" }}
+                                />
+                              ) : (
+                                <span className={`h-1.5 w-1.5 rounded-full ${hasPersonal ? "bg-[#16a34a]" : "bg-[#dc2626]"}`} />
+                              )}
+                            </div>
                           )}
                         </div>
                       </div>
@@ -511,8 +528,8 @@ export default function HomePage() {
             </div>
           ) : (
             <div className="overflow-x-auto">
-              <div className="min-w-[840px]">
-                <div className="grid grid-cols-[56px_repeat(7,1fr)] border-b border-[#e8e7e2]">
+              <div className="min-w-[604px] min-[769px]:min-w-[840px]">
+                <div className="grid grid-cols-[44px_repeat(7,minmax(80px,1fr))] border-b border-[#e8e7e2] min-[769px]:grid-cols-[56px_repeat(7,1fr)]">
                   <div className="border-r border-[#efeeea]" />
                   {weekDays.map((day, index) => {
                     const isToday = dateKey(day) === today;
@@ -526,7 +543,7 @@ export default function HomePage() {
                     );
                   })}
                 </div>
-                <div className="grid max-h-[560px] grid-cols-[56px_repeat(7,1fr)] overflow-y-auto border-l border-[#efeeea]">
+                <div className="grid max-h-[560px] grid-cols-[44px_repeat(7,minmax(80px,1fr))] overflow-y-auto border-l border-[#efeeea] min-[769px]:grid-cols-[56px_repeat(7,1fr)]">
                   <div className="border-r border-[#e8e7e2]">
                     {HOURS.map((hour) => (
                       <div key={hour} className="h-[60px] border-b border-[#efeeea] px-1.5 py-1 text-right text-[10px] text-[#71717a]">

@@ -41,9 +41,9 @@ function Layout({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen bg-[#f7f7f5]">
       <Sidebar />
-      <div className="min-h-screen md:pl-[232px]">
+      <div className="min-h-screen min-[769px]:pl-[232px]">
         <Topbar />
-        <main className="min-h-screen px-4 py-5 pb-28 sm:px-6 md:px-7 md:py-6 md:pb-12">
+        <main className="min-h-screen px-3.5 py-[18px] pb-[110px] min-[769px]:px-7 min-[769px]:py-6 min-[769px]:pb-12">
           <div className={isDashboard ? undefined : "mx-auto max-w-2xl"}>{children}</div>
         </main>
       </div>
