@@ -1,6 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { useSession } from "@/lib/auth-client";
-import { Sidebar, BottomNav } from "@/components/shared/Navbar";
+import { Sidebar, BottomNav, Topbar } from "@/components/shared/Navbar";
 import LoginPage from "@/pages/LoginPage";
 import HomePage from "@/pages/HomePage";
 import MembersPage from "@/pages/MembersPage";
@@ -35,12 +35,18 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
 }
 
 function Layout({ children }: { children: React.ReactNode }) {
+  const location = useLocation();
+  const isDashboard = location.pathname === "/";
+
   return (
-    <div className="min-h-screen">
+    <div className="min-h-screen bg-[#f7f7f5]">
       <Sidebar />
-      <main className="sm:ml-56 pb-20 sm:pb-0 min-h-screen">
-        <div className="max-w-2xl mx-auto px-4 py-5">{children}</div>
-      </main>
+      <div className="min-h-screen md:pl-[232px]">
+        <Topbar />
+        <main className="min-h-screen px-4 py-5 pb-28 sm:px-6 md:px-7 md:py-6 md:pb-12">
+          <div className={isDashboard ? undefined : "mx-auto max-w-2xl"}>{children}</div>
+        </main>
+      </div>
       <BottomNav />
     </div>
   );

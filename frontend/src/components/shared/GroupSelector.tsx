@@ -14,7 +14,7 @@ export function GroupSelector({
   value,
   onChange,
   allowAll = false,
-  allLabel = "Tat ca nhom",
+  allLabel = "Tất cả nhóm",
 }: GroupSelectorProps) {
   const { groups, activeGroupId, loading, error, fetch, setActiveGroup } = useGroupsStore();
   const isControlled = typeof onChange === "function";
@@ -25,9 +25,9 @@ export function GroupSelector({
   }, [fetch]);
 
   return (
-    <div className="mb-4 rounded-xl border border-gray-100 bg-white p-3 shadow-sm">
+    <div className="mb-[18px] max-w-[460px] rounded-xl border border-[#e8e7e2] bg-white px-3.5 py-1.5">
       <div className="flex items-center gap-2">
-        <Users size={18} className="text-green-600" />
+        <Users size={16} className="shrink-0 text-[#71717a]" />
         <select
           value={selectedValue}
           onChange={(event) => {
@@ -36,10 +36,10 @@ export function GroupSelector({
             else setActiveGroup(nextValue);
           }}
           disabled={loading || groups.length === 0}
-          className="min-w-0 flex-1 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-800 focus:outline-none focus:ring-2 focus:ring-green-500"
+          className="min-w-0 flex-1 border-none bg-transparent py-2 text-[13.5px] font-medium text-[#18181b] outline-none focus:ring-0 disabled:text-[#a1a1aa]"
         >
           {groups.length === 0 ? (
-            <option value="">Chua co nhom</option>
+            <option value="">Chưa có nhóm</option>
           ) : (
             <>
               {allowAll && <option value="">{allLabel}</option>}
@@ -53,15 +53,15 @@ export function GroupSelector({
         </select>
         <Link
           to="/members"
-          aria-label="Quan ly nhom"
-          className="inline-flex items-center justify-center rounded-lg border border-gray-300 bg-white p-2 text-gray-700 transition-colors hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2"
+          aria-label="Quản lý nhóm"
+          className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[#e8e7e2] bg-white text-[#3f3f46] transition-colors hover:bg-[#f7f7f5] focus:outline-none focus:ring-2 focus:ring-[#18181b]/10"
         >
-          <Settings2 size={16} />
+          <Settings2 size={14} />
         </Link>
       </div>
       {(error || groups.length === 0) && (
-        <div className="mt-2 text-xs text-gray-500">
-          {error ?? "Quan ly nhom va loi moi o trang Thanh vien."}
+        <div className="px-6 pb-2 text-xs text-[#71717a]">
+          {error ?? "Quản lý nhóm và lời mời ở trang Thành viên."}
         </div>
       )}
     </div>

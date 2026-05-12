@@ -2,25 +2,29 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   Calendar,
+  CalendarDays,
   CalendarPlus,
+  CheckCircle2,
   ChevronLeft,
   ChevronRight,
   Clock,
-  MapPin,
-  TrendingUp,
+  DollarSign,
+  Info,
+  Plus,
+  SlidersHorizontal,
   User,
+  Users,
 } from "lucide-react";
 import { api } from "@/api/client";
 import { useSession } from "@/lib/auth-client";
 import { useSessionsStore } from "@/stores/sessionsStore";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { GroupSelector } from "@/components/shared/GroupSelector";
 import { formatCurrency, formatDate } from "@/lib/utils";
 import type { MemberStats, Session } from "@/types";
 
 const WEEKDAYS = ["T2", "T3", "T4", "T5", "T6", "T7", "CN"];
+const HOURS = Array.from({ length: 15 }, (_, index) => index + 7);
 
 function dateKey(date: Date) {
   const year = date.getFullYear();
@@ -37,6 +41,10 @@ function monthKey(date: Date) {
 
 function monthTitle(date: Date) {
   return new Intl.DateTimeFormat("vi-VN", { month: "long", year: "numeric" }).format(date);
+}
+
+function monthTag(date: Date) {
+  return `TH ${date.getMonth() + 1}`;
 }
 
 function parseSessionDateTime(session: Session) {
@@ -115,7 +123,138 @@ function buildMonthCells(month: Date) {
   return cells;
 }
 
+function buildWeekDays(anchor: Date) {
+  const dayIndex = (anchor.getDay() + 6) % 7;
+  const monday = new Date(anchor);
+  monday.setDate(anchor.getDate() - dayIndex);
+  return Array.from({ length: 7 }, (_, index) => {
+    const date = new Date(monday);
+    date.setDate(monday.getDate() + index);
+    return date;
+  });
+}
+
+function eventTop(session: Session) {
+  const [hour = 7, minute = 0] = session.start_time.split(":").map(Number);
+  const top = ((hour - 7) + minute / 60) * 60;
+  return Math.max(0, Math.min(top, HOURS.length * 60 - 56));
+}
+
 type CalendarMode = "group" | "mine";
+type CalendarView = "month" | "week";
+
+function StatCard({
+  icon: Icon,
+  label,
+  value,
+  trend,
+  tone = "green",
+}: {
+  icon: typeof Calendar;
+  label: string;
+  value: string | number;
+  trend: string;
+  tone?: "green" | "amber" | "red";
+}) {
+  const toneClass = {
+    green: "bg-[#e7f6ec] text-[#16a34a]",
+    amber: "bg-[#fbf2dc] text-[#b07410]",
+    red: "bg-[#fdecec] text-[#dc2626]",
+  }[tone];
+
+  return (
+    <div className="rounded-[14px] border border-[#e8e7e2] bg-white px-[18px] py-4">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 text-[12.5px] font-medium text-[#71717a]">
+          <Icon size={14} />
+          {label}
+        </div>
+        <span className="flex h-4 w-4 items-center justify-center rounded-full border border-[#e8e7e2] text-[10px] text-[#a1a1aa]">
+          i
+        </span>
+      </div>
+      <div className="mt-3 flex flex-wrap items-baseline gap-2.5">
+        <div className="text-[26px] font-bold leading-none tracking-normal text-[#18181b]">{value}</div>
+        <span className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11.5px] font-semibold ${toneClass}`}>
+          {tone === "green" && <ChevronRight size={11} className="-rotate-90" />}
+          {trend}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function SessionThumb({ kind }: { kind: "personal" | "group" }) {
+  return (
+    <div
+      className={`relative flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-[9px] text-white ${
+        kind === "personal"
+          ? "bg-gradient-to-br from-[#16a34a] to-[#065f46]"
+          : "bg-gradient-to-br from-[#dc2626] to-[#7f1d1d]"
+      }`}
+    >
+      {kind === "personal" ? <Calendar size={17} /> : <Users size={17} />}
+      <span className="absolute left-1/2 top-1.5 h-7 w-px bg-white/45" />
+    </div>
+  );
+}
+
+function StatusChip({ children, tone }: { children: React.ReactNode; tone: "green" | "red" | "gray" }) {
+  const classes = {
+    green: "bg-[#e7f6ec] text-[#16a34a]",
+    red: "bg-[#fdecec] text-[#dc2626]",
+    gray: "bg-[#f2f2ef] text-[#71717a]",
+  }[tone];
+
+  return <span className={`whitespace-nowrap rounded-md px-2 py-1 text-[11px] font-semibold ${classes}`}>{children}</span>;
+}
+
+function SessionRow({
+  session,
+  kind,
+  joined,
+}: {
+  session: Session;
+  kind: "personal" | "group";
+  joined?: boolean;
+}) {
+  return (
+    <div className="flex items-center gap-3 rounded-xl border border-[#e8e7e2] bg-white px-3.5 py-3 transition-colors hover:border-[#18181b]">
+      <SessionThumb kind={kind} />
+      <Link to={`/sessions/${session.id}`} className="min-w-0 flex-1">
+        <div className="truncate text-[13.5px] font-semibold text-[#18181b]">{session.venue}</div>
+        <div className="mt-0.5 truncate text-xs text-[#71717a]">
+          {formatDate(session.date)} · {session.start_time}
+        </div>
+      </Link>
+      <div className="flex shrink-0 items-center gap-2">
+        {kind === "group" ? (
+          joined ? <StatusChip tone="green">Đã đăng ký</StatusChip> : <StatusChip tone="gray">Chưa đăng ký</StatusChip>
+        ) : (
+          <StatusChip tone="green">Sắp tới</StatusChip>
+        )}
+        {kind === "group" && !joined ? (
+          <Link
+            to={`/sessions/${session.id}`}
+            className="rounded-lg bg-[#18181b] px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-[#3f3f46]"
+          >
+            Đăng ký
+          </Link>
+        ) : (
+          <button
+            type="button"
+            onClick={() => downloadCalendarFile(session)}
+            className="flex h-8 w-8 items-center justify-center rounded-lg border border-[#e8e7e2] bg-white text-[#3f3f46] transition-colors hover:bg-[#f7f7f5]"
+            aria-label="Thêm vào lịch"
+            title="Thêm vào lịch"
+          >
+            <CalendarPlus size={15} />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
 
 export default function HomePage() {
   const { data: session } = useSession();
@@ -124,6 +263,7 @@ export default function HomePage() {
   const [myStats, setMyStats] = useState<MemberStats | null>(null);
   const [calendarMonth, setCalendarMonth] = useState(() => new Date());
   const [calendarMode, setCalendarMode] = useState<CalendarMode>("mine");
+  const [calendarView, setCalendarView] = useState<CalendarView>("month");
   const [joinedSessions, setJoinedSessions] = useState<Session[]>([]);
   const [joinedLoading, setJoinedLoading] = useState(true);
 
@@ -145,23 +285,15 @@ export default function HomePage() {
       .finally(() => setJoinedLoading(false));
   }, [selectedGroupId]);
 
-  const upcoming = useMemo(
-    () => sessions.filter((s) => s.status === "upcoming").sort(compareSessionAsc).slice(0, 3),
-    [sessions]
-  );
-  const recent = useMemo(
-    () => sessions.filter((s) => s.status === "completed").sort(compareSessionDesc).slice(0, 3),
-    [sessions]
-  );
-
-  // Sessions hiển thị trên lịch tuỳ theo mode
+  const joinedIds = useMemo(() => new Set(joinedSessions.map((item) => item.id)), [joinedSessions]);
   const calendarSessions = calendarMode === "mine" ? joinedSessions : sessions;
-
   const thisMonth = monthKey(new Date());
-  const myThisMonthCount = joinedSessions.filter((s) => s.date.startsWith(thisMonth)).length;
   const activeMonth = monthKey(calendarMonth);
-  const monthSessions = calendarSessions.filter((s) => s.date.startsWith(activeMonth));
-  const upcomingInMonth = monthSessions.filter((s) => s.status === "upcoming").length;
+  const myThisMonthCount = joinedSessions.filter((item) => item.date.startsWith(thisMonth)).length;
+  const myActiveMonthCount = joinedSessions.filter((item) => item.date.startsWith(activeMonth)).length;
+  const groupActiveMonthCount = sessions.filter((item) => item.date.startsWith(activeMonth)).length;
+  const monthSessions = calendarSessions.filter((item) => item.date.startsWith(activeMonth));
+  const upcomingInMonth = monthSessions.filter((item) => item.status === "upcoming").length;
   const today = dateKey(new Date());
 
   const sessionsByDate = useMemo(() => {
@@ -172,287 +304,345 @@ export default function HomePage() {
   }, [calendarSessions]);
 
   const monthCells = useMemo(() => buildMonthCells(calendarMonth), [calendarMonth]);
+  const weekDays = useMemo(() => buildWeekDays(calendarMonth), [calendarMonth]);
+  const myUpcoming = useMemo(
+    () => joinedSessions.filter((item) => item.status === "upcoming").sort(compareSessionAsc),
+    [joinedSessions]
+  );
+  const groupUpcoming = useMemo(
+    () => sessions.filter((item) => item.status === "upcoming").sort(compareSessionAsc).slice(0, 5),
+    [sessions]
+  );
+  const myCompleted = useMemo(
+    () => joinedSessions.filter((item) => item.status === "completed").sort(compareSessionDesc),
+    [joinedSessions]
+  );
 
   const changeMonth = (amount: number) => {
     setCalendarMonth((current) => new Date(current.getFullYear(), current.getMonth() + amount, 1));
   };
 
-  // Các buổi sắp tới mà mình đã đăng ký
-  const myUpcoming = useMemo(
-    () => joinedSessions.filter((s) => s.status === "upcoming").sort(compareSessionAsc),
-    [joinedSessions]
-  );
-
-  // Các buổi đã qua mà mình đã tham gia
-  const myCompleted = useMemo(
-    () => joinedSessions.filter((s) => s.status === "completed").sort(compareSessionDesc),
-    [joinedSessions]
-  );
+  const userName = session?.user.name ?? "bạn";
+  const debt = myStats?.debt ?? 0;
 
   return (
-    <div className="space-y-6">
-      <div className="bg-gradient-to-r from-green-600 to-emerald-500 rounded-2xl p-5 text-white">
-        <p className="text-green-100 text-sm">Xin chào,</p>
-        <h1 className="text-xl font-bold">{session?.user.name} 👋</h1>
-        <div className="flex gap-4 mt-4">
-          <div className="bg-white/20 rounded-xl px-4 py-2 text-center">
-            <div className="text-2xl font-bold">{myThisMonthCount}</div>
-            <div className="text-xs text-green-100">Buổi tháng này</div>
-          </div>
-          <div className="bg-white/20 rounded-xl px-4 py-2 text-center">
-            <div className="text-2xl font-bold">{joinedSessions.length}</div>
-            <div className="text-xs text-green-100">Tổng buổi đã tham gia</div>
-          </div>
-          {myStats && (
-            <div className="bg-white/20 rounded-xl px-4 py-2 text-center">
-              <div className="text-2xl font-bold">{formatCurrency(myStats.debt)}</div>
-              <div className="text-xs text-green-100">Còn nợ</div>
-            </div>
-          )}
+    <div className="mx-auto max-w-[1440px]">
+      <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold tracking-normal text-[#18181b]">Xin chào, {userName}</h1>
+          <div className="mt-1 text-[13px] text-[#71717a]">Tổng quan hoạt động và buổi chơi sắp tới</div>
+        </div>
+        <div className="flex gap-2">
+          <a
+            href="#group-filter"
+            className="inline-flex items-center gap-2 rounded-[9px] border border-[#e8e7e2] bg-white px-3 py-2 text-[13px] font-medium text-[#18181b] transition-colors hover:bg-[#f7f7f5]"
+          >
+            <SlidersHorizontal size={14} />
+            Bộ lọc
+          </a>
+          <Link
+            to="/sessions"
+            className="inline-flex items-center gap-2 rounded-[9px] bg-[#18181b] px-3.5 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-[#3f3f46]"
+          >
+            <Plus size={14} />
+            Tạo buổi chơi
+          </Link>
         </div>
       </div>
 
-      <GroupSelector value={selectedGroupId} onChange={setSelectedGroupId} allowAll allLabel="Tong hop tat ca nhom" />
+      <section className="mb-[18px] grid gap-3.5 md:grid-cols-3">
+        <StatCard icon={CalendarDays} label="Buổi tháng này" value={myThisMonthCount} trend={`${myUpcoming.length} sắp tới`} />
+        <StatCard icon={CheckCircle2} label="Đã tham gia" value={joinedSessions.length} trend={`${myCompleted.length} đã hoàn thành`} />
+        <StatCard
+          icon={DollarSign}
+          label="Còn nợ"
+          value={formatCurrency(debt)}
+          trend={debt > 0 ? "Cần nộp" : "Đã ổn"}
+          tone={debt > 0 ? "amber" : "green"}
+        />
+      </section>
 
-      {/* Lịch */}
-      <section>
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="font-semibold text-gray-900 flex items-center gap-2">
-            <Calendar size={18} className="text-green-600" />
-            Lịch tháng
-          </h2>
-          <div className="flex items-center gap-1">
-            <Button variant="ghost" size="icon" onClick={() => changeMonth(-1)} aria-label="Tháng trước">
-              <ChevronLeft size={17} />
-            </Button>
-            <Button variant="ghost" size="icon" onClick={() => changeMonth(1)} aria-label="Tháng sau">
-              <ChevronRight size={17} />
-            </Button>
-          </div>
-        </div>
+      <div id="group-filter">
+        <GroupSelector
+          value={selectedGroupId}
+          onChange={setSelectedGroupId}
+          allowAll
+          allLabel="Tổng hợp tất cả nhóm"
+        />
+      </div>
 
-        <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-3">
-          <div className="flex items-center justify-between mb-3">
-            <div>
-              <div className="font-semibold text-gray-900 capitalize">{monthTitle(calendarMonth)}</div>
-              <div className="text-xs text-gray-500">
-                {monthSessions.length} buổi · {upcomingInMonth} sắp tới
+      <div className="grid gap-[18px] xl:grid-cols-[1.6fr_1fr]">
+        <section className="rounded-[14px] border border-[#e8e7e2] bg-white p-[18px]">
+          <div className="mb-3.5 flex flex-wrap items-start justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="min-w-11 overflow-hidden rounded-[9px] border border-[#e8e7e2] bg-white text-center">
+                <div className="bg-[#18181b] px-2 py-0.5 text-[9px] font-bold uppercase tracking-[1px] text-white">
+                  {monthTag(calendarMonth)}
+                </div>
+                <div className="px-2 py-1 text-base font-bold text-[#18181b]">{new Date().getDate()}</div>
+              </div>
+              <div>
+                <div className="text-base font-bold capitalize tracking-normal text-[#18181b]">{monthTitle(calendarMonth)}</div>
+                <div className="mt-0.5 text-xs text-[#71717a]">
+                  {myActiveMonthCount} buổi cá nhân · {groupActiveMonthCount} buổi nhóm · {upcomingInMonth} sắp tới
+                </div>
               </div>
             </div>
-            <div className="flex items-center gap-2">
-              {/* Toggle nhóm / của tôi */}
-              <div className="flex rounded-lg border border-gray-200 bg-gray-50 p-0.5 text-xs">
-                <button
-                  onClick={() => setCalendarMode("mine")}
-                  className={`rounded-md px-2.5 py-1 font-medium transition-colors ${
-                    calendarMode === "mine"
-                      ? "bg-white text-green-700 shadow-sm"
-                      : "text-gray-500 hover:text-gray-700"
-                  }`}
-                >
-                  Của tôi
-                </button>
-                <button
-                  onClick={() => setCalendarMode("group")}
-                  className={`rounded-md px-2.5 py-1 font-medium transition-colors ${
-                    calendarMode === "group"
-                      ? "bg-white text-green-700 shadow-sm"
-                      : "text-gray-500 hover:text-gray-700"
-                  }`}
-                >
-                  Nhóm
-                </button>
-              </div>
-              <Button variant="outline" size="sm" onClick={() => setCalendarMonth(new Date())}>
+
+            <div className="flex flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => changeMonth(-1)}
+                className="flex h-[30px] w-[30px] items-center justify-center rounded-lg border border-[#e8e7e2] bg-white text-[#3f3f46] hover:bg-[#f7f7f5]"
+                aria-label="Tháng trước"
+              >
+                <ChevronLeft size={14} />
+              </button>
+              <button
+                type="button"
+                onClick={() => setCalendarMonth(new Date())}
+                className="rounded-lg border border-[#e8e7e2] bg-white px-3 py-1.5 text-xs font-semibold text-[#18181b] hover:bg-[#f7f7f5]"
+              >
                 Hôm nay
-              </Button>
+              </button>
+              <button
+                type="button"
+                onClick={() => changeMonth(1)}
+                className="flex h-[30px] w-[30px] items-center justify-center rounded-lg border border-[#e8e7e2] bg-white text-[#3f3f46] hover:bg-[#f7f7f5]"
+                aria-label="Tháng sau"
+              >
+                <ChevronRight size={14} />
+              </button>
+
+              <div className="ml-1 flex rounded-[9px] border border-[#e8e7e2] bg-[#f7f7f5] p-[3px]">
+                {(["mine", "group"] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => setCalendarMode(mode)}
+                    className={`rounded-md px-2.5 py-1 text-xs font-semibold transition-colors ${
+                      calendarMode === mode ? "bg-white text-[#18181b] shadow-sm" : "text-[#71717a] hover:text-[#18181b]"
+                    }`}
+                  >
+                    {mode === "mine" ? "Của tôi" : "Nhóm"}
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex rounded-[9px] border border-[#e8e7e2] bg-[#f7f7f5] p-[3px]">
+                {(["month", "week"] as const).map((view) => (
+                  <button
+                    key={view}
+                    type="button"
+                    onClick={() => setCalendarView(view)}
+                    className={`rounded-md px-2.5 py-1 text-xs font-semibold transition-colors ${
+                      calendarView === view ? "bg-white text-[#18181b] shadow-sm" : "text-[#71717a] hover:text-[#18181b]"
+                    }`}
+                  >
+                    {view === "month" ? "Tháng" : "Tuần"}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
 
-          <div className="grid grid-cols-7 gap-1 text-center text-xs font-medium text-gray-400 mb-1">
-            {WEEKDAYS.map((day) => (
-              <div key={day} className="py-1">
-                {day}
-              </div>
-            ))}
-          </div>
-
-          <div className="grid grid-cols-7 gap-1">
-            {monthCells.map((day, index) => {
-              if (!day) {
-                return <div key={`empty-${index}`} className="min-h-14 rounded-lg bg-gray-50/60" />;
-              }
-
-              const key = dateKey(day);
-              const daySessions = sessionsByDate[key] ?? [];
-              const isToday = key === today;
-
-              return (
-                <div
-                  key={key}
-                  className={`min-h-14 rounded-lg border px-1.5 py-1.5 ${
-                    isToday ? "border-green-500 bg-green-50" : "border-gray-100 bg-gray-50/70"
-                  }`}
-                >
-                  <div className={`text-xs font-semibold ${isToday ? "text-green-700" : "text-gray-700"}`}>
-                    {day.getDate()}
-                  </div>
-                  <div className="mt-1 flex flex-col gap-1">
-                    {daySessions.slice(0, 2).map((item) => (
-                      <Link
-                        key={item.id}
-                        to={`/sessions/${item.id}`}
-                        aria-label={`${item.venue} ${formatDate(item.date)}`}
-                        className={`h-1.5 rounded-full ${
-                          item.status === "upcoming" ? "bg-green-500" : "bg-gray-300"
-                        }`}
-                      />
-                    ))}
-                    {daySessions.length > 2 && (
-                      <span className="text-[10px] leading-none text-gray-400">+{daySessions.length - 2}</span>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      </section>
-
-      {/* Buổi của tôi sắp tới */}
-      <section>
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="font-semibold text-gray-900 flex items-center gap-2">
-            <User size={18} className="text-green-600" />
-            Buổi của tôi sắp tới
-          </h2>
-          <Link to="/sessions" className="text-sm text-green-600 font-medium">
-            Xem tất cả
-          </Link>
-        </div>
-        {joinedLoading ? (
-          <div className="text-center py-6 text-gray-400 text-sm">Đang tải...</div>
-        ) : myUpcoming.length === 0 ? (
-          <EmptyState icon="📅" title="Chưa có buổi nào" description="Bạn chưa đăng ký buổi chơi nào sắp tới" />
-        ) : (
-          <div className="space-y-2">
-            {myUpcoming.map((item) => (
-              <div
-                key={item.id}
-                className="flex items-center justify-between gap-3 bg-white rounded-xl p-4 shadow-sm border border-gray-100 hover:border-green-200 transition-colors"
-              >
-                <Link to={`/sessions/${item.id}`} className="min-w-0 flex-1">
-                  <div className="font-medium text-gray-900 truncate">{item.venue}</div>
-                  <div className="text-sm text-gray-500">
-                    {formatDate(item.date)} · {item.start_time}
-                  </div>
-                  {item.location && (
-                    <div className="text-xs text-gray-400 flex items-center gap-1 truncate">
-                      <MapPin size={11} />
-                      {item.location}
+          {calendarView === "month" ? (
+            <div className="overflow-x-auto">
+              <div className="min-w-[720px] md:min-w-0">
+                <div className="grid grid-cols-7 border-b border-[#e8e7e2]">
+                  {WEEKDAYS.map((day) => (
+                    <div key={day} className="py-2 text-center text-[11px] font-semibold uppercase tracking-[.5px] text-[#71717a]">
+                      {day}
                     </div>
-                  )}
-                </Link>
-                <div className="flex items-center gap-2 flex-shrink-0">
-                  <Badge variant="green">Sắp tới</Badge>
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    onClick={() => downloadCalendarFile(item)}
-                    aria-label="Thêm vào lịch"
-                    title="Thêm vào lịch"
-                  >
-                    <CalendarPlus size={16} />
-                  </Button>
+                  ))}
                 </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
+                <div className="grid grid-cols-7 border-l border-t border-[#efeeea]">
+                  {monthCells.map((day, index) => {
+                    if (!day) {
+                      return (
+                        <div
+                          key={`empty-${index}`}
+                          className="min-h-[96px] border-b border-r border-[#efeeea] bg-[#fafafa]"
+                        />
+                      );
+                    }
 
-      {/* Buổi nhóm sắp tới (ngoài buổi của mình) */}
-      <section>
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="font-semibold text-gray-900 flex items-center gap-2">
-            <Clock size={18} className="text-green-600" />
-            Buổi nhóm sắp tới
-          </h2>
-          <Link to="/sessions" className="text-sm text-green-600 font-medium">
-            Xem tất cả
-          </Link>
-        </div>
-        {upcoming.length === 0 ? (
-          <EmptyState icon="📅" title="Chưa có buổi chơi nào" description="Tạo buổi mới để bắt đầu" />
-        ) : (
-          <div className="space-y-2">
-            {upcoming.map((item) => {
-              const iJoined = joinedSessions.some((j) => j.id === item.id);
-              return (
-                <div
-                  key={item.id}
-                  className="flex items-center justify-between gap-3 bg-white rounded-xl p-4 shadow-sm border border-gray-100 hover:border-green-200 transition-colors"
-                >
-                  <Link to={`/sessions/${item.id}`} className="min-w-0 flex-1">
-                    <div className="font-medium text-gray-900 truncate">{item.venue}</div>
-                    <div className="text-sm text-gray-500">
-                      {formatDate(item.date)} · {item.start_time}
-                    </div>
-                    {item.location && (
-                      <div className="text-xs text-gray-400 flex items-center gap-1 truncate">
-                        <MapPin size={11} />
-                        {item.location}
+                    const key = dateKey(day);
+                    const daySessions = sessionsByDate[key] ?? [];
+                    const isToday = key === today;
+
+                    return (
+                      <div
+                        key={key}
+                        className="min-h-[96px] border-b border-r border-[#efeeea] bg-white px-2 py-1.5 transition-colors hover:bg-[#f7f7f5]"
+                      >
+                        <div
+                          className={`mb-1 flex h-[22px] w-[22px] items-center justify-center text-[12.5px] font-semibold ${
+                            isToday ? "rounded-full bg-[#18181b] text-white" : "text-[#18181b]"
+                          }`}
+                        >
+                          {day.getDate()}
+                        </div>
+                        <div className="space-y-1">
+                          {daySessions.slice(0, 2).map((item) => {
+                            const kind = joinedIds.has(item.id) ? "personal" : "group";
+                            return (
+                              <Link
+                                key={item.id}
+                                to={`/sessions/${item.id}`}
+                                className={`flex min-w-0 items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium ${
+                                  kind === "personal" ? "bg-[#e7f6ec] text-[#16a34a]" : "bg-[#fdecec] text-[#dc2626]"
+                                }`}
+                              >
+                                <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${kind === "personal" ? "bg-[#16a34a]" : "bg-[#dc2626]"}`} />
+                                <span className="truncate">{item.start_time} {item.venue}</span>
+                              </Link>
+                            );
+                          })}
+                          {daySessions.length > 2 && (
+                            <div className="px-1.5 text-[10.5px] text-[#71717a]">+{daySessions.length - 2} thêm</div>
+                          )}
+                        </div>
                       </div>
-                    )}
-                  </Link>
-                  <div className="flex items-center gap-2 flex-shrink-0">
-                    {iJoined ? (
-                      <Badge variant="green">Đã đăng ký</Badge>
-                    ) : (
-                      <Badge variant="gray">Chưa đăng ký</Badge>
-                    )}
-                    <Button
-                      variant="outline"
-                      size="icon"
-                      onClick={() => downloadCalendarFile(item)}
-                      aria-label="Thêm vào lịch"
-                      title="Thêm vào lịch"
-                    >
-                      <CalendarPlus size={16} />
-                    </Button>
-                  </div>
+                    );
+                  })}
                 </div>
-              );
-            })}
-          </div>
-        )}
-      </section>
+              </div>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <div className="min-w-[840px]">
+                <div className="grid grid-cols-[56px_repeat(7,1fr)] border-b border-[#e8e7e2]">
+                  <div className="border-r border-[#efeeea]" />
+                  {weekDays.map((day, index) => {
+                    const isToday = dateKey(day) === today;
+                    return (
+                      <div key={dateKey(day)} className="border-r border-[#efeeea] px-2 py-2 text-center">
+                        <div className="text-[11px] font-semibold uppercase tracking-[.5px] text-[#71717a]">{WEEKDAYS[index]}</div>
+                        <div className={`mx-auto mt-0.5 flex h-6 w-6 items-center justify-center text-base font-bold ${isToday ? "rounded-full bg-[#18181b] text-white" : "text-[#18181b]"}`}>
+                          {day.getDate()}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="grid max-h-[560px] grid-cols-[56px_repeat(7,1fr)] overflow-y-auto border-l border-[#efeeea]">
+                  <div className="border-r border-[#e8e7e2]">
+                    {HOURS.map((hour) => (
+                      <div key={hour} className="h-[60px] border-b border-[#efeeea] px-1.5 py-1 text-right text-[10px] text-[#71717a]">
+                        {hour}:00
+                      </div>
+                    ))}
+                  </div>
+                  {weekDays.map((day) => {
+                    const items = sessionsByDate[dateKey(day)] ?? [];
+                    return (
+                      <div key={dateKey(day)} className="relative border-r border-[#efeeea]">
+                        {HOURS.map((hour) => (
+                          <div key={hour} className="h-[60px] border-b border-[#efeeea]" />
+                        ))}
+                        {items.map((item) => {
+                          const kind = joinedIds.has(item.id) ? "personal" : "group";
+                          return (
+                            <Link
+                              key={item.id}
+                              to={`/sessions/${item.id}`}
+                              style={{ top: `${eventTop(item)}px` }}
+                              className={`absolute left-1 right-1 rounded-md px-2 py-1 text-[11px] font-medium shadow-sm ${
+                                kind === "personal" ? "bg-[#e7f6ec] text-[#16a34a]" : "bg-[#fdecec] text-[#dc2626]"
+                              }`}
+                            >
+                              <div className="truncate font-semibold">{item.venue}</div>
+                              <div className="text-[10px] opacity-80">{item.start_time}</div>
+                            </Link>
+                          );
+                        })}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
 
-      {myCompleted.length > 0 && (
-        <section>
-          <h2 className="font-semibold text-gray-900 flex items-center gap-2 mb-3">
-            <TrendingUp size={18} className="text-green-600" />
-            Buổi tôi đã tham gia gần đây
-          </h2>
-          <div className="space-y-2">
-            {myCompleted.slice(0, 5).map((item) => (
-              <Link
-                key={item.id}
-                to={`/sessions/${item.id}`}
-                className="flex items-center justify-between bg-white rounded-xl p-4 shadow-sm border border-gray-100 hover:border-green-200 transition-colors"
-              >
-                <div className="min-w-0">
-                  <div className="font-medium text-gray-900 truncate">{item.venue}</div>
-                  <div className="text-sm text-gray-500">
-                    {formatDate(item.date)} · {item.attendee_count ?? 0} người · {formatCurrency(item.total_cost ?? 0)}
-                  </div>
-                </div>
-                <ChevronRight size={16} className="text-gray-400 flex-shrink-0 ml-2" />
-              </Link>
-            ))}
+          <div className="mt-3.5 flex flex-wrap gap-4 border-t border-[#efeeea] pt-3.5 text-xs text-[#71717a]">
+            <div className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-[#16a34a]" />Cá nhân</div>
+            <div className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-[#dc2626]" />Nhóm</div>
+            <div className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-[#18181b]" />Hôm nay</div>
           </div>
         </section>
-      )}
+
+        <div className="flex flex-col gap-[18px]">
+          <section>
+            <div className="mb-3 flex items-center justify-between px-1">
+              <div className="flex items-center gap-2 text-sm font-semibold text-[#18181b]">
+                <User size={16} className="text-[#16a34a]" />
+                Buổi của tôi sắp tới
+              </div>
+              <Link to="/sessions" className="inline-flex items-center gap-1 text-xs font-medium text-[#71717a] hover:text-[#18181b]">
+                Xem tất cả <ChevronRight size={13} />
+              </Link>
+            </div>
+            {joinedLoading ? (
+              <div className="rounded-xl border border-[#e8e7e2] bg-white p-6 text-center text-sm text-[#71717a]">Đang tải...</div>
+            ) : myUpcoming.length === 0 ? (
+              <div className="rounded-xl border border-[#e8e7e2] bg-white">
+                <EmptyState title="Chưa có buổi nào" description="Bạn chưa đăng ký buổi chơi nào sắp tới" />
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {myUpcoming.slice(0, 4).map((item) => (
+                  <SessionRow key={item.id} session={item} kind="personal" joined />
+                ))}
+              </div>
+            )}
+          </section>
+
+          <section>
+            <div className="mb-3 flex items-center justify-between px-1">
+              <div className="flex items-center gap-2 text-sm font-semibold text-[#18181b]">
+                <Users size={16} className="text-[#dc2626]" />
+                Buổi nhóm sắp tới
+              </div>
+              <Link to="/sessions" className="inline-flex items-center gap-1 text-xs font-medium text-[#71717a] hover:text-[#18181b]">
+                Xem tất cả <ChevronRight size={13} />
+              </Link>
+            </div>
+            {groupUpcoming.length === 0 ? (
+              <div className="rounded-xl border border-[#e8e7e2] bg-white">
+                <EmptyState title="Chưa có buổi chơi nào" description="Tạo buổi mới để bắt đầu" />
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {groupUpcoming.map((item) => (
+                  <SessionRow key={item.id} session={item} kind="group" joined={joinedIds.has(item.id)} />
+                ))}
+              </div>
+            )}
+          </section>
+
+          <section className="rounded-[14px] border border-[#e8e7e2] bg-white p-4">
+            <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-[#18181b]">
+              <Info size={16} className="text-[#71717a]" />
+              Tóm tắt nhanh
+            </div>
+            <div className="space-y-2 text-sm text-[#71717a]">
+              <div className="flex items-center justify-between gap-3">
+                <span className="flex items-center gap-2"><Clock size={14} />Buổi sắp tới</span>
+                <span className="font-semibold text-[#18181b]">{groupUpcoming.length}</span>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <span className="flex items-center gap-2"><CheckCircle2 size={14} />Đã hoàn thành</span>
+                <span className="font-semibold text-[#18181b]">{myCompleted.length}</span>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <span className="flex items-center gap-2"><DollarSign size={14} />Công nợ</span>
+                <span className="font-semibold text-[#18181b]">{formatCurrency(debt)}</span>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
     </div>
   );
 }
