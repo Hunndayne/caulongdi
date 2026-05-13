@@ -1,3 +1,4 @@
+import type { CSSProperties } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import {
   BarChart2,
@@ -21,6 +22,45 @@ const navItems = [
   { to: "/stats", icon: BarChart2, label: "Thống kê" },
   { to: "/profile", icon: UserCircle, label: "Hồ sơ" },
 ];
+
+const liquidGlassShell: CSSProperties = {
+  backdropFilter: "url(#liquid-glass-distort) blur(8px) saturate(210%)",
+  WebkitBackdropFilter: "url(#liquid-glass-distort) blur(8px) saturate(210%)",
+};
+
+const liquidGlassPill: CSSProperties = {
+  backdropFilter: "url(#liquid-glass-pill-distort) blur(4px) saturate(180%)",
+  WebkitBackdropFilter: "url(#liquid-glass-pill-distort) blur(4px) saturate(180%)",
+};
+
+const sidebarGlassShell: CSSProperties = {
+  backdropFilter: "url(#liquid-glass-distort) blur(16px) saturate(180%)",
+  WebkitBackdropFilter: "url(#liquid-glass-distort) blur(16px) saturate(180%)",
+};
+
+const sidebarGlassPill: CSSProperties = {
+  backdropFilter: "url(#liquid-glass-pill-distort) blur(8px) saturate(150%)",
+  WebkitBackdropFilter: "url(#liquid-glass-pill-distort) blur(8px) saturate(150%)",
+};
+
+function LiquidGlassFilter() {
+  return (
+    <svg width="0" height="0" className="absolute" aria-hidden="true" focusable="false">
+      <defs>
+        <filter id="liquid-glass-distort" x="-20%" y="-20%" width="140%" height="140%">
+          <feTurbulence type="fractalNoise" baseFrequency="0.012 0.018" numOctaves="2" seed="7" result="noise" />
+          <feGaussianBlur in="noise" stdDeviation="1.15" result="softNoise" />
+          <feDisplacementMap in="SourceGraphic" in2="softNoise" scale="18" xChannelSelector="R" yChannelSelector="G" />
+        </filter>
+        <filter id="liquid-glass-pill-distort" x="-20%" y="-20%" width="140%" height="140%">
+          <feTurbulence type="fractalNoise" baseFrequency="0.018 0.026" numOctaves="2" seed="11" result="noise" />
+          <feGaussianBlur in="noise" stdDeviation="0.9" result="softNoise" />
+          <feDisplacementMap in="SourceGraphic" in2="softNoise" scale="24" xChannelSelector="R" yChannelSelector="G" />
+        </filter>
+      </defs>
+    </svg>
+  );
+}
 
 function useLogout() {
   const navigate = useNavigate();
@@ -115,30 +155,38 @@ export function Topbar() {
 
 export function BottomNav() {
   return (
-    <nav className="fixed before:pointer-events-none before:absolute before:inset-0 before:rounded-full before:bg-[linear-gradient(180deg,rgba(255,255,255,.38)_0%,rgba(255,255,255,.05)_30%,rgba(255,255,255,.015)_66%,rgba(255,255,255,.14)_100%)] before:content-[''] bottom-6 left-1/2 z-40 w-[calc(100%-16px)] max-w-[420px] -translate-x-1/2 rounded-full border border-white/30 bg-white/[.025] p-[7px] shadow-[0_18px_52px_rgba(24,24,27,.12),0_4px_16px_rgba(24,24,27,.06),inset_0_1px_0_rgba(255,255,255,.55),inset_0_0_0_1px_rgba(255,255,255,.06),inset_0_-1px_0_rgba(24,24,27,.025)] backdrop-blur-[8px] backdrop-saturate-[210%] min-[390px]:w-[calc(100%-24px)] min-[769px]:hidden" aria-label="Điều hướng">
-      <div className="relative flex h-[54px] items-center gap-px">
-        {navItems.map(({ to, icon: Icon, label, exact }) => (
-          <NavLink
-            key={to}
-            to={to}
-            end={exact}
-            className={({ isActive }) =>
-              cn(
-                "relative z-10 flex h-full min-w-10 flex-1 items-center justify-center gap-1.5 rounded-full px-1.5 text-[12.5px] font-semibold transition-all duration-300",
-                isActive
-                  ? "flex-[2.35] border border-white/45 bg-white/[.16] text-[#18181b] shadow-[0_8px_22px_rgba(24,24,27,.09),0_1px_4px_rgba(24,24,27,.05),inset_0_1px_0_rgba(255,255,255,.62),inset_0_-1px_0_rgba(24,24,27,.025)] backdrop-blur-[4px] [&_.bn-label]:max-w-[90px] [&_.bn-label]:opacity-100 [&_svg]:scale-[1.05]"
-                  : "text-[#71717a] hover:text-[#18181b]"
-              )
-            }
-          >
-            <Icon size={18} className="shrink-0 transition-transform duration-300" />
-            <span className="bn-label max-w-0 overflow-hidden whitespace-nowrap opacity-0 transition-all duration-300">
-              {label}
-            </span>
-          </NavLink>
-        ))}
-      </div>
-    </nav>
+    <>
+      <LiquidGlassFilter />
+      <nav
+        className="fixed before:pointer-events-none before:absolute before:inset-0 before:rounded-full before:bg-[linear-gradient(180deg,rgba(255,255,255,.38)_0%,rgba(255,255,255,.05)_30%,rgba(255,255,255,.015)_66%,rgba(255,255,255,.14)_100%)] before:content-[''] bottom-6 left-1/2 z-40 w-[calc(100%-16px)] max-w-[420px] -translate-x-1/2 rounded-full border border-white/30 bg-white/[.025] p-[7px] shadow-[0_18px_52px_rgba(24,24,27,.12),0_4px_16px_rgba(24,24,27,.06),inset_0_1px_0_rgba(255,255,255,.55),inset_0_0_0_1px_rgba(255,255,255,.06),inset_0_-1px_0_rgba(24,24,27,.025)] min-[390px]:w-[calc(100%-24px)] min-[769px]:hidden"
+        style={liquidGlassShell}
+        aria-label="Điều hướng"
+      >
+        <div className="relative flex h-[54px] items-center gap-px">
+          {navItems.map(({ to, icon: Icon, label, exact }) => (
+            <NavLink
+              key={to}
+              to={to}
+              end={exact}
+              style={({ isActive }) => (isActive ? liquidGlassPill : undefined)}
+              className={({ isActive }) =>
+                cn(
+                  "relative z-10 flex h-full min-w-10 flex-1 items-center justify-center gap-1.5 rounded-full px-1.5 text-[12.5px] font-semibold transition-all duration-300",
+                  isActive
+                    ? "flex-[2.35] border border-white/45 bg-white/[.16] text-[#18181b] shadow-[0_8px_22px_rgba(24,24,27,.09),0_1px_4px_rgba(24,24,27,.05),inset_0_1px_0_rgba(255,255,255,.62),inset_0_-1px_0_rgba(24,24,27,.025)] [&_.bn-label]:max-w-[90px] [&_.bn-label]:opacity-100 [&_svg]:scale-[1.05]"
+                    : "text-[#71717a] hover:text-[#18181b]"
+                )
+              }
+            >
+              <Icon size={18} className="shrink-0 transition-transform duration-300" />
+              <span className="bn-label max-w-0 overflow-hidden whitespace-nowrap opacity-0 transition-all duration-300">
+                {label}
+              </span>
+            </NavLink>
+          ))}
+        </div>
+      </nav>
+    </>
   );
 }
 
@@ -159,11 +207,14 @@ export function Sidebar() {
         <span className="text-base font-bold tracking-normal text-[#18181b]">TingTing</span>
       </div>
 
-      <nav className="relative flex flex-1 flex-col gap-0.5 rounded-[18px] border border-white/60 bg-white/25 p-[7px] shadow-[0_14px_36px_rgba(24,24,27,.10),0_2px_8px_rgba(24,24,27,.05),inset_0_1px_0_rgba(255,255,255,.85)] backdrop-blur-xl">
+      <nav
+        className="relative flex flex-1 flex-col gap-0.5 rounded-[18px] border border-white/60 bg-white/25 p-[7px] shadow-[0_14px_36px_rgba(24,24,27,.10),0_2px_8px_rgba(24,24,27,.05),inset_0_1px_0_rgba(255,255,255,.85)]"
+        style={sidebarGlassShell}
+      >
         <div className="pointer-events-none absolute inset-0 rounded-[18px] bg-gradient-to-b from-white/40 via-white/0 to-white/20" />
         <div
           className="pointer-events-none absolute left-[7px] right-[7px] z-0 h-[38px] rounded-[11px] border border-white/90 bg-white/55 shadow-[0_5px_14px_rgba(24,24,27,.12),0_1px_3px_rgba(24,24,27,.08),inset_0_1px_0_rgba(255,255,255,1)] transition-[top] duration-300"
-          style={{ top: `${7 + activeIndex * 40}px` }}
+          style={{ ...sidebarGlassPill, top: `${7 + activeIndex * 40}px` }}
         />
         {navItems.map(({ to, icon: Icon, label, exact }) => (
           <NavLink
