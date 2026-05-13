@@ -33,6 +33,11 @@ const liquidGlassPill: CSSProperties = {
   WebkitBackdropFilter: "url(#liquid-glass-pill-distort) blur(4px) saturate(180%)",
 };
 
+const mobileTopbarGlass: CSSProperties = {
+  backdropFilter: "url(#liquid-glass-distort) blur(8px) saturate(210%)",
+  WebkitBackdropFilter: "url(#liquid-glass-distort) blur(8px) saturate(210%)",
+};
+
 const sidebarGlassShell: CSSProperties = {
   backdropFilter: "url(#liquid-glass-distort) blur(16px) saturate(180%)",
   WebkitBackdropFilter: "url(#liquid-glass-distort) blur(16px) saturate(180%)",
@@ -141,13 +146,18 @@ export function Topbar() {
         </label>
       </header>
 
-      <header className="sticky top-0 z-30 flex items-center gap-3 border-b border-[#e8e7e2] bg-white px-4 py-3 min-[769px]:hidden">
-        <BrandMark />
-        <div className="min-w-0 flex-1">
+      <header
+        className="sticky top-0 z-30 flex items-center gap-3 overflow-hidden border-b border-white/30 bg-white/[.035] px-4 py-3 shadow-[0_10px_28px_rgba(24,24,27,.08),inset_0_1px_0_rgba(255,255,255,.55),inset_0_-1px_0_rgba(24,24,27,.025)] before:pointer-events-none before:absolute before:inset-0 before:bg-[linear-gradient(180deg,rgba(255,255,255,.42)_0%,rgba(255,255,255,.06)_55%,rgba(255,255,255,.12)_100%)] before:content-[''] min-[769px]:hidden"
+        style={mobileTopbarGlass}
+      >
+        <BrandMark className="relative z-10 shadow-[0_8px_18px_rgba(24,24,27,.14)]" />
+        <div className="relative z-10 min-w-0 flex-1">
           <div className="truncate text-base font-bold tracking-normal text-[#18181b]">TingTing</div>
           <div className="truncate text-xs text-[#71717a]">{name}</div>
         </div>
-        <UserBubble size="sm" />
+        <div className="relative z-10">
+          <UserBubble size="sm" />
+        </div>
       </header>
     </>
   );
