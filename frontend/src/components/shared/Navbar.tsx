@@ -115,7 +115,7 @@ export function Topbar() {
 
 export function BottomNav() {
   return (
-    <nav className="fixed before:pointer-events-none before:absolute before:inset-0 before:rounded-full before:bg-[linear-gradient(180deg,rgba(255,255,255,.45)_0%,rgba(255,255,255,0)_35%,rgba(255,255,255,0)_65%,rgba(255,255,255,.18)_100%)] before:content-[''] bottom-6 left-1/2 z-40 w-[calc(100%-16px)] max-w-[420px] -translate-x-1/2 rounded-full border border-white/55 bg-white/[.18] p-[7px] shadow-[0_18px_50px_rgba(24,24,27,.20),0_4px_14px_rgba(24,24,27,.10),inset_0_1px_0_rgba(255,255,255,.85),inset_0_0_0_1px_rgba(255,255,255,.18),inset_0_-1px_0_rgba(24,24,27,.06)] backdrop-blur-[18px] min-[390px]:w-[calc(100%-24px)] min-[769px]:hidden" aria-label="Điều hướng">
+    <nav className="fixed before:pointer-events-none before:absolute before:inset-0 before:rounded-full before:bg-[linear-gradient(180deg,rgba(255,255,255,.55)_0%,rgba(255,255,255,.10)_28%,rgba(255,255,255,.04)_62%,rgba(255,255,255,.22)_100%)] before:content-[''] bottom-6 left-1/2 z-40 w-[calc(100%-16px)] max-w-[420px] -translate-x-1/2 rounded-full border border-white/45 bg-white/[.08] p-[7px] shadow-[0_18px_52px_rgba(24,24,27,.16),0_4px_16px_rgba(24,24,27,.08),inset_0_1px_0_rgba(255,255,255,.75),inset_0_0_0_1px_rgba(255,255,255,.10),inset_0_-1px_0_rgba(24,24,27,.04)] backdrop-blur-[24px] backdrop-saturate-[190%] min-[390px]:w-[calc(100%-24px)] min-[769px]:hidden" aria-label="Điều hướng">
       <div className="relative flex h-[54px] items-center gap-px">
         {navItems.map(({ to, icon: Icon, label, exact }) => (
           <NavLink
@@ -126,7 +126,7 @@ export function BottomNav() {
               cn(
                 "relative z-10 flex h-full min-w-10 flex-1 items-center justify-center gap-1.5 rounded-full px-1.5 text-[12.5px] font-semibold transition-all duration-300",
                 isActive
-                  ? "flex-[2.35] border border-white/90 bg-white/55 text-[#18181b] shadow-[0_6px_18px_rgba(24,24,27,.14),0_1px_3px_rgba(24,24,27,.08),inset_0_1px_0_rgba(255,255,255,1),inset_0_-1px_0_rgba(24,24,27,.05)] [&_.bn-label]:max-w-[90px] [&_.bn-label]:opacity-100 [&_svg]:scale-[1.05]"
+                  ? "flex-[2.35] border border-white/70 bg-white/[.32] text-[#18181b] shadow-[0_8px_22px_rgba(24,24,27,.12),0_1px_4px_rgba(24,24,27,.07),inset_0_1px_0_rgba(255,255,255,.86),inset_0_-1px_0_rgba(24,24,27,.04)] backdrop-blur-[10px] [&_.bn-label]:max-w-[90px] [&_.bn-label]:opacity-100 [&_svg]:scale-[1.05]"
                   : "text-[#71717a] hover:text-[#18181b]"
               )
             }
