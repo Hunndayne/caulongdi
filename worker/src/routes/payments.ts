@@ -107,13 +107,11 @@ payments.post("/:id/toggle", async (c) => {
     return c.json({ error: "Only the payer or recipient can update this payment" }, 403);
   }
 
-  if (row.payer_marked_paid !== 1) {
-    return c.json({ error: "The payer must mark this payment as paid before the recipient can confirm it" }, 409);
-  }
-
   const paidAt = new Date().toISOString();
-  await c.env.DB.prepare("UPDATE payments SET paid = 1, paid_at = ? WHERE id = ?")
-    .bind(paidAt, id)
+  await c.env.DB.prepare(
+    "UPDATE payments SET payer_marked_paid = 1, payer_marked_paid_at = COALESCE(payer_marked_paid_at, ?), paid = 1, paid_at = ? WHERE id = ?"
+  )
+    .bind(paidAt, paidAt, id)
     .run();
 
   queueTask(c, sendPaymentReceivedForPayment(c.env, id, { paidAt }), `payment-received:${id}`);

@@ -508,7 +508,7 @@ export default function SessionDetailPage() {
     if (payment.paid) return false;
     if (!currentUserId) return false;
     if (debtor?.user_id === currentUserId) return payment.payer_marked_paid !== 1;
-    if (recipient?.user_id === currentUserId) return payment.payer_marked_paid === 1;
+    if (recipient?.user_id === currentUserId) return true;
     return false;
   };
 
@@ -516,7 +516,7 @@ export default function SessionDetailPage() {
     const isRecipientUser = Boolean(currentUserId && recipient?.user_id === currentUserId && debtor?.user_id !== currentUserId);
     const isDebtorUser = Boolean(currentUserId && debtor?.user_id === currentUserId);
     if (payment.paid) return isRecipientUser ? "Đã nhận ✓" : "Đã xong ✓";
-    if (isRecipientUser) return payment.payer_marked_paid ? "Xác nhận đã nhận" : "Chờ người trả";
+    if (isRecipientUser) return payment.payer_marked_paid ? "Xác nhận đã nhận" : "Đánh dấu đã nhận";
     if (isDebtorUser) return payment.payer_marked_paid ? "Chờ xác nhận" : "Đánh dấu đã trả";
     return payment.payer_marked_paid ? "Chờ xác nhận" : "Chưa trả";
   };
