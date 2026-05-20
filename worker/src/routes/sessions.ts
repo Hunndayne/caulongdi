@@ -402,7 +402,7 @@ sessions.put("/:id", async (c) => {
     ? undefined
     : normalizePaymentRecipient(paymentRecipient);
   const paymentRecipientChanged = normalizedPaymentRecipient !== undefined
-    && normalizedPaymentRecipient !== ((existing as any).payment_recipient ?? null);
+    && normalizedPaymentRecipient !== normalizePaymentRecipient((existing as any).payment_recipient ?? null);
 
   if (paymentRecipientChanged) {
     const lockedResponse = await blockIfSessionHasConfirmedPayments(c, id);
@@ -421,7 +421,7 @@ sessions.put("/:id", async (c) => {
       body.location !== undefined ? body.location : existing.location,
       body.note !== undefined ? body.note : existing.note,
       body.status ?? existing.status,
-      normalizedPaymentRecipient !== undefined ? normalizedPaymentRecipient : (existing as any).payment_recipient ?? null,
+      paymentRecipient !== undefined ? paymentRecipient || null : (existing as any).payment_recipient ?? null,
       body.allow_all_edit !== undefined ? body.allow_all_edit : ((existing as any).allow_all_edit ?? 0),
       body.force_payment_recipient !== undefined ? body.force_payment_recipient : ((existing as any).force_payment_recipient ?? 0),
       id

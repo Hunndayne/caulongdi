@@ -117,6 +117,7 @@ export default function SessionDetailPage() {
   const [managingSettings, setManagingSettings] = useState(false);
   const [showManagerSettings, setShowManagerSettings] = useState(false);
   const [recipientId, setRecipientId] = useState("");
+  const [autoConfirm, setAutoConfirm] = useState(false);
   const costImportInputRef = useRef<HTMLInputElement | null>(null);
 
   const currentUserId = (authSession?.user as { id?: string } | undefined)?.id;
@@ -154,7 +155,14 @@ export default function SessionDetailPage() {
   }, [currentSession, fetchMembers]);
 
   useEffect(() => {
-    setRecipientId(currentSession?.payment_recipient ?? "");
+    const raw = currentSession?.payment_recipient ?? "";
+    if (raw.startsWith("auto_")) {
+      setAutoConfirm(true);
+      setRecipientId(raw.slice(5));
+    } else {
+      setAutoConfirm(false);
+      setRecipientId(raw);
+    }
   }, [currentSession?.id, currentSession?.payment_recipient]);
 
   const s = currentSession;
@@ -216,10 +224,23 @@ export default function SessionDetailPage() {
   const handleSetRecipient = async (value: string) => {
     setRecipientId(value);
     if (!canManageSession || !id) return;
+    const stored = value ? (autoConfirm ? `auto_${value}` : value) : null;
     try {
-      await api.updateSession(id, { payment_recipient: value || null } as any);
+      await api.updateSession(id, { payment_recipient: stored } as any);
     } catch {
       // keep local selection optimistic; refresh will reconcile if needed
+    }
+  };
+
+  const handleToggleAutoConfirm = async () => {
+    const next = !autoConfirm;
+    setAutoConfirm(next);
+    if (!canManageSession || !id || !recipientId) return;
+    const stored = next ? `auto_${recipientId}` : recipientId;
+    try {
+      await api.updateSession(id, { payment_recipient: stored } as any);
+    } catch {
+      setAutoConfirm(!next);
     }
   };
 
@@ -500,8 +521,7 @@ export default function SessionDetailPage() {
   const buildQrUrl = (paymentId: string, debtor: Member, recipient: Member, amount: number) => {
     if (!recipient.user_bank_bin || !recipient.user_bank_account_number || !recipient.user_bank_account_name) return null;
     if (amount <= 0 || debtor.id === recipient.id) return null;
-    const rawRecipient = s.payment_recipient ?? "";
-    const isAutoRecipient = rawRecipient.startsWith("auto_") && rawRecipient.slice(5) === recipient.id;
+    const isAutoRecipient = autoConfirm && recipient.id === recipientId;
     const prefix = isAutoRecipient ? "CLD" : "TT";
     const note = `${prefix}-${paymentId} ${debtor.name} ${formatDate(s.date)}`;
     return `https://img.vietqr.io/image/${recipient.user_bank_bin}-${recipient.user_bank_account_number}-compact.png?amount=${Math.ceil(amount)}&addInfo=${encodeURIComponent(note)}&accountName=${encodeURIComponent(recipient.user_bank_account_name)}`;
@@ -658,27 +678,38 @@ export default function SessionDetailPage() {
                   ))}
                 </select>
                 {recipientId && (
-                  <label className="flex items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={Boolean(currentSession?.force_payment_recipient)}
-                      disabled={!recipientId}
-                      onChange={async () => {
-                        const nextValue = currentSession?.force_payment_recipient ? 0 : 1;
-                        setManagingSettings(true);
-                        try {
-                          await api.updateSession(s.id, { force_payment_recipient: nextValue } as any);
-                          await refresh(s.id);
-                        } catch (error: any) {
-                          alert(error.message);
-                        } finally {
-                          setManagingSettings(false);
-                        }
-                      }}
-                      className="rounded border-gray-300"
-                    />
-                    <span className="text-gray-700">Tất cả tiền chuyển về người nhận chung</span>
-                  </label>
+                  <div className="space-y-1">
+                    <label className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(currentSession?.force_payment_recipient)}
+                        disabled={!recipientId}
+                        onChange={async () => {
+                          const nextValue = currentSession?.force_payment_recipient ? 0 : 1;
+                          setManagingSettings(true);
+                          try {
+                            await api.updateSession(s.id, { force_payment_recipient: nextValue } as any);
+                            await refresh(s.id);
+                          } catch (error: any) {
+                            alert(error.message);
+                          } finally {
+                            setManagingSettings(false);
+                          }
+                        }}
+                        className="rounded border-gray-300"
+                      />
+                      <span className="text-gray-700">Tất cả tiền chuyển về người nhận chung</span>
+                    </label>
+                    <label className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={autoConfirm}
+                        onChange={handleToggleAutoConfirm}
+                        className="rounded border-gray-300"
+                      />
+                      <span className="text-gray-700">Webhook tự động xác nhận (Timo)</span>
+                    </label>
+                  </div>
                 )}
                 {recipientId && s.payments.length > 0 && (
                   <div className="text-xs text-gray-500">
