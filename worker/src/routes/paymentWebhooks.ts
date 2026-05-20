@@ -3,6 +3,7 @@ import { Env } from "../types";
 import { sendPaymentReceivedForPayment } from "../paymentNotifications";
 
 const DEFAULT_AUTOCONFIRM_EMAIL = "tranthanhhung1641@gmail.com";
+const PAYMENT_CODE_PATTERN = /\b(?:TT|CLD)[-\s]*([A-Za-z0-9]{8,40})\b/i;
 
 const paymentWebhooks = new Hono<{ Bindings: Env }>();
 
@@ -69,7 +70,7 @@ function parseAmount(value: BankTransferWebhookBody["amount"]) {
 }
 
 function extractPaymentId(content: string) {
-  const match = content.match(/\b(?:TT|CLD)[-\s]*([A-Za-z0-9]{8,40})\b/i);
+  const match = content.match(PAYMENT_CODE_PATTERN);
   return match?.[1] ?? null;
 }
 
@@ -123,7 +124,7 @@ paymentWebhooks.post("/bank-transfer", async (c) => {
 
   if (!amount || amount <= 0) return c.json({ error: "amount must be a positive number" }, 400);
   if (!content) return c.json({ error: "content is required" }, 400);
-  if (!paymentId) return c.json({ error: "Payment code TT<id> not found" }, 400);
+  if (!paymentId) return c.json({ error: "Payment code TT/CLD-<paymentId> not found" }, 400);
 
   const autoConfirmEmail = normalizeEmail(c.env.PAYMENT_AUTOCONFIRM_EMAIL || DEFAULT_AUTOCONFIRM_EMAIL);
   const reportedRecipientEmail = normalizeEmail(body.recipientEmail);

@@ -277,7 +277,7 @@ Webhook production cố định:
 https://caulong.hunn.io.vn/api/payment-webhooks/bank-transfer
 ```
 
-Script chỉ gửi email Timo có dòng tiền vào `vừa tăng ... VND`, có `Mô tả: ...`, và phần mô tả chứa mã `TT-<paymentId>` được nhúng trong QR.
+Script chỉ gửi email Timo có dòng tiền vào `vừa tăng ... VND`, có `Mô tả: ...`, và phần mô tả chứa mã `TT-<paymentId>` hoặc `CLD-<paymentId>` được nhúng trong QR.
 
 ---
 

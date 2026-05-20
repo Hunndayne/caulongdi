@@ -3,6 +3,7 @@ const WEBHOOK_SECRET = "PASTE_PAYMENT_WEBHOOK_SECRET_HERE";
 const RECIPIENT_EMAIL = "tranthanhhung1641@gmail.com";
 const PROCESSED_PROPERTY = "PROCESSED_TIMO_EMAILS";
 const MAX_PROCESSED_IDS = 120;
+const PAYMENT_CODE_PATTERN = /\b(?:TT|CLD)[-\s]*[A-Za-z0-9]{8,40}\b/i;
 
 function scanTimoPaymentEmails() {
   logInfo("scan started", { at: new Date().toISOString(), webhookUrl: WEBHOOK_URL });
@@ -139,7 +140,7 @@ function parseTimoEmail(body) {
     return null;
   }
 
-  if (!/\b(?:TT|CLD)[-\s]*[A-Za-z0-9]{8,40}\b/i.test(description)) {
+  if (!PAYMENT_CODE_PATTERN.test(description)) {
     logInfo("parse skipped: TingTing payment code not found", { description: description });
     return null;
   }

@@ -34,6 +34,11 @@ import type { Cost, Member, Payment } from "@/types";
 const TABS = ["Điểm danh", "Chi phí", "Thanh toán"] as const;
 type Tab = (typeof TABS)[number];
 
+const PAYMENT_QR_PREFIX = {
+  manual: "TT",
+  autoConfirm: "CLD",
+} as const;
+
 const COST_TYPES = [
   { value: "court", label: "Phí địa điểm" },
   { value: "water", label: "Nước" },
@@ -522,8 +527,8 @@ export default function SessionDetailPage() {
     if (!recipient.user_bank_bin || !recipient.user_bank_account_number || !recipient.user_bank_account_name) return null;
     if (amount <= 0 || debtor.id === recipient.id) return null;
     const isAutoRecipient = autoConfirm && recipient.id === recipientId;
-    const prefix = isAutoRecipient ? "CLD" : "TT";
-    const note = `${prefix}-${paymentId} ${debtor.name} ${formatDate(s.date)}`;
+    const prefix = isAutoRecipient ? PAYMENT_QR_PREFIX.autoConfirm : PAYMENT_QR_PREFIX.manual;
+    const note = `${prefix}-${paymentId}`;
     return `https://img.vietqr.io/image/${recipient.user_bank_bin}-${recipient.user_bank_account_number}-compact.png?amount=${Math.ceil(amount)}&addInfo=${encodeURIComponent(note)}&accountName=${encodeURIComponent(recipient.user_bank_account_name)}`;
   };
 
