@@ -121,6 +121,7 @@ export interface Session {
   note?: string;
   status: "upcoming" | "completed";
   payment_recipient?: string | null;
+  force_payment_recipient?: number;
   managers?: string | null;
   allow_all_edit?: number;
   created_at: string;

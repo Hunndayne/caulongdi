@@ -113,6 +113,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   note TEXT,
   status TEXT NOT NULL DEFAULT 'upcoming',
   payment_recipient TEXT,
+  force_payment_recipient INTEGER NOT NULL DEFAULT 0,
   managers TEXT,
   created_at TEXT NOT NULL,
   FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE SET NULL,

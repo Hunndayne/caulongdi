@@ -3,7 +3,12 @@
     "allow": [
       "Bash(pnpm install *)",
       "Bash(npx tsc *)",
-      "Bash(npx vite *)"
+      "Bash(npx vite *)",
+      "Bash(Get-ChildItem -Path \"D:\\\\code\\\\caulongdi\\\\packages\\\\frontend\\\\src\\\\pages\" -Recurse -Filter \"*Session*\")",
+      "Bash(Select-Object -First 20)",
+      "Bash(grep -E \"\\\\.\\(ts|tsx\\)$\")",
+      "Bash(grep -E \"\\\\.\\(ts\\)$\")",
+      "Bash(npx wrangler *)"
     ]
   }
 }

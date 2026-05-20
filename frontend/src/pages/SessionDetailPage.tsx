@@ -640,6 +640,60 @@ export default function SessionDetailPage() {
                 <span className="text-gray-700">Cho phép tất cả thành viên chỉnh sửa</span>
               </label>
 
+              <div className="space-y-1.5">
+                <label className="block text-xs font-medium text-gray-700">Người nhận chung</label>
+                <select
+                  value={recipientId}
+                  onChange={(event) => handleSetRecipient(event.target.value)}
+                  className="w-full rounded-lg border border-gray-300 px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                >
+                  <option value="">-- Chưa chọn --</option>
+                  {membersWithBank.map((member) => (
+                    <option key={member.id} value={member.id}>
+                      {member.name}
+                    </option>
+                  ))}
+                </select>
+                {recipientId && (
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(currentSession?.force_payment_recipient)}
+                      disabled={!recipientId}
+                      onChange={async () => {
+                        const nextValue = currentSession?.force_payment_recipient ? 0 : 1;
+                        setManagingSettings(true);
+                        try {
+                          await api.updateSession(s.id, { force_payment_recipient: nextValue } as any);
+                          await refresh(s.id);
+                        } catch (error: any) {
+                          alert(error.message);
+                        } finally {
+                          setManagingSettings(false);
+                        }
+                      }}
+                      className="rounded border-gray-300"
+                    />
+                    <span className="text-gray-700">Tất cả tiền chuyển về người nhận chung</span>
+                  </label>
+                )}
+                {recipientId && s.payments.length > 0 && (
+                  <div className="text-xs text-gray-500">
+                    Tổng nhận:{" "}
+                    <span className="font-semibold text-gray-700">
+                      {formatCurrency(
+                        paymentRows
+                          .filter(({ payment }) => payment.recipient_member_id === recipientId)
+                          .reduce((sum, { payment }) => sum + payment.amount_owed, 0)
+                      )}
+                    </span>
+                  </div>
+                )}
+                {membersWithBank.length === 0 && (
+                  <div className="text-xs text-gray-400">Chưa có thành viên nào cập nhật STK.</div>
+                )}
+              </div>
+
               {managersList.length > 0 && (
                 <div>
                   <div className="mb-1 text-xs text-gray-500">Đồng quản lý:</div>

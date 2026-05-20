@@ -20,6 +20,7 @@ type SessionBody = {
   paymentRecipient?: string | null;
   payment_recipient?: string | null;
   allow_all_edit?: number;
+  force_payment_recipient?: number;
 };
 
 type SessionRow = {
@@ -410,7 +411,7 @@ sessions.put("/:id", async (c) => {
 
   await c.env.DB.prepare(`
     UPDATE sessions
-    SET date = ?, start_time = ?, venue = ?, location = ?, note = ?, status = ?, payment_recipient = ?, allow_all_edit = ?
+    SET date = ?, start_time = ?, venue = ?, location = ?, note = ?, status = ?, payment_recipient = ?, allow_all_edit = ?, force_payment_recipient = ?
     WHERE id = ?
   `)
     .bind(
@@ -422,6 +423,7 @@ sessions.put("/:id", async (c) => {
       body.status ?? existing.status,
       normalizedPaymentRecipient !== undefined ? normalizedPaymentRecipient : (existing as any).payment_recipient ?? null,
       body.allow_all_edit !== undefined ? body.allow_all_edit : ((existing as any).allow_all_edit ?? 0),
+      body.force_payment_recipient !== undefined ? body.force_payment_recipient : ((existing as any).force_payment_recipient ?? 0),
       id
     )
     .run();
@@ -748,9 +750,14 @@ sessions.post("/:id/recalculate", async (c) => {
   const sharedCosts = costs.results.filter((cost) => cost.consumer_id === null && !(cost as any).consumer_pending);
   const directCosts = costs.results.filter((cost) => cost.consumer_id !== null);
   const fallbackRecipientId = normalizePaymentRecipient((session as any).payment_recipient as string | null | undefined);
+  const forceCommonRecipient = Boolean((session as any).force_payment_recipient);
 
   if (fallbackRecipientId && !eligibleMemberSet.has(fallbackRecipientId)) {
     return c.json({ error: "Payment recipient must be an existing member" }, 400);
+  }
+
+  if (forceCommonRecipient && !fallbackRecipientId) {
+    return c.json({ error: "Cần chọn người nhận chung trước khi bật chế độ này" }, 400);
   }
 
   const paymentMap = new Map<string, number>();
@@ -761,7 +768,7 @@ sessions.post("/:id/recalculate", async (c) => {
   };
 
   for (const cost of sharedCosts) {
-    const recipientId = cost.payer_id ?? fallbackRecipientId;
+    const recipientId = forceCommonRecipient ? fallbackRecipientId : (cost.payer_id ?? fallbackRecipientId);
     if (!recipientId) {
       return c.json({ error: "Shared costs need a payer or a common payment recipient" }, 400);
     }
@@ -781,7 +788,7 @@ sessions.post("/:id/recalculate", async (c) => {
   }
 
   for (const cost of directCosts) {
-    const recipientId = cost.payer_id ?? fallbackRecipientId;
+    const recipientId = forceCommonRecipient ? fallbackRecipientId : (cost.payer_id ?? fallbackRecipientId);
     if (!recipientId || !cost.consumer_id) {
       return c.json({ error: "Direct costs need a consumer and either a payer or a common payment recipient" }, 400);
     }
@@ -789,6 +796,20 @@ sessions.post("/:id/recalculate", async (c) => {
       return c.json({ error: "Payer and consumer must both be existing members" }, 400);
     }
     addPayment(cost.consumer_id, recipientId, Math.round(cost.amount));
+  }
+
+  // Khi force mode bật, người nhận chung cần trả lại cho từng người đã ứng tiền thực tế
+  if (forceCommonRecipient && fallbackRecipientId) {
+    const paybackByPayer = new Map<string, number>();
+    for (const cost of costs.results) {
+      if ((cost as any).consumer_pending) continue;
+      if (!cost.payer_id || cost.payer_id === fallbackRecipientId) continue;
+      if (!eligibleMemberSet.has(cost.payer_id)) continue;
+      paybackByPayer.set(cost.payer_id, (paybackByPayer.get(cost.payer_id) ?? 0) + Math.round(cost.amount));
+    }
+    for (const [payerId, total] of paybackByPayer.entries()) {
+      addPayment(fallbackRecipientId, payerId, total);
+    }
   }
 
   const confirmedRows = await c.env.DB.prepare(
