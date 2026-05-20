@@ -812,6 +812,26 @@ sessions.post("/:id/recalculate", async (c) => {
     }
   }
 
+  // Net payments ngược chiều: nếu A nợ B và B nợ A thì chỉ giữ chiều chênh lệch
+  for (const key of [...paymentMap.keys()]) {
+    if (!paymentMap.has(key)) continue;
+    const [memberId, recipientMemberId] = key.split(":");
+    const reverseKey = `${recipientMemberId}:${memberId}`;
+    const reverseAmount = paymentMap.get(reverseKey);
+    if (!reverseAmount) continue;
+    const forwardAmount = paymentMap.get(key)!;
+    if (forwardAmount > reverseAmount) {
+      paymentMap.set(key, forwardAmount - reverseAmount);
+      paymentMap.delete(reverseKey);
+    } else if (reverseAmount > forwardAmount) {
+      paymentMap.set(reverseKey, reverseAmount - forwardAmount);
+      paymentMap.delete(key);
+    } else {
+      paymentMap.delete(key);
+      paymentMap.delete(reverseKey);
+    }
+  }
+
   const confirmedRows = await c.env.DB.prepare(
     "SELECT member_id, recipient_member_id, SUM(amount_owed) as confirmed_total FROM payments WHERE session_id = ? AND paid = 1 GROUP BY member_id, recipient_member_id"
   ).bind(id).all<{ member_id: string; recipient_member_id: string; confirmed_total: number }>();
