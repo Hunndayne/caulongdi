@@ -500,7 +500,10 @@ export default function SessionDetailPage() {
   const buildQrUrl = (paymentId: string, debtor: Member, recipient: Member, amount: number) => {
     if (!recipient.user_bank_bin || !recipient.user_bank_account_number || !recipient.user_bank_account_name) return null;
     if (amount <= 0 || debtor.id === recipient.id) return null;
-    const note = `TT-${paymentId} ${debtor.name} ${formatDate(s.date)}`;
+    const rawRecipient = s.payment_recipient ?? "";
+    const isAutoRecipient = rawRecipient.startsWith("auto_") && rawRecipient.slice(5) === recipient.id;
+    const prefix = isAutoRecipient ? "CLD" : "TT";
+    const note = `${prefix}-${paymentId} ${debtor.name} ${formatDate(s.date)}`;
     return `https://img.vietqr.io/image/${recipient.user_bank_bin}-${recipient.user_bank_account_number}-compact.png?amount=${Math.ceil(amount)}&addInfo=${encodeURIComponent(note)}&accountName=${encodeURIComponent(recipient.user_bank_account_name)}`;
   };
 
