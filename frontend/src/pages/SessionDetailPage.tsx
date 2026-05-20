@@ -7,6 +7,8 @@ import {
   Check,
   Copy,
   Download,
+  ExternalLink,
+  Landmark,
   Pencil,
   Plus,
   RefreshCw,
@@ -22,8 +24,17 @@ import { api } from "@/api/client";
 import { Avatar } from "@/components/shared/Avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Dialog } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import {
+  BANK_DEEPLINK_OPTIONS,
+  buildBankDeeplink,
+  buildVietQrPayload,
+  openDeeplinkWithFallback,
+  type BankDeeplinkKey,
+} from "@/lib/bankDeeplinks";
 import { useSession } from "@/lib/auth-client";
+import banksData from "@/lib/banks.json";
 import { isAdminUser } from "@/lib/permissions";
 import { formatCurrency, formatDate } from "@/lib/utils";
 import { useGroupsStore } from "@/stores/groupsStore";
@@ -38,6 +49,7 @@ const PAYMENT_QR_PREFIX = {
   manual: "TT",
   autoConfirm: "CLD",
 } as const;
+const TIMO_WEBHOOK_RECIPIENT_EMAIL = "tranthanhhung1641@gmail.com";
 
 const COST_TYPES = [
   { value: "court", label: "Phí địa điểm" },
@@ -47,6 +59,25 @@ const COST_TYPES = [
 ] as const;
 
 const COST_EXCEL_HEADERS = ["Mã", "Loại", "Mô tả", "Số tiền", "Người ứng tiền", "Người dùng riêng"] as const;
+
+type BankDirectoryEntry = {
+  bin: string;
+  name: string;
+  shortName?: string;
+  short_name?: string;
+  code?: string;
+};
+
+type PaymentQrData = {
+  qrUrl: string;
+  qrPayload: string;
+  note: string;
+  amount: number;
+  recipient: Member;
+  recipientBankName: string;
+};
+
+const BANK_DIRECTORY = banksData.data as BankDirectoryEntry[];
 
 function parseManagers(raw?: string | null) {
   if (!raw) return [] as string[];
@@ -94,6 +125,24 @@ function hasBankInfo(member: Member | null | undefined) {
   return Boolean(member?.user_bank_bin && member?.user_bank_account_number && member?.user_bank_account_name);
 }
 
+function normalizeEmail(value?: string | null) {
+  return value?.trim().toLowerCase() ?? "";
+}
+
+function isTimoWebhookRecipient(member: Member | null | undefined) {
+  return normalizeEmail(member?.user_email) === TIMO_WEBHOOK_RECIPIENT_EMAIL;
+}
+
+function getBankNameByBin(bankBin?: string | null) {
+  if (!bankBin) return "";
+  const bank = BANK_DIRECTORY.find((item) => item.bin === bankBin);
+  return bank?.name || bank?.shortName || bank?.short_name || bankBin;
+}
+
+function safeFileName(value: string) {
+  return value.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "qr";
+}
+
 export default function SessionDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -123,6 +172,8 @@ export default function SessionDetailPage() {
   const [showManagerSettings, setShowManagerSettings] = useState(false);
   const [recipientId, setRecipientId] = useState("");
   const [autoConfirm, setAutoConfirm] = useState(false);
+  const [bankDialogPayment, setBankDialogPayment] = useState<PaymentQrData | null>(null);
+  const [bankOpenNotice, setBankOpenNotice] = useState("");
   const costImportInputRef = useRef<HTMLInputElement | null>(null);
 
   const currentUserId = (authSession?.user as { id?: string } | undefined)?.id;
@@ -207,6 +258,8 @@ export default function SessionDetailPage() {
 
   const membersWithBank = Array.from(memberById.values()).filter(hasBankInfo);
   const fallbackRecipientMember = recipientId ? memberById.get(recipientId) ?? null : null;
+  const fallbackRecipientUsesTimoWebhook = isTimoWebhookRecipient(fallbackRecipientMember);
+  const effectiveAutoConfirm = fallbackRecipientUsesTimoWebhook || autoConfirm;
   const memberByImportName = new Map<string, Member>();
   for (const member of memberById.values()) {
     memberByImportName.set(normalizeImportText(member.name), member);
@@ -227,9 +280,12 @@ export default function SessionDetailPage() {
     });
 
   const handleSetRecipient = async (value: string) => {
+    const nextRecipient = value ? memberById.get(value) ?? null : null;
+    const nextAutoConfirm = isTimoWebhookRecipient(nextRecipient) || (autoConfirm && !fallbackRecipientUsesTimoWebhook);
     setRecipientId(value);
+    setAutoConfirm(nextAutoConfirm);
     if (!canManageSession || !id) return;
-    const stored = value ? (autoConfirm ? `auto_${value}` : value) : null;
+    const stored = value ? (nextAutoConfirm ? `auto_${value}` : value) : null;
     try {
       await api.updateSession(id, { payment_recipient: stored } as any);
     } catch {
@@ -238,6 +294,10 @@ export default function SessionDetailPage() {
   };
 
   const handleToggleAutoConfirm = async () => {
+    if (fallbackRecipientUsesTimoWebhook) {
+      setAutoConfirm(true);
+      return;
+    }
     const next = !autoConfirm;
     setAutoConfirm(next);
     if (!canManageSession || !id || !recipientId) return;
@@ -523,13 +583,94 @@ export default function SessionDetailPage() {
 
   const totalCost = s.costs.reduce((sum, cost) => sum + cost.amount, 0);
 
-  const buildQrUrl = (paymentId: string, debtor: Member, recipient: Member, amount: number) => {
+  const buildQrData = (paymentId: string, debtor: Member, recipient: Member, amount: number): PaymentQrData | null => {
     if (!recipient.user_bank_bin || !recipient.user_bank_account_number || !recipient.user_bank_account_name) return null;
     if (amount <= 0 || debtor.id === recipient.id) return null;
-    const isAutoRecipient = autoConfirm && recipient.id === recipientId;
+    const isAutoRecipient = isTimoWebhookRecipient(recipient) || (effectiveAutoConfirm && recipient.id === recipientId);
     const prefix = isAutoRecipient ? PAYMENT_QR_PREFIX.autoConfirm : PAYMENT_QR_PREFIX.manual;
     const note = `${prefix}-${paymentId}`;
-    return `https://img.vietqr.io/image/${recipient.user_bank_bin}-${recipient.user_bank_account_number}-compact.png?amount=${Math.ceil(amount)}&addInfo=${encodeURIComponent(note)}&accountName=${encodeURIComponent(recipient.user_bank_account_name)}`;
+    const roundedAmount = Math.ceil(amount);
+    const qrUrl = `https://img.vietqr.io/image/${recipient.user_bank_bin}-${recipient.user_bank_account_number}-compact.png?amount=${roundedAmount}&addInfo=${encodeURIComponent(note)}&accountName=${encodeURIComponent(recipient.user_bank_account_name)}`;
+
+    try {
+      return {
+        qrUrl,
+        qrPayload: buildVietQrPayload({
+          bankBin: recipient.user_bank_bin,
+          accountNumber: recipient.user_bank_account_number,
+          amount: roundedAmount,
+          description: note,
+        }),
+        note,
+        amount: roundedAmount,
+        recipient,
+        recipientBankName: getBankNameByBin(recipient.user_bank_bin),
+      };
+    } catch {
+      return null;
+    }
+  };
+
+  const handleOpenBankDialog = (qrData: PaymentQrData) => {
+    setBankOpenNotice("");
+    setBankDialogPayment(qrData);
+  };
+
+  const handleOpenBank = (bankKey: BankDeeplinkKey) => {
+    if (!bankDialogPayment) return;
+
+    try {
+      const result = buildBankDeeplink({
+        bankKey,
+        qrPayload: bankDialogPayment.qrPayload,
+        timoPayload: {
+          bankCode: bankDialogPayment.recipient.user_bank_bin ?? "",
+          bankName: bankDialogPayment.recipientBankName,
+          accNumber: bankDialogPayment.recipient.user_bank_account_number ?? "",
+          amount: bankDialogPayment.amount,
+          description: bankDialogPayment.note,
+          editable: false,
+        },
+      });
+
+      setBankOpenNotice("");
+      openDeeplinkWithFallback({
+        deeplinkUrl: result.url,
+        onFallback: () => {
+          setBankOpenNotice("Nếu app ngân hàng không mở, bạn vẫn có thể quét hoặc tải mã QR bên dưới.");
+        },
+      });
+    } catch (error: any) {
+      setBankOpenNotice(error.message || "Không tạo được deeplink cho ngân hàng này.");
+    }
+  };
+
+  const handleDownloadQr = async (qrData: PaymentQrData) => {
+    const fileName = `tingting-${safeFileName(qrData.note)}.png`;
+
+    try {
+      const response = await fetch(qrData.qrUrl);
+      if (!response.ok) throw new Error("QR image fetch failed");
+
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(objectUrl);
+    } catch {
+      const link = document.createElement("a");
+      link.href = qrData.qrUrl;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    }
   };
 
   const canTogglePaymentRow = (payment: Payment, debtor: Member | null, recipient: Member | null) => {
@@ -708,7 +849,8 @@ export default function SessionDetailPage() {
                     <label className="flex items-center gap-2 text-sm">
                       <input
                         type="checkbox"
-                        checked={autoConfirm}
+                        checked={effectiveAutoConfirm}
+                        disabled={fallbackRecipientUsesTimoWebhook}
                         onChange={handleToggleAutoConfirm}
                         className="rounded border-gray-300"
                       />
@@ -1223,7 +1365,7 @@ export default function SessionDetailPage() {
                   ? recipient
                   : (fallbackRecipientMember && fallbackRecipientMember.id !== payment.member_id ? fallbackRecipientMember : null);
                 const canViewQr = Boolean(currentUserId && debtor?.user_id === currentUserId);
-                const qrUrl = canViewQr && debtor && qrRecipient ? buildQrUrl(payment.id, debtor, qrRecipient, payment.amount_owed) : null;
+                const qrData = canViewQr && debtor && qrRecipient ? buildQrData(payment.id, debtor, qrRecipient, payment.amount_owed) : null;
                 const fallbackNotice = !recipientHasBank && qrRecipient && recipient
                   ? `Người ứng tiền chưa cập nhật STK, tạm chuyển qua ${qrRecipient.name}.`
                   : null;
@@ -1231,7 +1373,7 @@ export default function SessionDetailPage() {
                   ? `${debtorName} đã báo đã trả, chờ ${recipientName} xác nhận đã nhận.`
                   : null;
                 const toggleAllowed = canTogglePaymentRow(payment, debtor, recipient);
-                const showMissingQrNotice = canViewQr && !qrUrl && !payment.paid;
+                const showMissingQrNotice = canViewQr && !qrData && !payment.paid;
 
                 return (
                   <div
@@ -1278,16 +1420,26 @@ export default function SessionDetailPage() {
                       </button>
                     </div>
 
-                    {qrUrl && !payment.paid && (
+                    {qrData && !payment.paid && (
                       <div className="mt-3 flex flex-col items-center gap-2">
                         <img
-                          src={qrUrl}
+                          src={qrData.qrUrl}
                           alt={`QR chuyển khoản cho ${qrRecipient?.name ?? recipientName}`}
                           className="h-auto w-48 rounded-lg border border-gray-200"
                           loading="lazy"
                         />
                         <div className="text-center text-xs text-gray-500">
                           QR nhận tiền: {qrRecipient?.name ?? recipientName}
+                        </div>
+                        <div className="grid w-full max-w-xs grid-cols-2 gap-2">
+                          <Button size="sm" onClick={() => handleOpenBankDialog(qrData)}>
+                            <ExternalLink size={14} className="mr-1" />
+                            Mở ngân hàng
+                          </Button>
+                          <Button variant="outline" size="sm" onClick={() => handleDownloadQr(qrData)}>
+                            <Download size={14} className="mr-1" />
+                            Tải mã QR
+                          </Button>
                         </div>
                       </div>
                     )}
@@ -1319,6 +1471,55 @@ export default function SessionDetailPage() {
           )}
         </div>
       )}
+
+      <Dialog
+        open={Boolean(bankDialogPayment)}
+        onClose={() => {
+          setBankDialogPayment(null);
+          setBankOpenNotice("");
+        }}
+        title="Mở app ngân hàng"
+      >
+        {bankDialogPayment && (
+          <div className="space-y-3">
+            <div className="rounded-lg bg-gray-50 p-3 text-sm">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-gray-500">Số tiền</span>
+                <span className="font-semibold text-gray-900">{formatCurrency(bankDialogPayment.amount)}</span>
+              </div>
+              <div className="mt-1 flex items-center justify-between gap-3">
+                <span className="text-gray-500">Nội dung</span>
+                <span className="truncate font-medium text-gray-900">{bankDialogPayment.note}</span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              {BANK_DEEPLINK_OPTIONS.map((bank) => (
+                <Button
+                  key={bank.key}
+                  variant="outline"
+                  className="justify-start"
+                  onClick={() => handleOpenBank(bank.key)}
+                >
+                  <Landmark size={16} className="mr-2 text-gray-500" />
+                  <span className="truncate">{bank.name}</span>
+                </Button>
+              ))}
+            </div>
+
+            {bankOpenNotice && (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-700">
+                {bankOpenNotice}
+              </div>
+            )}
+
+            <Button variant="outline" className="w-full" onClick={() => handleDownloadQr(bankDialogPayment)}>
+              <Download size={16} className="mr-2" />
+              Tải mã QR
+            </Button>
+          </div>
+        )}
+      </Dialog>
     </div>
   );
 }

@@ -160,7 +160,10 @@ paymentWebhooks.post("/bank-transfer", async (c) => {
     JOIN sessions s ON s.id = p.session_id
     LEFT JOIN members recipient ON recipient.id = p.recipient_member_id
     LEFT JOIN users recipient_user ON recipient_user.id = recipient.user_id
-    LEFT JOIN members fallback ON fallback.id = s.payment_recipient
+    LEFT JOIN members fallback ON fallback.id = CASE
+      WHEN s.payment_recipient LIKE 'auto_%' THEN substr(s.payment_recipient, 6)
+      ELSE s.payment_recipient
+    END
     LEFT JOIN users fallback_user ON fallback_user.id = fallback.user_id
     WHERE p.id = ?
   `)
