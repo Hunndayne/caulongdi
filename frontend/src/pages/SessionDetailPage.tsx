@@ -58,7 +58,41 @@ const COST_TYPES = [
   { value: "other", label: "Khác" },
 ] as const;
 
-const COST_EXCEL_HEADERS = ["Mã", "Loại", "Mô tả", "Số tiền", "Người ứng tiền", "Người dùng riêng"] as const;
+const COST_EXCEL_HEADERS = ["Mã", "Loại", "Mô tả", "Đơn giá", "Số lượng", "Tổng tiền", "Người ứng tiền", "Người dùng"] as const;
+
+type CostConsumerMode = "shared" | "specific" | "pending";
+
+type CostFormState = {
+  label: string;
+  amount: string;
+  quantity: string;
+  type: Cost["type"];
+  payerId: string;
+  consumerMode: CostConsumerMode;
+  consumerIds: string[];
+};
+
+const defaultCostForm: CostFormState = {
+  label: "",
+  amount: "",
+  quantity: "1",
+  type: "court",
+  payerId: "",
+  consumerMode: "shared",
+  consumerIds: [],
+};
+
+type ImportedCostRow = {
+  label: string;
+  amount: number;
+  quantity: number;
+  type: Cost["type"];
+  payer_id: string | null;
+  consumer_id: string | null;
+  consumer_ids: string | null;
+  consumer_pending: number;
+  costId: string | null;
+};
 
 type BankDirectoryEntry = {
   bin: string;
@@ -121,6 +155,61 @@ function parseImportAmount(value: unknown) {
   return Number.isFinite(amount) && amount > 0 ? amount : null;
 }
 
+function parseImportQuantity(value: unknown) {
+  if (String(value ?? "").trim() === "") return 1;
+  const quantity = Math.round(Number(String(value ?? "").replace(/[^\d.]/g, "")));
+  return Number.isFinite(quantity) && quantity > 0 ? quantity : null;
+}
+
+function normalizeIdList(value: unknown) {
+  let rawIds: unknown[] = [];
+  if (Array.isArray(value)) {
+    rawIds = value;
+  } else if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        rawIds = Array.isArray(parsed) ? parsed : [trimmed];
+      } catch {
+        rawIds = trimmed.split(/[,;\n]+/);
+      }
+    }
+  }
+
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  for (const item of rawIds) {
+    const id = String(item ?? "").trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  return ids;
+}
+
+function getCostConsumerIds(cost: Pick<Cost, "consumer_id" | "consumer_ids">) {
+  const ids = normalizeIdList(cost.consumer_ids);
+  if (ids.length > 0) return ids;
+  return cost.consumer_id ? [cost.consumer_id] : [];
+}
+
+function getCostQuantity(cost: Pick<Cost, "quantity">) {
+  const quantity = Math.round(Number(cost.quantity ?? 1));
+  return Number.isFinite(quantity) && quantity > 0 ? quantity : 1;
+}
+
+function getCostUnitAmount(cost: Pick<Cost, "amount" | "quantity">) {
+  return Math.round(cost.amount / getCostQuantity(cost));
+}
+
+function splitImportNames(value: unknown) {
+  return String(value ?? "")
+    .split(/[,;\n]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 function hasBankInfo(member: Member | null | undefined) {
   return Boolean(member?.user_bank_bin && member?.user_bank_account_number && member?.user_bank_account_name);
 }
@@ -153,14 +242,7 @@ export default function SessionDetailPage() {
   const fetchGroups = useGroupsStore((state) => state.fetch);
 
   const [tab, setTab] = useState<Tab>("Điểm danh");
-  const [costForm, setCostForm] = useState({
-    label: "",
-    amount: "",
-    type: "court",
-    payerId: "",
-    consumerId: "",
-    consumerPending: 0,
-  });
+  const [costForm, setCostForm] = useState<CostFormState>(defaultCostForm);
   const [addingCost, setAddingCost] = useState(false);
   const [editingCostId, setEditingCostId] = useState<string | null>(null);
   const [importingCosts, setImportingCosts] = useState(false);
@@ -373,18 +455,37 @@ export default function SessionDetailPage() {
     return member;
   };
 
+  const resolveImportedMembers = (value: unknown, rowNumber: number, columnName: string) => {
+    const names = splitImportNames(value);
+    const seen = new Set<string>();
+    const selected: Member[] = [];
+    for (const name of names) {
+      const member = resolveImportedMember(name, rowNumber, columnName);
+      if (!member || seen.has(member.id)) continue;
+      seen.add(member.id);
+      selected.push(member);
+    }
+    return selected;
+  };
+
   const handleExportCosts = async () => {
     const XLSX = await import("xlsx");
     const costRows = s.costs.map((cost) => {
       const payer = cost.payer_id ? memberById.get(cost.payer_id) : null;
-      const consumer = cost.consumer_pending ? null : (cost.consumer_id ? memberById.get(cost.consumer_id) : null);
+      const consumerNames = cost.consumer_pending
+        ? "Chưa rõ"
+        : getCostConsumerIds(cost).map((memberId) => memberById.get(memberId)?.name ?? memberId).join(", ");
+      const quantity = getCostQuantity(cost);
+      const unitAmount = getCostUnitAmount(cost);
       return [
         cost.id,
         getCostTypeLabel(cost.type),
         cost.label,
+        unitAmount,
+        quantity,
         cost.amount,
         payer?.name ?? "",
-        cost.consumer_pending ? "Chưa rõ" : (consumer?.name ?? ""),
+        consumerNames,
       ];
     });
 
@@ -395,8 +496,10 @@ export default function SessionDetailPage() {
       { wch: 14 },
       { wch: 28 },
       { wch: 14 },
+      { wch: 10 },
+      { wch: 14 },
       { wch: 24 },
-      { wch: 24 },
+      { wch: 32 },
     ];
     XLSX.utils.book_append_sheet(workbook, costSheet, "Chi phí");
 
@@ -425,21 +528,27 @@ export default function SessionDetailPage() {
 
       const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: "" });
       const parsedCosts = rows
-        .map((row, index) => {
+        .map((row, index): ImportedCostRow | null => {
           const rowNumber = index + 2;
           const costIdRaw = readImportCell(row, ["Mã", "Ma", "ID", "Cost ID"]);
           const typeRaw = readImportCell(row, ["Loại", "Loai", "Type"]);
           const labelRaw = readImportCell(row, ["Mô tả", "Mo ta", "Mô tả khoản chi", "Label"]);
-          const amountRaw = readImportCell(row, ["Số tiền", "So tien", "Amount"]);
+          const unitAmountRaw = readImportCell(row, ["Đơn giá", "Don gia", "Số tiền", "So tien", "Amount", "Unit price"]);
+          const quantityRaw = readImportCell(row, ["Số lượng", "So luong", "Quantity", "Qty"]);
+          const totalAmountRaw = readImportCell(row, ["Tổng tiền", "Tong tien", "Total", "Total amount"]);
           const payerRaw = readImportCell(row, ["Người ứng tiền", "Nguoi ung tien", "Người trả", "Payer"]);
-          const consumerRaw = readImportCell(row, ["Người dùng riêng", "Nguoi dung rieng", "Người dùng", "Consumer"]);
+          const consumerRaw = readImportCell(row, ["Người dùng", "Nguoi dung", "Người dùng riêng", "Nguoi dung rieng", "Consumer", "Consumers"]);
 
-          const isEmpty = [costIdRaw, typeRaw, labelRaw, amountRaw, payerRaw, consumerRaw]
+          const isEmpty = [costIdRaw, typeRaw, labelRaw, unitAmountRaw, quantityRaw, totalAmountRaw, payerRaw, consumerRaw]
             .every((value) => String(value ?? "").trim() === "");
           if (isEmpty) return null;
 
           const costId = String(costIdRaw ?? "").trim();
-          const amount = parseImportAmount(amountRaw);
+          const quantity = parseImportQuantity(quantityRaw);
+          if (!quantity) throw new Error(`Dòng ${rowNumber}: số lượng không hợp lệ.`);
+          const unitAmount = parseImportAmount(unitAmountRaw);
+          const totalAmount = parseImportAmount(totalAmountRaw);
+          const amount = unitAmount ? unitAmount * quantity : totalAmount;
           if (!amount) throw new Error(`Dòng ${rowNumber}: số tiền không hợp lệ.`);
 
           const typeKey = normalizeImportText(typeRaw);
@@ -450,27 +559,27 @@ export default function SessionDetailPage() {
           const payer = resolveImportedMember(payerRaw, rowNumber, "Người ứng tiền");
           const consumerRawNormalized = normalizeImportText(consumerRaw);
           const isPending = consumerRawNormalized === "chua ro" || consumerRawNormalized === "chưa rõ";
-          const consumer = isPending ? null : resolveImportedMember(consumerRaw, rowNumber, "Người dùng riêng");
+          const isShared = !consumerRawNormalized
+            || consumerRawNormalized === "dung chung"
+            || consumerRawNormalized === "ca nhom"
+            || consumerRawNormalized === "tat ca";
+          const consumerIds = isPending || isShared
+            ? []
+            : resolveImportedMembers(consumerRaw, rowNumber, "Người dùng").map((member) => member.id);
 
           return {
             label,
             amount,
+            quantity,
             type,
             payer_id: payer?.id ?? null,
-            consumer_id: consumer?.id ?? null,
+            consumer_id: consumerIds[0] ?? null,
+            consumer_ids: consumerIds.length > 0 ? JSON.stringify(consumerIds) : null,
             consumer_pending: isPending ? 1 : 0,
             costId: costId || null,
           };
         })
-        .filter((item): item is {
-          label: string;
-          amount: number;
-          type: Cost["type"];
-          payer_id: string | null;
-          consumer_id: string | null;
-          consumer_pending: number;
-          costId: string | null;
-        } => Boolean(item));
+        .filter((item): item is ImportedCostRow => Boolean(item));
 
       if (parsedCosts.length === 0) throw new Error("File không có dòng chi phí hợp lệ.");
 
@@ -494,34 +603,46 @@ export default function SessionDetailPage() {
   };
 
   const resetCostForm = () => {
-    setCostForm({ label: "", amount: "", type: "court", payerId: "", consumerId: "", consumerPending: 0 });
+    setCostForm(defaultCostForm);
     setEditingCostId(null);
   };
 
   const handleStartEditCost = (cost: Cost) => {
+    const consumerIds = cost.consumer_pending ? [] : getCostConsumerIds(cost);
     setEditingCostId(cost.id);
     setCostForm({
       label: cost.label,
-      amount: String(cost.amount),
+      amount: String(getCostUnitAmount(cost)),
+      quantity: String(getCostQuantity(cost)),
       type: cost.type,
       payerId: cost.payer_id ?? "",
-      consumerId: cost.consumer_id ?? "",
-      consumerPending: cost.consumer_pending ?? 0,
+      consumerMode: cost.consumer_pending ? "pending" : (consumerIds.length > 0 ? "specific" : "shared"),
+      consumerIds,
     });
   };
 
   const handleSaveCost = async () => {
     if (!costForm.label.trim() || !costForm.amount) return;
+    const unitAmount = parseFloat(costForm.amount);
+    const quantity = Math.round(Number(costForm.quantity || "1"));
+    if (!Number.isFinite(unitAmount) || unitAmount <= 0 || !Number.isFinite(quantity) || quantity <= 0) return;
+    if (costForm.consumerMode === "specific" && costForm.consumerIds.length === 0) {
+      alert("Chọn ít nhất một người dùng cho món này.");
+      return;
+    }
 
     setAddingCost(true);
     try {
+      const consumerIds = costForm.consumerMode === "specific" ? costForm.consumerIds : [];
       const payload = {
         label: costForm.label.trim(),
-        amount: parseFloat(costForm.amount),
+        amount: Math.round(unitAmount * quantity),
+        quantity,
         type: costForm.type as Cost["type"],
         payer_id: costForm.payerId || null,
-        consumer_id: costForm.consumerId || null,
-        consumer_pending: costForm.consumerPending,
+        consumer_id: consumerIds[0] ?? null,
+        consumer_ids: consumerIds.length > 0 ? JSON.stringify(consumerIds) : null,
+        consumer_pending: costForm.consumerMode === "pending" ? 1 : 0,
       };
 
       if (editingCostId) {
@@ -548,6 +669,81 @@ export default function SessionDetailPage() {
       alert(error.message);
     }
   };
+
+  const updateCostAmountInput = (raw: string) => {
+    const parsed = parseInt(raw, 10);
+    setCostForm((current) => ({
+      ...current,
+      amount: Number.isFinite(parsed) && parsed > 0 ? String(parsed) : raw.replace(/[^\d]/g, ""),
+    }));
+  };
+
+  const updateCostQuantityInput = (raw: string) => {
+    const parsed = parseInt(raw, 10);
+    setCostForm((current) => ({
+      ...current,
+      quantity: Number.isFinite(parsed) && parsed > 0 ? String(parsed) : raw.replace(/[^\d]/g, ""),
+    }));
+  };
+
+  const setCostConsumerMode = (consumerMode: CostConsumerMode) => {
+    setCostForm((current) => ({
+      ...current,
+      consumerMode,
+      consumerIds: consumerMode === "specific" ? current.consumerIds : [],
+    }));
+  };
+
+  const toggleCostConsumer = (memberId: string) => {
+    setCostForm((current) => {
+      const selected = current.consumerIds.includes(memberId);
+      return {
+        ...current,
+        consumerIds: selected
+          ? current.consumerIds.filter((idValue) => idValue !== memberId)
+          : [...current.consumerIds, memberId],
+      };
+    });
+  };
+
+  const renderCostConsumerControls = () => (
+    <div>
+      <label className="mb-1 block text-xs text-gray-500">Người dùng</label>
+      <select
+        value={costForm.consumerMode}
+        onChange={(event) => setCostConsumerMode(event.target.value as CostConsumerMode)}
+        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+      >
+        <option value="shared">Dùng chung</option>
+        <option value="specific">Chọn người dùng</option>
+        <option value="pending">Chưa rõ</option>
+      </select>
+
+      {costForm.consumerMode === "specific" && (
+        <div className="mt-2 grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+          {s.members.map((member) => {
+            const checked = costForm.consumerIds.includes(member.id);
+            return (
+              <label
+                key={member.id}
+                className={`flex min-w-0 items-center gap-2 rounded-lg border px-2.5 py-2 text-sm transition-colors ${
+                  checked ? "border-green-300 bg-green-50 text-green-900" : "border-gray-200 bg-white text-gray-700"
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={() => toggleCostConsumer(member.id)}
+                  className="h-4 w-4 flex-shrink-0 rounded border-gray-300 text-green-600 focus:ring-green-500"
+                />
+                <span className="truncate">{member.name}</span>
+              </label>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
 
   const handleRecalculate = async () => {
     setRecalculating(true);
@@ -692,7 +888,11 @@ export default function SessionDetailPage() {
 
   const copyNotification = async () => {
     const costBreakdown = s.costs.length > 0
-      ? s.costs.map((cost) => `${cost.label}: ${formatCurrency(cost.amount)}`).join(" | ")
+      ? s.costs.map((cost) => {
+        const quantity = getCostQuantity(cost);
+        if (quantity <= 1) return `${cost.label}: ${formatCurrency(cost.amount)}`;
+        return `${cost.label}: ${quantity} x ${formatCurrency(getCostUnitAmount(cost))} = ${formatCurrency(cost.amount)}`;
+      }).join(" | ")
       : "Chưa có khoản chi";
     const paymentLines = paymentRows.length > 0
       ? paymentRows.map(({ payment, debtor, recipient }) => {
@@ -1052,13 +1252,13 @@ export default function SessionDetailPage() {
 
           {canManageSession && !editingCostId && (
             <div className="space-y-3 rounded-xl bg-gray-50 p-4">
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                 <select
                   value={costForm.type}
                   onChange={(event) =>
                     setCostForm((current) => ({
                       ...current,
-                      type: event.target.value,
+                      type: event.target.value as Cost["type"],
                       label: COST_TYPES.find((item) => item.value === event.target.value)?.label ?? current.label,
                     }))
                   }
@@ -1072,17 +1272,18 @@ export default function SessionDetailPage() {
                 </select>
                 <Input
                   value={costForm.amount}
-                  onChange={(event) => {
-                    const raw = event.target.value;
-                    const parsed = parseInt(raw, 10);
-                    setCostForm((current) => ({
-                      ...current,
-                      amount: Number.isFinite(parsed) && parsed > 0 ? String(parsed) : raw.replace(/[^\d]/g, ""),
-                    }));
-                  }}
-                  placeholder="Số tiền (VNĐ)"
+                  onChange={(event) => updateCostAmountInput(event.target.value)}
+                  placeholder="Đơn giá (VNĐ)"
                   type="number"
                   min="0"
+                  step="1"
+                />
+                <Input
+                  value={costForm.quantity}
+                  onChange={(event) => updateCostQuantityInput(event.target.value)}
+                  placeholder="Số lượng"
+                  type="number"
+                  min="1"
                   step="1"
                 />
               </div>
@@ -1093,7 +1294,7 @@ export default function SessionDetailPage() {
                 placeholder="Mô tả"
               />
 
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                 <div>
                   <label className="mb-1 block text-xs text-gray-500">Người ứng tiền</label>
                   <select
@@ -1109,33 +1310,11 @@ export default function SessionDetailPage() {
                     ))}
                   </select>
                 </div>
-                <div>
-                  <label className="mb-1 block text-xs text-gray-500">Người dùng riêng</label>
-                  <select
-                    value={costForm.consumerPending ? "__pending__" : (costForm.consumerId || "")}
-                    onChange={(event) => {
-                      const val = event.target.value;
-                      if (val === "__pending__") {
-                        setCostForm((current) => ({ ...current, consumerId: "", consumerPending: 1 }));
-                      } else {
-                        setCostForm((current) => ({ ...current, consumerId: val, consumerPending: 0 }));
-                      }
-                    }}
-                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-                  >
-                    <option value="">Dùng chung</option>
-                    <option value="__pending__">Chưa rõ</option>
-                    {s.members.map((member) => (
-                      <option key={member.id} value={member.id}>
-                        {member.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                {renderCostConsumerControls()}
               </div>
 
               <div className="flex gap-2">
-                <Button className="flex-1" onClick={handleSaveCost} disabled={addingCost || !costForm.label || !costForm.amount}>
+                <Button className="flex-1" onClick={handleSaveCost} disabled={addingCost || !costForm.label || !costForm.amount || !costForm.quantity}>
                   {editingCostId ? <Check size={16} className="mr-1" /> : <Plus size={16} className="mr-1" />}
                   {addingCost
                     ? (editingCostId ? "Đang lưu..." : "Đang thêm...")
@@ -1156,18 +1335,22 @@ export default function SessionDetailPage() {
             <div className="space-y-2">
               {s.costs.map((cost) => {
                 const payerMember = cost.payer_id ? memberById.get(cost.payer_id) ?? null : null;
-                const consumerMember = cost.consumer_id ? memberById.get(cost.consumer_id) ?? null : null;
+                const consumerIds = cost.consumer_pending ? [] : getCostConsumerIds(cost);
+                const consumerNames = consumerIds.map((memberId) => memberById.get(memberId)?.name ?? memberId);
+                const consumerLabel = consumerNames.join(", ");
+                const quantity = getCostQuantity(cost);
+                const unitAmount = getCostUnitAmount(cost);
 
                 let helperText = "Trả cho người nhận chung";
                 let helperClass = "text-green-500";
                 if (cost.consumer_pending) {
                   helperText = "Chưa rõ ai dùng — chưa tính vào chia tiền";
                   helperClass = "text-amber-500";
-                } else if (payerMember && consumerMember) {
-                  helperText = `${consumerMember.name} trả lại cho ${payerMember.name}`;
+                } else if (payerMember && consumerIds.length > 0) {
+                  helperText = `${consumerLabel} trả lại cho ${payerMember.name}`;
                   helperClass = "text-orange-500";
-                } else if (consumerMember) {
-                  helperText = `${consumerMember.name} trả lại cho người nhận chung`;
+                } else if (consumerIds.length > 0) {
+                  helperText = `${consumerLabel} trả lại cho người nhận chung`;
                   helperClass = "text-orange-500";
                 } else if (payerMember) {
                   helperText = `Cả nhóm trả lại cho ${payerMember.name}`;
@@ -1177,13 +1360,13 @@ export default function SessionDetailPage() {
                 if (cost.id === editingCostId) {
                   return (
                     <div key={cost.id} className="space-y-3 rounded-xl border-2 border-green-300 bg-green-50 p-4">
-                      <div className="grid grid-cols-2 gap-2">
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                         <select
                           value={costForm.type}
                           onChange={(event) =>
                             setCostForm((current) => ({
                               ...current,
-                              type: event.target.value,
+                              type: event.target.value as Cost["type"],
                               label: COST_TYPES.find((item) => item.value === event.target.value)?.label ?? current.label,
                             }))
                           }
@@ -1195,17 +1378,18 @@ export default function SessionDetailPage() {
                         </select>
                         <Input
                           value={costForm.amount}
-                          onChange={(event) => {
-                            const raw = event.target.value;
-                            const parsed = parseInt(raw, 10);
-                            setCostForm((current) => ({
-                              ...current,
-                              amount: Number.isFinite(parsed) && parsed > 0 ? String(parsed) : raw.replace(/[^\d]/g, ""),
-                            }));
-                          }}
-                          placeholder="Số tiền (VNĐ)"
+                          onChange={(event) => updateCostAmountInput(event.target.value)}
+                          placeholder="Đơn giá (VNĐ)"
                           type="number"
                           min="0"
+                          step="1"
+                        />
+                        <Input
+                          value={costForm.quantity}
+                          onChange={(event) => updateCostQuantityInput(event.target.value)}
+                          placeholder="Số lượng"
+                          type="number"
+                          min="1"
                           step="1"
                         />
                       </div>
@@ -1214,7 +1398,7 @@ export default function SessionDetailPage() {
                         onChange={(event) => setCostForm((current) => ({ ...current, label: event.target.value }))}
                         placeholder="Mô tả"
                       />
-                      <div className="grid grid-cols-2 gap-2">
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                         <div>
                           <label className="mb-1 block text-xs text-gray-500">Người ứng tiền</label>
                           <select
@@ -1228,30 +1412,10 @@ export default function SessionDetailPage() {
                             ))}
                           </select>
                         </div>
-                        <div>
-                          <label className="mb-1 block text-xs text-gray-500">Người dùng riêng</label>
-                          <select
-                            value={costForm.consumerPending ? "__pending__" : (costForm.consumerId || "")}
-                            onChange={(event) => {
-                              const val = event.target.value;
-                              if (val === "__pending__") {
-                                setCostForm((current) => ({ ...current, consumerId: "", consumerPending: 1 }));
-                              } else {
-                                setCostForm((current) => ({ ...current, consumerId: val, consumerPending: 0 }));
-                              }
-                            }}
-                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-                          >
-                            <option value="">Dùng chung</option>
-                            <option value="__pending__">Chưa rõ</option>
-                            {s.members.map((member) => (
-                              <option key={member.id} value={member.id}>{member.name}</option>
-                            ))}
-                          </select>
-                        </div>
+                        {renderCostConsumerControls()}
                       </div>
                       <div className="flex gap-2">
-                        <Button className="flex-1" onClick={handleSaveCost} disabled={addingCost || !costForm.label || !costForm.amount}>
+                        <Button className="flex-1" onClick={handleSaveCost} disabled={addingCost || !costForm.label || !costForm.amount || !costForm.quantity}>
                           {addingCost ? "Đang lưu..." : "Lưu"}
                         </Button>
                         <Button variant="outline" size="icon" onClick={resetCostForm} disabled={addingCost}>
@@ -1272,7 +1436,14 @@ export default function SessionDetailPage() {
                       </div>
                     </div>
                     <div className="flex flex-shrink-0 items-center gap-2">
-                      <span className="font-semibold text-gray-900">{formatCurrency(cost.amount)}</span>
+                      <div className="text-right">
+                        <div className="font-semibold text-gray-900">{formatCurrency(cost.amount)}</div>
+                        {quantity > 1 && (
+                          <div className="text-xs text-gray-400">
+                            {quantity} x {formatCurrency(unitAmount)}
+                          </div>
+                        )}
+                      </div>
                       {canManageSession && (
                         <>
                           <Button

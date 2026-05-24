@@ -140,9 +140,11 @@ export interface Cost {
   session_id: string;
   label: string;
   amount: number;
+  quantity?: number | null;
   type: "court" | "water" | "shuttle" | "other";
   payer_id?: string | null;   // ai trả tiền hộ; null = quỹ chung trả
-  consumer_id?: string | null; // ai dùng riêng; null = chia đều hoặc chưa rõ
+  consumer_id?: string | null; // legacy: ai dùng riêng đầu tiên; null = chia đều hoặc chưa rõ
+  consumer_ids?: string | null; // JSON array các người dùng riêng; null = chia đều hoặc chưa rõ
   consumer_pending?: number;   // 1 = chưa rõ ai dùng, không tính vào chia đều
 }
 

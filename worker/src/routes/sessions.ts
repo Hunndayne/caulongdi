@@ -34,18 +34,24 @@ type SessionRow = {
 type CostRow = {
   id: string;
   amount: number;
+  quantity?: number | null;
   payer_id: string | null;
   consumer_id: string | null;
+  consumer_ids?: string | null;
+  consumer_pending?: number;
 };
 
 type CostBody = {
   label: string;
   amount: number;
+  quantity?: number | string | null;
   type?: string;
   payerId?: string | null;
   consumerId?: string | null;
+  consumerIds?: string[] | string | null;
   payer_id?: string | null;
   consumer_id?: string | null;
+  consumer_ids?: string[] | string | null;
   consumer_pending?: number;
 };
 
@@ -65,6 +71,59 @@ type PaymentNotificationRow = {
 function normalizePaymentRecipient(value: string | null | undefined) {
   if (!value) return null;
   return value.startsWith("auto_") ? value.slice(5) : value;
+}
+
+function normalizeQuantity(value: number | string | null | undefined) {
+  const quantity = Math.round(Number(value ?? 1));
+  return Number.isFinite(quantity) && quantity > 0 ? quantity : 1;
+}
+
+function normalizeConsumerIds(value: string[] | string | null | undefined, fallback?: string | null) {
+  let rawIds: string[] = [];
+  if (Array.isArray(value)) {
+    rawIds = value;
+  } else if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        rawIds = Array.isArray(parsed) ? parsed : [trimmed];
+      } catch {
+        rawIds = trimmed.split(/[,;\n]+/);
+      }
+    }
+  }
+
+  if (rawIds.length === 0 && fallback) rawIds = [fallback];
+
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  for (const item of rawIds) {
+    const id = String(item ?? "").trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  return ids;
+}
+
+function encodeConsumerIds(ids: string[]) {
+  return ids.length > 0 ? JSON.stringify(ids) : null;
+}
+
+function getCostConsumerIds(cost: Pick<CostRow, "consumer_id" | "consumer_ids">) {
+  return normalizeConsumerIds(cost.consumer_ids ?? null, cost.consumer_id);
+}
+
+function splitAmountEvenly(amount: number, count: number) {
+  const roundedAmount = Math.round(amount);
+  const baseShare = Math.floor(roundedAmount / count);
+  let remainder = roundedAmount - baseShare * count;
+  return Array.from({ length: count }, () => {
+    const share = baseShare + (remainder > 0 ? 1 : 0);
+    if (remainder > 0) remainder -= 1;
+    return share;
+  });
 }
 
 function queueTask(c: any, task: Promise<unknown>, label: string) {
@@ -663,15 +722,19 @@ sessions.post("/:id/costs", async (c) => {
   if (!label || !Number.isFinite(amount) || amount <= 0) return c.json({ error: "label, positive amount required" }, 400);
 
   const costId = nanoid();
+  const quantity = normalizeQuantity(body.quantity);
   const payerId = body.payerId ?? body.payer_id ?? null;
-  const consumerId = body.consumerId ?? body.consumer_id ?? null;
-  const consumerPending = body.consumer_pending ?? 0;
+  const consumerPending = body.consumer_pending ? 1 : 0;
+  const consumerIds = consumerPending
+    ? []
+    : normalizeConsumerIds(body.consumerIds ?? body.consumer_ids, body.consumerId ?? body.consumer_id ?? null);
+  const consumerId = consumerIds[0] ?? null;
 
   await c.env.DB.prepare(`
-    INSERT INTO costs (id, session_id, label, amount, type, payer_id, consumer_id, consumer_pending)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO costs (id, session_id, label, amount, quantity, type, payer_id, consumer_id, consumer_ids, consumer_pending)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
-    .bind(costId, id, label, amount, body.type ?? "other", payerId, consumerId, consumerPending)
+    .bind(costId, id, label, amount, quantity, body.type ?? "other", payerId, consumerId, encodeConsumerIds(consumerIds), consumerPending)
     .run();
   await c.env.DB.prepare("DELETE FROM payments WHERE session_id = ? AND paid = 0").bind(id).run();
 
@@ -696,15 +759,21 @@ sessions.put("/:id/costs/:costId", async (c) => {
   if (!label || !Number.isFinite(amount) || amount <= 0) return c.json({ error: "label, positive amount required" }, 400);
 
   const payerId = body.payerId ?? body.payer_id ?? null;
-  const consumerId = body.consumerId ?? body.consumer_id ?? null;
-  const consumerPending = body.consumer_pending ?? (existing as any).consumer_pending ?? 0;
+  const quantity = normalizeQuantity(body.quantity ?? existing.quantity ?? 1);
+  const consumerPending = body.consumer_pending !== undefined
+    ? (body.consumer_pending ? 1 : 0)
+    : ((existing as any).consumer_pending ? 1 : 0);
+  const consumerIds = consumerPending
+    ? []
+    : normalizeConsumerIds(body.consumerIds ?? body.consumer_ids, body.consumerId ?? body.consumer_id ?? null);
+  const consumerId = consumerIds[0] ?? null;
 
   await c.env.DB.prepare(`
     UPDATE costs
-    SET label = ?, amount = ?, type = ?, payer_id = ?, consumer_id = ?, consumer_pending = ?
+    SET label = ?, amount = ?, quantity = ?, type = ?, payer_id = ?, consumer_id = ?, consumer_ids = ?, consumer_pending = ?
     WHERE id = ? AND session_id = ?
   `)
-    .bind(label, amount, body.type ?? existing.type, payerId, consumerId, consumerPending, costId, id)
+    .bind(label, amount, quantity, body.type ?? existing.type, payerId, consumerId, encodeConsumerIds(consumerIds), consumerPending, costId, id)
     .run();
   await c.env.DB.prepare("DELETE FROM payments WHERE session_id = ? AND paid = 0").bind(id).run();
 
@@ -744,11 +813,12 @@ sessions.post("/:id/recalculate", async (c) => {
   const attendeeIds = attendees.results.map((item) => item.member_id);
   const eligibleMemberSet = new Set(eligibleMembers.results.map((item) => item.id));
   const costs = await c.env.DB.prepare(
-    "SELECT id, amount, payer_id, consumer_id, consumer_pending FROM costs WHERE session_id = ?"
-  ).bind(id).all<CostRow & { consumer_pending?: number }>();
+    "SELECT id, amount, payer_id, consumer_id, consumer_ids, consumer_pending FROM costs WHERE session_id = ?"
+  ).bind(id).all<CostRow>();
 
-  const sharedCosts = costs.results.filter((cost) => cost.consumer_id === null && !(cost as any).consumer_pending);
-  const directCosts = costs.results.filter((cost) => cost.consumer_id !== null);
+  const payableCosts = costs.results.filter((cost) => !cost.consumer_pending);
+  const sharedCosts = payableCosts.filter((cost) => getCostConsumerIds(cost).length === 0);
+  const directCosts = payableCosts.filter((cost) => getCostConsumerIds(cost).length > 0);
   const fallbackRecipientId = normalizePaymentRecipient((session as any).payment_recipient as string | null | undefined);
   const forceCommonRecipient = Boolean((session as any).force_payment_recipient);
 
@@ -776,26 +846,27 @@ sessions.post("/:id/recalculate", async (c) => {
       return c.json({ error: "Payment recipient must be an existing member" }, 400);
     }
 
-    const roundedAmount = Math.round(cost.amount);
-    const baseShare = Math.floor(roundedAmount / count);
-    let remainder = roundedAmount - baseShare * count;
-
-    for (const attendeeId of attendeeIds) {
-      const share = baseShare + (remainder > 0 ? 1 : 0);
-      if (remainder > 0) remainder -= 1;
+    const shares = splitAmountEvenly(cost.amount, count);
+    for (let index = 0; index < attendeeIds.length; index += 1) {
+      const attendeeId = attendeeIds[index];
+      const share = shares[index];
       addPayment(attendeeId, recipientId, share);
     }
   }
 
   for (const cost of directCosts) {
     const recipientId = forceCommonRecipient ? fallbackRecipientId : (cost.payer_id ?? fallbackRecipientId);
-    if (!recipientId || !cost.consumer_id) {
+    const consumerIds = getCostConsumerIds(cost);
+    if (!recipientId || consumerIds.length === 0) {
       return c.json({ error: "Direct costs need a consumer and either a payer or a common payment recipient" }, 400);
     }
-    if (!eligibleMemberSet.has(recipientId) || !eligibleMemberSet.has(cost.consumer_id)) {
+    if (!eligibleMemberSet.has(recipientId) || consumerIds.some((consumerId) => !eligibleMemberSet.has(consumerId))) {
       return c.json({ error: "Payer and consumer must both be existing members" }, 400);
     }
-    addPayment(cost.consumer_id, recipientId, Math.round(cost.amount));
+    const shares = splitAmountEvenly(cost.amount, consumerIds.length);
+    for (let index = 0; index < consumerIds.length; index += 1) {
+      addPayment(consumerIds[index], recipientId, shares[index]);
+    }
   }
 
   // Khi force mode bật, người nhận chung cần trả lại cho từng người đã ứng tiền thực tế

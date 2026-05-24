@@ -134,9 +134,12 @@ CREATE TABLE IF NOT EXISTS costs (
   session_id TEXT NOT NULL,
   label TEXT NOT NULL,
   amount REAL NOT NULL,
+  quantity INTEGER NOT NULL DEFAULT 1,
   type TEXT NOT NULL DEFAULT 'other',
   payer_id TEXT,                          -- ai trả tiền hộ; NULL = quỹ chung trả
-  consumer_id TEXT,                       -- ai dùng riêng; NULL = chia đều cho tất cả
+  consumer_id TEXT,                       -- legacy: ai dùng riêng đầu tiên; NULL = chia đều cho tất cả
+  consumer_ids TEXT,                      -- JSON array các người dùng riêng; NULL = chia đều cho tất cả
+  consumer_pending INTEGER NOT NULL DEFAULT 0,
   FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
   FOREIGN KEY (payer_id) REFERENCES members(id) ON DELETE SET NULL,
   FOREIGN KEY (consumer_id) REFERENCES members(id) ON DELETE CASCADE
