@@ -105,7 +105,8 @@ type PaymentNotificationRow = {
   amount_owed: number;
 };
 
-const RECEIPT_AI_MODEL = "@cf/google/gemma-3-12b-it";
+const RECEIPT_OCR_MODEL = "@cf/google/gemma-4-26b-a4b-it";
+const RECEIPT_NORMALIZE_MODEL = "@cf/meta/llama-3.1-8b-instruct";
 const RECEIPT_AI_FEATURE = "receipt_scan";
 const GEMMA4_INPUT_NEURONS_PER_MILLION_TOKENS = 9091;
 const GEMMA4_OUTPUT_NEURONS_PER_MILLION_TOKENS = 27273;
@@ -455,6 +456,91 @@ function parseReceiptFromReasoning(reasoning: string): ReceiptParseResult | null
   return {
     merchantName: merchantMatch?.[1].trim() || undefined,
     purchasedAt: purchasedAtMatch?.[1].trim() || undefined,
+    totalAmount,
+    currency: "VND",
+    items,
+  };
+}
+
+function getOcrText(value: unknown): string | null {
+  const payload = getAiResponsePayload(value);
+  if (typeof payload === "string" && payload.trim()) return payload;
+  const reasoning = getReasoningText(value);
+  return reasoning && reasoning.trim() ? reasoning : null;
+}
+
+function parseReceiptFromOcrText(text: string): ReceiptParseResult | null {
+  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const items: ReceiptParsedCost[] = [];
+  let merchantName: string | undefined;
+  let purchasedAt: string | undefined;
+  let rawTotal = 0;
+
+  for (const line of lines) {
+    const mMerchant = line.match(/^MERCHANT\s*[:：]\s*(.+)$/i);
+    if (mMerchant) { merchantName = mMerchant[1].trim().replace(/^["'`]+|["'`]+$/g, ""); continue; }
+    const mDate = line.match(/^DATE\s*[:：]\s*(.+)$/i);
+    if (mDate) { purchasedAt = mDate[1].trim().replace(/^["'`]+|["'`]+$/g, ""); continue; }
+    const mTotal = line.match(/^TOTAL\s*[:：]\s*([\d.,]+)/i);
+    if (mTotal) { rawTotal = normalizeReceiptAmount(mTotal[1]); continue; }
+
+    const parts = line.split("|").map((part) => part.trim()).filter((part) => part.length > 0);
+    if (parts.length < 4) continue;
+
+    const rawLabel = parts[0].replace(/^["'`]+|["'`]+$/g, "");
+    if (!rawLabel || /^[A-Z]+\s*[:：]/.test(rawLabel)) continue;
+
+    let qtyRaw: string;
+    let unitRaw: string;
+    let totalRaw: string;
+    if (parts.length >= 5) {
+      qtyRaw = parts[1];
+      unitRaw = parts[3];
+      totalRaw = parts[4];
+    } else {
+      qtyRaw = parts[1];
+      unitRaw = parts[2];
+      totalRaw = parts[3];
+    }
+
+    const unitAmount = normalizeReceiptAmount(unitRaw);
+    const totalAmount = normalizeReceiptAmount(totalRaw);
+    if (!totalAmount) continue;
+
+    const qtyRawNum = Number(qtyRaw.replace(/,/g, ""));
+    const isWeighted = totalAmount < unitAmount
+      || (Number.isFinite(qtyRawNum) && qtyRawNum > 0 && qtyRawNum < 100 && !Number.isInteger(qtyRawNum));
+
+    let label = rawLabel;
+    let quantity = 1;
+    let finalUnit = unitAmount || totalAmount;
+    if (isWeighted) {
+      quantity = 1;
+      finalUnit = totalAmount;
+      if (!/kg\b|\bg\b/i.test(label) && Number.isFinite(qtyRawNum) && qtyRawNum > 0) {
+        label = `${label} (${qtyRawNum} kg)`;
+      }
+    } else {
+      const computed = finalUnit > 0 ? Math.round(totalAmount / finalUnit) : 1;
+      quantity = computed >= 1 && computed <= 999 ? computed : 1;
+    }
+
+    items.push({
+      label: label.slice(0, 120),
+      quantity,
+      unitAmount: finalUnit,
+      totalAmount,
+      type: normalizeReceiptCostType("", label),
+      confidence: 0.6,
+    });
+  }
+
+  if (items.length === 0) return null;
+
+  const totalAmount = rawTotal || items.reduce((sum, item) => sum + item.totalAmount, 0);
+  return {
+    merchantName: merchantName || undefined,
+    purchasedAt: purchasedAt || undefined,
     totalAmount,
     currency: "VND",
     items,
@@ -1477,41 +1563,51 @@ sessions.post("/:id/receipt/parse", async (c) => {
     hash: imageHash,
     base64Length: imageBase64.length,
   });
-  const prompt = [
-    "Đọc ảnh hóa đơn giấy tiếng Việt và trích xuất các dòng chi phí để nhập vào app chia tiền cầu lông.",
-    "Trả về JSON đúng schema, không giải thích thêm.",
-    "Đơn vị tiền là VND. Bỏ dấu chấm/phẩy phân tách nghìn, không tự thêm số 0 nếu không chắc.",
-    "Hóa đơn có thể là phiếu siêu thị dài với cột Description và các dòng số lượng/đơn vị ở ngay bên dưới tên món.",
-    "Chỉ lấy các dòng hàng hóa/dịch vụ trong phần Description; bỏ qua VAT, thuế, thanh toán, điểm còn lại, QR, mã vạch và lời cảm ơn.",
-    "Tổng hóa đơn thường nằm ở dòng TONG CONG/Tổng cộng.",
-    "Mỗi item cần label ngắn, quantity, unitAmount, totalAmount và type.",
-    "Label PHẢI là tiếng Việt có dấu, viết thường (trừ tên riêng/thương hiệu). Hóa đơn gốc thường VIẾT HOA KHÔNG DẤU và bị viết tắt do hạn chế ký tự máy in — bạn cần phục hồi lại.",
-    "Quy tắc phục hồi label:",
-    "- Thêm dấu thanh/dấu mũ đúng tiếng Việt (vd: BANH MANDU THIT → bánh mandu thịt, KHOAI LANG GIANG NHUA → khoai lang giấy nhựa, DUONG MIA → đường mía, MI TRUNG THUANG HANG → mì trứng thượng hạng).",
-    "- Mở rộng viết tắt phổ biến khi chắc chắn: SCU=sữa chua, TT=thịt, B.=bánh, CJ=CJ (thương hiệu giữ nguyên), VISSAN=Vissan, GO=Go!, TC=tiệt trùng, T.C=tiệt trùng, NZ=New Zealand, KG=kg, G=g, ML=ml.",
-    "- Không bịa thông tin không thấy trên hóa đơn. Nếu không chắc một từ viết tắt nghĩa gì thì giữ nguyên dạng gốc cho từ đó (vd: 'BAO LAC' không rõ → giữ 'bao lac').",
-    "- Bỏ mã hàng (vd: '40G', '30G*10') ra khỏi label trừ khi đó là quy cách thực sự cần thiết để phân biệt.",
-    "- Tên thương hiệu/sản phẩm có sẵn dấu (Vissan, Ponnie, Probi) giữ nguyên cách viết chuẩn của thương hiệu.",
-    "type: court cho phí sân/giờ chơi; water cho nước/đồ uống; shuttle cho cầu lông/dụng cụ; other cho mục còn lại.",
-    "Nếu chỉ đọc được tổng hóa đơn mà không thấy dòng hàng, tạo một item label 'Tổng hóa đơn' type other.",
-    "Hàng bán theo cân (đơn vị Kg/g): KHÔNG dùng số kg làm quantity. Luôn đặt quantity=1, gộp số kg vào label, unitAmount=totalAmount của dòng đó.",
-    "Ví dụ hàng cân:",
-    "- Hóa đơn: 'GO! THIT HEO XAY VIE | 0.342 | Kg | 99,900 | 34,166' → output: label='thịt heo xay (0.342 kg)', quantity=1, unitAmount=34166, totalAmount=34166.",
-    "- Hóa đơn: 'KHOAI LANG GIANG NHUA | 0.402 | Kg | 17,900 | 7,196' → output: label='khoai lang giấy nhựa (0.402 kg)', quantity=1, unitAmount=7196, totalAmount=7196.",
-    "Lưu ý: với hàng bán theo cái/gói/hộp/lốc thì giữ quantity là số nguyên bình thường (1, 2, 3...).",
+  const ocrPrompt = [
+    "Đọc ảnh hóa đơn giấy tiếng Việt và DUMP RA VĂN BẢN THUẦN từng dòng hàng hóa. KHÔNG output JSON. KHÔNG giải thích.",
+    "Mỗi dòng hàng hóa = 1 line theo đúng format:",
+    "LABEL | quantity | unitType | unitPrice | totalPrice",
     "",
-    "VÍ DỤ output mẫu (chỉ tham khảo format, KHÔNG copy nội dung):",
-    JSON.stringify({
-      merchantName: "Sân cầu lông ABC",
-      purchasedAt: "2025-05-20",
-      totalAmount: 595000,
-      currency: "VND",
-      items: [
-        { label: "tiền sân 2 tiếng", quantity: 1, unitAmount: 200000, totalAmount: 200000, type: "court", confidence: 0.95 },
-        { label: "ống cầu lông Yonex AS-30", quantity: 1, unitAmount: 350000, totalAmount: 350000, type: "shuttle", confidence: 0.9 },
-        { label: "nước suối Aquafina", quantity: 3, unitAmount: 15000, totalAmount: 45000, type: "water", confidence: 0.85 },
-      ],
-    }),
+    "Quy tắc:",
+    "- LABEL: giữ nguyên TEXT TRÊN HÓA ĐƠN (VIẾT HOA KHÔNG DẤU, viết tắt — KHÔNG chuyển sang tiếng Việt có dấu, bước sau sẽ làm việc đó).",
+    "- quantity: số trên hóa đơn (nguyên với hàng cái/gói, thập phân với hàng cân).",
+    "- unitType: đơn vị (Gói, Cái, Hộp, Lốc, Kg, g, ml...) — copy nguyên.",
+    "- unitPrice, totalPrice: VND, BỎ dấu phân tách nghìn (chỉ chữ số, vd 109000 không phải 109,000).",
+    "Bỏ qua: barcode/mã hàng đứng đầu dòng, VAT, thuế, thanh toán, điểm thưởng, QR, lời cảm ơn.",
+    "",
+    "Cuối cùng thêm 3 dòng riêng:",
+    "MERCHANT: <tên cửa hàng>",
+    "DATE: <ngày dd/mm/yyyy hoặc YYYY-MM-DD>",
+    "TOTAL: <số tổng cộng VND, không dấu phân tách>",
+    "",
+    "VÍ DỤ output (chỉ format, không nội dung):",
+    "TUI RECYCLE CO DAI | 1 | Cái | 1000 | 1000",
+    "GO! THIT HEO XAY VIE | 0.342 | Kg | 99900 | 34166",
+    "MERCHANT: GO! ĐI AN",
+    "DATE: 18/05/2026",
+    "TOTAL: 484392",
+  ].join("\n");
+
+  const normalizePromptHeader = [
+    "Bạn là bộ chuẩn hóa dữ liệu hóa đơn Việt Nam. Nhận VĂN BẢN THÔ đã được trích xuất từ ảnh hóa đơn và xuất JSON đúng schema.",
+    "",
+    "Quy tắc chuẩn hóa label:",
+    "- Tiếng Việt có dấu, viết thường (trừ tên riêng/thương hiệu).",
+    "- Mở rộng viết tắt phổ biến: SCU=sữa chua, TT=thịt, B.=bánh, T.C/TC=tiệt trùng, NZ=New Zealand, KG=kg, G=g, ML=ml.",
+    "- Bỏ mã sản phẩm (40G, SCX35G, LC4AI-40, 30G*10...) khỏi label trừ khi cần phân biệt.",
+    "- Không bịa thông tin. Nếu không chắc một từ viết tắt, giữ nguyên dạng gốc cho từ đó.",
+    "- Tên thương hiệu (Vissan, Ponnie, Probi, Aquafina, CJ, Yonex) giữ nguyên cách viết chuẩn.",
+    "",
+    "Quy tắc hàng cân (đơn vị Kg/g, quantity là số thập phân như 0.342):",
+    "- Đặt quantity=1, gộp số kg vào label (vd: 'thịt heo xay (0.342 kg)').",
+    "- unitAmount = totalPrice của dòng đó.",
+    "Hàng theo cái/gói/hộp/lốc: giữ quantity là số nguyên (1, 2, 3...).",
+    "",
+    "type: court (sân/giờ chơi), water (nước/đồ uống/sữa chua/yogurt), shuttle (cầu lông/dụng cụ), other (còn lại).",
+    "",
+    "Output JSON ĐÚNG schema, KHÔNG giải thích, KHÔNG thêm text ngoài JSON.",
+    "",
+    "VĂN BẢN HÓA ĐƠN:",
   ].join("\n");
 
   const aiReservation = await reserveAiNeurons(c);
@@ -1522,64 +1618,87 @@ sessions.post("/:id/receipt/parse", async (c) => {
     }, 429);
   }
 
-  let aiResult: unknown = null;
+  let ocrResult: unknown = null;
+  let normalizeResult: unknown = null;
   try {
-    aiResult = await (c.env.AI as any).run(RECEIPT_AI_MODEL, {
+    ocrResult = await (c.env.AI as any).run(RECEIPT_OCR_MODEL, {
       messages: [
-        {
-          role: "system",
-          content: "Bạn là bộ trích xuất dữ liệu hóa đơn. Luôn trả JSON hợp lệ, ưu tiên độ chính xác số tiền.",
-        },
+        { role: "system", content: "Bạn là bộ trích xuất văn bản hóa đơn. Output text thuần, không JSON, không giải thích." },
         {
           role: "user",
           content: [
-            { type: "text", text: prompt },
+            { type: "text", text: ocrPrompt },
             { type: "image_url", image_url: { url: imageUrl, detail: "high" } },
           ],
         },
       ],
       temperature: 0,
-      max_completion_tokens: 2500,
-      response_format: {
-        type: "json_schema",
-        json_schema: RECEIPT_JSON_SCHEMA,
-      },
+      max_completion_tokens: 1800,
     });
+    console.log("[receipt-ai] step1 raw", JSON.stringify(ocrResult));
 
-    console.log("[receipt-ai] raw response", JSON.stringify(aiResult));
-    const payload = getAiResponsePayload(aiResult);
-    console.log("[receipt-ai] extracted payload", typeof payload === "string" ? payload : JSON.stringify(payload));
+    const rawText = getOcrText(ocrResult);
+    if (!rawText || rawText.length < 10) throw new Error("Step 1 OCR trả về văn bản rỗng");
+    console.log("[receipt-ai] step1 text", rawText.slice(0, 500));
+
+    normalizeResult = await (c.env.AI as any).run(RECEIPT_NORMALIZE_MODEL, {
+      messages: [
+        { role: "system", content: "Bạn là bộ chuẩn hóa dữ liệu hóa đơn Việt Nam. Output JSON đúng schema." },
+        { role: "user", content: `${normalizePromptHeader}\n\n${rawText}` },
+      ],
+      temperature: 0,
+      max_completion_tokens: 2500,
+      response_format: { type: "json_schema", json_schema: RECEIPT_JSON_SCHEMA },
+    });
+    console.log("[receipt-ai] step2 raw", JSON.stringify(normalizeResult));
+    const payload = getAiResponsePayload(normalizeResult);
 
     let parsed: ReceiptParseResult;
     try {
       parsed = sanitizeReceiptParseResult(payload);
     } catch (sanitizeError) {
-      const reasoning = getReasoningText(aiResult);
-      const fromReasoning = reasoning ? parseReceiptFromReasoning(reasoning) : null;
-      if (!fromReasoning) throw sanitizeError;
-      console.log("[receipt-ai] fallback: parsed from reasoning", fromReasoning.items.length, "items");
-      parsed = fromReasoning;
+      const step2Reasoning = getReasoningText(normalizeResult);
+      const fromStep2Reasoning = step2Reasoning ? parseReceiptFromReasoning(step2Reasoning) : null;
+      if (fromStep2Reasoning) {
+        console.log("[receipt-ai] fallback: parsed from step2 reasoning", fromStep2Reasoning.items.length, "items");
+        parsed = fromStep2Reasoning;
+      } else {
+        const fromOcr = parseReceiptFromOcrText(rawText);
+        if (fromOcr) {
+          console.log("[receipt-ai] fallback: parsed from step1 OCR text", fromOcr.items.length, "items");
+          parsed = fromOcr;
+        } else {
+          const step1Reasoning = getReasoningText(ocrResult);
+          const fromStep1Reasoning = step1Reasoning ? parseReceiptFromReasoning(step1Reasoning) : null;
+          if (!fromStep1Reasoning) throw sanitizeError;
+          console.log("[receipt-ai] fallback: parsed from step1 reasoning", fromStep1Reasoning.items.length, "items");
+          parsed = fromStep1Reasoning;
+        }
+      }
     }
     console.log("[receipt-ai] parsed items", parsed.items.length, "total", parsed.totalAmount);
+
+    const totalNeurons = estimateAiNeuronsFromResult(ocrResult, 0)
+      + estimateAiNeuronsFromResult(normalizeResult, 0);
     await adjustAiNeuronReservation(
       c,
       aiReservation.reservation,
-      estimateAiNeuronsFromResult(aiResult, aiReservation.reservation.reservedNeurons)
+      totalNeurons || aiReservation.reservation.reservedNeurons
     );
     await setCachedReceipt(c, imageHash, parsed);
     return c.json({ ...parsed, aiUsage: await getAiUsageStatus(c), cached: false });
   } catch (error) {
-    await adjustAiNeuronReservation(
-      c,
-      aiReservation.reservation,
-      aiResult ? estimateAiNeuronsFromResult(aiResult, aiReservation.reservation.reservedNeurons) : 0
-    );
-    console.error("[receipt-ai] failed", error, "raw response:", aiResult ? JSON.stringify(aiResult) : "<no response>");
+    const usedNeurons = (ocrResult ? estimateAiNeuronsFromResult(ocrResult, 0) : 0)
+      + (normalizeResult ? estimateAiNeuronsFromResult(normalizeResult, 0) : 0);
+    await adjustAiNeuronReservation(c, aiReservation.reservation, usedNeurons);
+    console.error("[receipt-ai] failed", error);
     const message = error instanceof Error ? error.message : "Không đọc được hóa đơn";
     return c.json({
       error: `Không đọc được hóa đơn: ${message}`,
-      aiRaw: aiResult ?? null,
-      aiPayload: aiResult ? getAiResponsePayload(aiResult) : null,
+      step1Raw: ocrResult ?? null,
+      step1Text: ocrResult ? getOcrText(ocrResult) : null,
+      step2Raw: normalizeResult ?? null,
+      step2Payload: normalizeResult ? getAiResponsePayload(normalizeResult) : null,
     }, 502);
   }
 });
