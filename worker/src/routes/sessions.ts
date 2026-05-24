@@ -106,13 +106,15 @@ type PaymentNotificationRow = {
 };
 
 const RECEIPT_AI_MODEL = "@cf/google/gemma-4-26b-a4b-it";
-const RECEIPT_PROMPT_VERSION = "receipt-strict-json-v2";
+const RECEIPT_PROMPT_VERSION = "receipt-gemma-guarded-v4";
 const RECEIPT_AI_FEATURE = "receipt_scan";
 const GEMMA4_INPUT_NEURONS_PER_MILLION_TOKENS = 9091;
 const GEMMA4_OUTPUT_NEURONS_PER_MILLION_TOKENS = 27273;
 const AI_FREE_DAILY_NEURON_LIMIT = 10_000;
 const DEFAULT_AI_DAILY_NEURON_BUDGET = 9_000;
 const DEFAULT_RECEIPT_SCAN_RESERVED_NEURONS = 500;
+const MAX_RECEIPT_TOTAL_AMOUNT = 50_000_000;
+const MAX_RECEIPT_ITEM_AMOUNT = 10_000_000;
 const MAX_RECEIPT_IMAGE_BYTES = 3 * 1024 * 1024;
 const RECEIPT_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const RECEIPT_JSON_SCHEMA = {
@@ -255,15 +257,18 @@ function arrayBufferToBase64(buffer: ArrayBuffer) {
 function normalizeReceiptAmount(value: unknown) {
   if (typeof value === "number") {
     const rounded = Math.round(value);
-    return Number.isFinite(rounded) && rounded > 0 ? rounded : 0;
+    return Number.isSafeInteger(rounded) && rounded > 0 ? rounded : 0;
   }
 
   const raw = String(value ?? "").trim();
   if (!raw) return 0;
+  const simpleMoneyMatch = raw.match(/^\s*\d{1,3}(?:[.,]\d{3})*(?:\s*VND)?\s*$/i)
+    ?? raw.match(/^\s*\d+\s*(?:VND)?\s*$/i);
+  if (!simpleMoneyMatch) return 0;
   const digits = raw.replace(/[^\d]/g, "");
   if (!digits) return 0;
   const amount = Number(digits);
-  return Number.isFinite(amount) && amount > 0 ? amount : 0;
+  return Number.isSafeInteger(amount) && amount > 0 ? amount : 0;
 }
 
 function normalizeReceiptQuantity(value: unknown) {
@@ -284,6 +289,127 @@ function normalizeReceiptCostType(value: unknown, label: string): ReceiptCostTyp
   if (/\b(nuoc|water|sting|revive|tra|cafe|bia|drink|coca|pepsi|aquafina|sua\s*chua|yogurt)\b/.test(normalizedLabel)) return "water";
   if (/\b(cau|shuttle|long\s*vu|vot|ong\s*cau|dung\s*cu)\b/.test(normalizedLabel)) return "shuttle";
   return "other";
+}
+
+function isSaneReceiptTotalAmount(amount: number) {
+  return Number.isSafeInteger(amount) && amount > 0 && amount <= MAX_RECEIPT_TOTAL_AMOUNT;
+}
+
+function isSaneReceiptItemAmount(amount: number) {
+  return Number.isSafeInteger(amount) && amount > 0 && amount <= MAX_RECEIPT_ITEM_AMOUNT;
+}
+
+function cleanReceiptLabel(value: unknown) {
+  let label = String(value ?? "")
+    .replace(/[`"]/g, "")
+    .replace(/^\s*\d+\.\s*/, "")
+    .trim();
+
+  if (label.includes("->")) {
+    const rightSide = label.split("->").pop()?.trim();
+    if (rightSide) label = rightSide;
+  }
+
+  return label
+    .replace(/^\d{8,}\s+/, "")
+    .replace(/\bVAT\s*\d+%.*$/i, "")
+    .replace(/\b\d{1,3}(?:[.,]\d{3})+\b.*$/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 120);
+}
+
+function extractReceiptTotalFromText(text?: string | null) {
+  if (!text) return 0;
+  const normalizedText = text
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+  const patterns = [
+    /tong\s*(?:tien\s*thanh\s*toan|cong)?[^\d]{0,40}(\d{1,3}(?:[.,]\d{3})+|\d{5,})/i,
+    /total\s*(?:amount)?[^\d]{0,40}(\d{1,3}(?:[.,]\d{3})+|\d{5,})/i,
+    /totalAmount[^\d]{0,20}(\d{5,})/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = normalizedText.match(pattern);
+    const amount = match ? normalizeReceiptAmount(match[1]) : 0;
+    if (isSaneReceiptTotalAmount(amount)) return amount;
+  }
+
+  return 0;
+}
+
+function extractReceiptDateFromText(text?: string | null) {
+  if (!text) return "";
+  const isoMatch = text.match(/\b(\d{4})-(\d{2})-(\d{2})\b/);
+  if (isoMatch) return `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
+
+  const vnMatch = text.match(/\b(\d{1,2})\/(\d{1,2})\/(\d{4})\b/);
+  if (!vnMatch) return "";
+  const day = vnMatch[1].padStart(2, "0");
+  const month = vnMatch[2].padStart(2, "0");
+  return `${vnMatch[3]}-${month}-${day}`;
+}
+
+function buildTotalOnlyReceipt(totalAmount: number, contextText?: string | null): ReceiptParseResult | null {
+  if (!isSaneReceiptTotalAmount(totalAmount)) return null;
+  return {
+    merchantName: "",
+    purchasedAt: extractReceiptDateFromText(contextText),
+    totalAmount,
+    currency: "VND",
+    items: [{
+      label: "Tổng hóa đơn",
+      unitAmount: totalAmount,
+      quantity: 1,
+      totalAmount,
+      type: "other",
+      confidence: 0.35,
+    }],
+  };
+}
+
+function sanitizeReceiptResult(result: ReceiptParseResult, contextText?: string | null): ReceiptParseResult | null {
+  const contextTotal = extractReceiptTotalFromText(contextText);
+  const items = result.items
+    .map((item): ReceiptParsedCost | null => {
+      const label = cleanReceiptLabel(item.label);
+      if (!label || label.length < 2) return null;
+
+      const unitAmount = Math.round(Number(item.unitAmount));
+      const totalAmount = Math.round(Number(item.totalAmount));
+      if (!isSaneReceiptItemAmount(unitAmount) || !isSaneReceiptItemAmount(totalAmount)) return null;
+
+      const quantity = Math.max(1, Math.min(999, Math.round(Number(item.quantity || 1))));
+      const confidence = Number(item.confidence);
+
+      return {
+        label,
+        unitAmount,
+        quantity,
+        totalAmount,
+        type: normalizeReceiptCostType(item.type, label),
+        confidence: Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : 0.6,
+      };
+    })
+    .filter((item): item is ReceiptParsedCost => Boolean(item));
+
+  const itemSum = items.reduce((sum, item) => sum + item.totalAmount, 0);
+  const rawTotal = Math.round(Number(result.totalAmount ?? 0));
+  const totalAmount = isSaneReceiptTotalAmount(rawTotal)
+    ? rawTotal
+    : (isSaneReceiptTotalAmount(contextTotal) ? contextTotal : itemSum);
+
+  if (items.length === 0) return buildTotalOnlyReceipt(totalAmount, contextText);
+
+  return {
+    merchantName: String(result.merchantName ?? "").trim(),
+    purchasedAt: String(result.purchasedAt ?? "").trim() || extractReceiptDateFromText(contextText),
+    totalAmount,
+    currency: "VND",
+    items,
+  };
 }
 
 function getRecord(value: unknown): Record<string, unknown> | null {
@@ -346,6 +472,16 @@ function getReasoningText(value: unknown): string | null {
     if (typeof reasoning === "string" && reasoning.trim()) return reasoning;
   }
   return null;
+}
+
+function isAiResponseTruncated(value: unknown) {
+  const record = getRecord(value);
+  if (!record) return false;
+  const choices = Array.isArray(record.choices) ? record.choices : [];
+  return choices.some((choice) => {
+    const choiceRecord = getRecord(choice);
+    return choiceRecord?.finish_reason === "length" || choiceRecord?.stop_reason === "length";
+  });
 }
 
 type ReasoningItemAcc = {
@@ -1675,22 +1811,34 @@ sessions.post("/:id/receipt/parse", async (c) => {
         },
       ],
       temperature: 0,
-      max_completion_tokens: 6000,
+      max_completion_tokens: 2500,
       response_format: { type: "json_schema", json_schema: RECEIPT_JSON_SCHEMA },
     });
     console.log("[receipt-ai] raw response", JSON.stringify(aiResult));
     const payload = getAiResponsePayload(aiResult);
+    const reasoning = getReasoningText(aiResult);
+    const truncated = isAiResponseTruncated(aiResult);
 
     let parsed: ReceiptParseResult;
     try {
       parsed = sanitizeReceiptParseResult(payload);
     } catch (sanitizeError) {
-      const reasoning = getReasoningText(aiResult);
-      const fromReasoning = reasoning ? parseReceiptFromReasoning(reasoning) : null;
-      if (!fromReasoning) throw sanitizeError;
-      console.log("[receipt-ai] fallback: parsed from reasoning", fromReasoning.items.length, "items");
-      parsed = fromReasoning;
+      if (truncated) {
+        const totalOnly = buildTotalOnlyReceipt(extractReceiptTotalFromText(reasoning), reasoning);
+        if (!totalOnly) throw sanitizeError;
+        console.log("[receipt-ai] fallback: truncated response, using total only");
+        parsed = totalOnly;
+      } else {
+        const fromReasoning = reasoning ? parseReceiptFromReasoning(reasoning) : null;
+        if (!fromReasoning) throw sanitizeError;
+        console.log("[receipt-ai] fallback: parsed from reasoning", fromReasoning.items.length, "items");
+        parsed = fromReasoning;
+      }
     }
+
+    const safeParsed = sanitizeReceiptResult(parsed, reasoning);
+    if (!safeParsed) throw new Error("AI response did not contain a sane receipt total or item list");
+    parsed = safeParsed;
     console.log("[receipt-ai] parsed items", parsed.items.length, "total", parsed.totalAmount);
 
     await adjustAiNeuronReservation(
