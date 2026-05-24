@@ -245,9 +245,9 @@ function normalizeReceiptCostType(value: unknown, label: string): ReceiptCostTyp
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase();
 
-  if (/(san|court|gio|phi san|dia diem)/.test(normalizedLabel)) return "court";
-  if (/(nuoc|water|sting|revive|tra|cafe|bia|drink)/.test(normalizedLabel)) return "water";
-  if (/(cau|shuttle|long vu|vot|ong cau|dung cu)/.test(normalizedLabel)) return "shuttle";
+  if (/\b(san|court|gio|phi\s*san|dia\s*diem)\b/.test(normalizedLabel)) return "court";
+  if (/\b(nuoc|water|sting|revive|tra|cafe|bia|drink|coca|pepsi|aquafina|sua\s*chua|yogurt)\b/.test(normalizedLabel)) return "water";
+  if (/\b(cau|shuttle|long\s*vu|vot|ong\s*cau|dung\s*cu)\b/.test(normalizedLabel)) return "shuttle";
   return "other";
 }
 
@@ -351,9 +351,12 @@ function parseReceiptFromReasoning(reasoning: string): ReceiptParseResult | null
     });
   }
 
-  // Format B: "`LABEL` -> `restored` (type: other)"
-  for (const m of reasoning.matchAll(/[`'"]([^`'"]+)[`'"]\s*->\s*[`'"]([^`'"]+)[`'"]\s*\(\s*type\s*:\s*(\w+)/gi)) {
-    upsert(m[1], { restoredLabel: m[2].trim(), type: m[3].toLowerCase() });
+  // Format B: "`LABEL` -> `restored` (type: other)" — type spec optional
+  for (const m of reasoning.matchAll(/[`'"]([^`'"]+)[`'"]\s*->\s*[`'"]([^`'"]+)[`'"](?:\s*\(\s*type\s*:\s*(\w+))?/gi)) {
+    upsert(m[1], {
+      restoredLabel: m[2].trim(),
+      ...(m[3] ? { type: m[3].toLowerCase() } : {}),
+    });
   }
 
   // Format C: "`LABEL`: qty X, unit Y, total Z" (without type)
