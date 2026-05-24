@@ -1274,6 +1274,25 @@ sessions.post("/:id/receipt/parse", async (c) => {
     "- Tên thương hiệu/sản phẩm có sẵn dấu (Vissan, Ponnie, Probi) giữ nguyên cách viết chuẩn của thương hiệu.",
     "type: court cho phí sân/giờ chơi; water cho nước/đồ uống; shuttle cho cầu lông/dụng cụ; other cho mục còn lại.",
     "Nếu chỉ đọc được tổng hóa đơn mà không thấy dòng hàng, tạo một item label 'Tổng hóa đơn' type other.",
+    "Hàng bán theo cân (đơn vị Kg/g): KHÔNG dùng số kg làm quantity. Luôn đặt quantity=1, gộp số kg vào label, unitAmount=totalAmount của dòng đó.",
+    "Ví dụ hàng cân:",
+    "- Hóa đơn: 'GO! THIT HEO XAY VIE | 0.342 | Kg | 99,900 | 34,166' → output: label='thịt heo xay (0.342 kg)', quantity=1, unitAmount=34166, totalAmount=34166.",
+    "- Hóa đơn: 'KHOAI LANG GIANG NHUA | 0.402 | Kg | 17,900 | 7,196' → output: label='khoai lang giấy nhựa (0.402 kg)', quantity=1, unitAmount=7196, totalAmount=7196.",
+    "Lưu ý: với hàng bán theo cái/gói/hộp/lốc thì giữ quantity là số nguyên bình thường (1, 2, 3...).",
+    "QUY TRÌNH BẮT BUỘC: (1) đọc ảnh → (2) liệt kê items 1 lần trong đầu → (3) xuất JSON content NGAY. KHÔNG self-correct, KHÔNG refine, KHÔNG liệt kê lại. Mỗi item chỉ xuất hiện 1 lần duy nhất trong output JSON.",
+    "",
+    "VÍ DỤ output mẫu (chỉ tham khảo format, KHÔNG copy nội dung):",
+    JSON.stringify({
+      merchantName: "Sân cầu lông ABC",
+      purchasedAt: "2025-05-20",
+      totalAmount: 595000,
+      currency: "VND",
+      items: [
+        { label: "tiền sân 2 tiếng", quantity: 1, unitAmount: 200000, totalAmount: 200000, type: "court", confidence: 0.95 },
+        { label: "ống cầu lông Yonex AS-30", quantity: 1, unitAmount: 350000, totalAmount: 350000, type: "shuttle", confidence: 0.9 },
+        { label: "nước suối Aquafina", quantity: 3, unitAmount: 15000, totalAmount: 45000, type: "water", confidence: 0.85 },
+      ],
+    }),
   ].join("\n");
 
   const aiReservation = await reserveAiNeurons(c);
