@@ -301,6 +301,66 @@ function getAiResponsePayload(value: unknown): unknown {
   return content ?? value;
 }
 
+function getReasoningText(value: unknown): string | null {
+  const record = getRecord(value);
+  if (!record) return null;
+  const choices = Array.isArray(record.choices) ? record.choices : [];
+  for (const choice of choices) {
+    const message = getRecord(getRecord(choice)?.message);
+    const reasoning = message?.reasoning;
+    if (typeof reasoning === "string" && reasoning.trim()) return reasoning;
+  }
+  return null;
+}
+
+function parseReceiptFromReasoning(reasoning: string): ReceiptParseResult | null {
+  const itemPattern = /\*\s*Item\s+(\d+)\s*:\*?\s*[`'"]([^`'"]+)[`'"]\s*,?\s*qty\s+([\d.]+)\s*,?\s*unit\s+([\d.]+)\s*,?\s*total\s+([\d.]+)\s*,?\s*type\s+(\w+)/gi;
+  const itemsByIndex = new Map<number, ReceiptParsedCost>();
+
+  for (const match of reasoning.matchAll(itemPattern)) {
+    const index = Number(match[1]);
+    const label = match[2].trim();
+    if (!label) continue;
+
+    const quantity = normalizeReceiptQuantity(match[3]);
+    let unitAmount = normalizeReceiptAmount(match[4]);
+    const totalAmount = normalizeReceiptAmount(match[5]);
+    if (!totalAmount) continue;
+    if (!unitAmount) unitAmount = Math.max(1, Math.round(totalAmount / quantity));
+
+    itemsByIndex.set(index, {
+      label: label.slice(0, 120),
+      quantity,
+      unitAmount,
+      totalAmount,
+      type: normalizeReceiptCostType(match[6], label),
+      confidence: 0.55,
+    });
+  }
+
+  if (itemsByIndex.size === 0) return null;
+
+  const items = Array.from(itemsByIndex.entries())
+    .sort(([a], [b]) => a - b)
+    .map(([, item]) => item);
+
+  const merchantMatch = reasoning.match(/Merchant(?:\s*Name)?[^:\n]*:\s*([^\n(]+?)(?:\s*\(|$)/im);
+  const purchasedAtMatch = reasoning.match(/Purchased\s*At[^:\n]*:\s*(\d{4}-\d{2}-\d{2})/im)
+    ?? reasoning.match(/Date[^:\n]*:\s*(\d{1,2}\/\d{1,2}\/\d{2,4})/im);
+  const totalMatch = reasoning.match(/T[ỔO]NG\s*C[ỘO]NG[^\d]*([\d.,]+)/i)
+    ?? reasoning.match(/Total[^:\n]*:\s*[`]?([\d.,]+)/im);
+  const totalFromReasoning = totalMatch ? normalizeReceiptAmount(totalMatch[1]) : 0;
+  const totalAmount = totalFromReasoning || items.reduce((sum, item) => sum + item.totalAmount, 0);
+
+  return {
+    merchantName: merchantMatch?.[1].trim() || undefined,
+    purchasedAt: purchasedAtMatch?.[1].trim() || undefined,
+    totalAmount,
+    currency: "VND",
+    items,
+  };
+}
+
 function getNestedRecord(record: Record<string, unknown>, names: string[]) {
   let current: Record<string, unknown> | null = record;
   for (const name of names) {
@@ -1331,7 +1391,16 @@ sessions.post("/:id/receipt/parse", async (c) => {
     const payload = getAiResponsePayload(aiResult);
     console.log("[receipt-ai] extracted payload", typeof payload === "string" ? payload : JSON.stringify(payload));
 
-    const parsed = sanitizeReceiptParseResult(payload);
+    let parsed: ReceiptParseResult;
+    try {
+      parsed = sanitizeReceiptParseResult(payload);
+    } catch (sanitizeError) {
+      const reasoning = getReasoningText(aiResult);
+      const fromReasoning = reasoning ? parseReceiptFromReasoning(reasoning) : null;
+      if (!fromReasoning) throw sanitizeError;
+      console.log("[receipt-ai] fallback: parsed from reasoning", fromReasoning.items.length, "items");
+      parsed = fromReasoning;
+    }
     console.log("[receipt-ai] parsed items", parsed.items.length, "total", parsed.totalAmount);
     await adjustAiNeuronReservation(
       c,
