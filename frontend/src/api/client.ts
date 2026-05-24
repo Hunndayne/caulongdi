@@ -96,6 +96,8 @@ export const api = {
   getGroups: () => request<PlayGroup[]>("/api/groups"),
   createGroup: (data: { name: string; description?: string }) =>
     request<PlayGroup>("/api/groups", { method: "POST", body: JSON.stringify(data) }),
+  deleteGroup: (id: string) =>
+    request<{ success: boolean }>(`/api/groups/${id}`, { method: "DELETE" }),
   getGroupMembers: (id: string) => request<GroupMember[]>(`/api/groups/${id}/members`),
   getGroupInvites: (id: string) => request<GroupInvite[]>(`/api/groups/${id}/invites`),
   getReceivedGroupInvites: () => request<GroupInvite[]>("/api/groups/invites/received"),

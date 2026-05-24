@@ -102,6 +102,43 @@ async function userHasConfirmedGroupPayments(c: any, groupId: string, userId: st
   return Boolean(row);
 }
 
+async function groupHasConfirmedPayments(c: any, groupId: string) {
+  const row = await c.env.DB.prepare(`
+    SELECT p.id
+    FROM payments p
+    WHERE (p.paid = 1 OR p.payer_marked_paid = 1)
+      AND (
+        p.session_id IN (
+          SELECT id FROM sessions WHERE group_id = ?
+        )
+        OR p.member_id IN (
+          SELECT id FROM members WHERE group_id = ?
+        )
+        OR p.recipient_member_id IN (
+          SELECT id FROM members WHERE group_id = ?
+        )
+      )
+    LIMIT 1
+  `)
+    .bind(groupId, groupId, groupId)
+    .first() as { id: string } | null;
+
+  return Boolean(row);
+}
+
+async function tableExists(c: any, tableName: string) {
+  const row = await c.env.DB.prepare(`
+    SELECT name
+    FROM sqlite_master
+    WHERE type = 'table' AND name = ?
+    LIMIT 1
+  `)
+    .bind(tableName)
+    .first() as { name: string } | null;
+
+  return Boolean(row);
+}
+
 function toGroup(row: GroupRow) {
   return {
     id: row.id,
@@ -379,6 +416,67 @@ groups.post("/", async (c) => {
       .first<GroupRow>();
 
     return c.json(toGroup(row!), 201);
+  } catch (error) {
+    if (isMissingGroupSchema(error)) {
+      return c.json({ error: "Run group database migration first" }, 400);
+    }
+    throw error;
+  }
+});
+
+groups.delete("/:id", async (c) => {
+  const { id } = c.req.param();
+
+  try {
+    const group = await c.env.DB.prepare(`
+      SELECT id, owner_user_id
+      FROM groups
+      WHERE id = ?
+    `)
+      .bind(id)
+      .first<{ id: string; owner_user_id: string }>();
+    if (!group) return c.json({ error: "Group not found" }, 404);
+
+    const userId = c.get("userId");
+    if (c.get("userRole") !== "admin" && group.owner_user_id !== userId) {
+      return c.json({ error: "Only the group owner can delete this group" }, 403);
+    }
+
+    if (await groupHasConfirmedPayments(c, id)) {
+      return c.json({
+        error: "This group has confirmed payments and cannot be deleted",
+      }, 409);
+    }
+
+    const stmts = [
+      c.env.DB.prepare(`
+        DELETE FROM payments
+        WHERE session_id IN (SELECT id FROM sessions WHERE group_id = ?)
+          OR member_id IN (SELECT id FROM members WHERE group_id = ?)
+          OR recipient_member_id IN (SELECT id FROM members WHERE group_id = ?)
+      `).bind(id, id, id),
+      c.env.DB.prepare(`
+        DELETE FROM session_members
+        WHERE session_id IN (SELECT id FROM sessions WHERE group_id = ?)
+          OR member_id IN (SELECT id FROM members WHERE group_id = ?)
+      `).bind(id, id),
+      c.env.DB.prepare(`
+        DELETE FROM costs
+        WHERE session_id IN (SELECT id FROM sessions WHERE group_id = ?)
+      `).bind(id),
+      c.env.DB.prepare("DELETE FROM sessions WHERE group_id = ?").bind(id),
+      c.env.DB.prepare("DELETE FROM members WHERE group_id = ?").bind(id),
+      c.env.DB.prepare("DELETE FROM group_invites WHERE group_id = ?").bind(id),
+      c.env.DB.prepare("DELETE FROM group_members WHERE group_id = ?").bind(id),
+      c.env.DB.prepare("DELETE FROM groups WHERE id = ?").bind(id),
+    ];
+
+    if (await tableExists(c, "group_invite_links")) {
+      stmts.splice(stmts.length - 1, 0, c.env.DB.prepare("DELETE FROM group_invite_links WHERE group_id = ?").bind(id));
+    }
+
+    await c.env.DB.batch(stmts);
+    return c.json({ success: true });
   } catch (error) {
     if (isMissingGroupSchema(error)) {
       return c.json({ error: "Run group database migration first" }, 400);

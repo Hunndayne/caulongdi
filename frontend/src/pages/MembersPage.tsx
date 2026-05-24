@@ -9,6 +9,7 @@ import {
   RefreshCw,
   Search,
   ShieldCheck,
+  Trash2,
   UserCircle,
   UserMinus,
   UserPlus,
@@ -17,6 +18,7 @@ import {
 } from "lucide-react";
 import { api } from "@/api/client";
 import { useSession } from "@/lib/auth-client";
+import { isAdminUser } from "@/lib/permissions";
 import { useGroupsStore } from "@/stores/groupsStore";
 import { Avatar } from "@/components/shared/Avatar";
 import { Badge } from "@/components/ui/badge";
@@ -35,6 +37,7 @@ export default function MembersPage() {
     error: groupError,
     fetch: fetchGroups,
     createGroup,
+    deleteGroup,
     setActiveGroup,
   } = useGroupsStore();
 
@@ -56,6 +59,7 @@ export default function MembersPage() {
   const [inviteLinkCode, setInviteLinkCode] = useState<string | null>(null);
   const [inviteLinkLoading, setInviteLinkLoading] = useState(false);
   const [inviteLinkCopied, setInviteLinkCopied] = useState(false);
+  const [deletingGroup, setDeletingGroup] = useState(false);
 
   const currentUserId = (session?.user as { id?: string } | undefined)?.id;
   const activeGroup = useMemo(
@@ -63,6 +67,9 @@ export default function MembersPage() {
     [groups, activeGroupId]
   );
   const canManageGroup = activeGroup?.role === "admin";
+  const canDeleteGroup = Boolean(
+    activeGroup && (activeGroup.ownerUserId === currentUserId || isAdminUser(session?.user))
+  );
 
   useEffect(() => {
     fetchGroups();
@@ -228,6 +235,29 @@ export default function MembersPage() {
     }
   };
 
+  const handleDeleteGroup = async () => {
+    if (!activeGroup) return;
+    const confirmed = confirm(
+      `Xóa nhóm "${activeGroup.name}"? Tất cả buổi chơi, thành viên, chi phí và lời mời trong nhóm sẽ bị xóa.`
+    );
+    if (!confirmed) return;
+
+    setDeletingGroup(true);
+    setError(null);
+    try {
+      await deleteGroup(activeGroup.id);
+      setMembers([]);
+      setPendingInvites([]);
+      setSearch("");
+      setSearchResults([]);
+      setInviteLinkCode(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Không xóa được nhóm");
+    } finally {
+      setDeletingGroup(false);
+    }
+  };
+
   return (
     <div className="space-y-5">
       <div className="flex items-center gap-2">
@@ -247,10 +277,18 @@ export default function MembersPage() {
             <div className="font-semibold text-gray-900">Nhóm hiện tại</div>
             <div className="text-sm text-gray-500">Chỉ thành viên trong nhóm mới xem được nhau.</div>
           </div>
-          <Button variant="outline" size="sm" onClick={() => setCreateDialogOpen(true)}>
-            <Plus size={16} className="mr-1.5" />
-            Tạo nhóm
-          </Button>
+          <div className="flex shrink-0 items-center gap-2">
+            {canDeleteGroup && (
+              <Button variant="destructive" size="sm" onClick={handleDeleteGroup} disabled={deletingGroup}>
+                <Trash2 size={15} className="mr-1.5" />
+                {deletingGroup ? "Đang xóa..." : "Xóa nhóm"}
+              </Button>
+            )}
+            <Button variant="outline" size="sm" onClick={() => setCreateDialogOpen(true)}>
+              <Plus size={16} className="mr-1.5" />
+              Tạo nhóm
+            </Button>
+          </div>
         </div>
 
         <select
