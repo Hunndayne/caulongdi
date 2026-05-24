@@ -301,23 +301,95 @@ function getAiResponsePayload(value: unknown): unknown {
   return content ?? value;
 }
 
+function getNestedRecord(record: Record<string, unknown>, names: string[]) {
+  let current: Record<string, unknown> | null = record;
+  for (const name of names) {
+    current = getRecord(current?.[name]);
+    if (!current) return null;
+  }
+  return current;
+}
+
+function getFirstArray(record: Record<string, unknown>, paths: string[][]) {
+  for (const path of paths) {
+    const parent = path.length > 1 ? getNestedRecord(record, path.slice(0, -1)) : record;
+    if (!parent) continue;
+    const value = parent[path[path.length - 1]];
+    if (Array.isArray(value)) return value;
+  }
+  return [];
+}
+
 function sanitizeReceiptParseResult(value: unknown): ReceiptParseResult {
   const payload = typeof value === "string" ? parseJsonObjectText(value) : value;
   const record = getRecord(payload);
   if (!record) throw new Error("AI response is not an object");
 
-  const rawItems = Array.isArray(record.items) ? record.items : [];
-  const items = rawItems
+  const merchantName = String(record.merchantName ?? record.merchant_name ?? record.storeName ?? record.store_name ?? record.vendor ?? "").trim();
+  const purchasedAt = String(record.purchasedAt ?? record.purchased_at ?? record.date ?? record.purchaseDate ?? record.purchase_date ?? "").trim();
+  const rawTotalAmount = normalizeReceiptAmount(
+    record.totalAmount
+      ?? record.total_amount
+      ?? record.grandTotal
+      ?? record.grand_total
+      ?? record.total
+      ?? record.amountDue
+      ?? record.amount_due
+  );
+  const rawItems = getFirstArray(record, [
+    ["items"],
+    ["lineItems"],
+    ["line_items"],
+    ["receiptItems"],
+    ["receipt_items"],
+    ["products"],
+    ["productItems"],
+    ["entries"],
+    ["costs"],
+    ["data", "items"],
+    ["data", "lineItems"],
+    ["receipt", "items"],
+    ["receipt", "lineItems"],
+    ["result", "items"],
+  ]);
+  let items = rawItems
     .map((item): ReceiptParsedCost | null => {
       const itemRecord = getRecord(item);
       if (!itemRecord) return null;
 
-      const label = String(itemRecord.label ?? itemRecord.name ?? itemRecord.description ?? "").trim();
+      const label = String(
+        itemRecord.label
+          ?? itemRecord.name
+          ?? itemRecord.productName
+          ?? itemRecord.product_name
+          ?? itemRecord.product
+          ?? itemRecord.item
+          ?? itemRecord.description
+          ?? itemRecord.text
+          ?? ""
+      ).trim();
       if (!label) return null;
 
-      const quantity = normalizeReceiptQuantity(itemRecord.quantity ?? itemRecord.qty);
-      let totalAmount = normalizeReceiptAmount(itemRecord.totalAmount ?? itemRecord.total_amount ?? itemRecord.amount ?? itemRecord.lineTotal);
-      let unitAmount = normalizeReceiptAmount(itemRecord.unitAmount ?? itemRecord.unit_amount ?? itemRecord.unitPrice ?? itemRecord.price);
+      const quantity = normalizeReceiptQuantity(itemRecord.quantity ?? itemRecord.qty ?? itemRecord.count ?? itemRecord.so_luong);
+      let totalAmount = normalizeReceiptAmount(
+        itemRecord.totalAmount
+          ?? itemRecord.total_amount
+          ?? itemRecord.lineTotal
+          ?? itemRecord.line_total
+          ?? itemRecord.totalPrice
+          ?? itemRecord.total_price
+          ?? itemRecord.amount
+          ?? itemRecord.total
+          ?? itemRecord.value
+      );
+      let unitAmount = normalizeReceiptAmount(
+        itemRecord.unitAmount
+          ?? itemRecord.unit_amount
+          ?? itemRecord.unitPrice
+          ?? itemRecord.unit_price
+          ?? itemRecord.price
+          ?? itemRecord.rate
+      );
 
       if (!totalAmount && unitAmount) totalAmount = unitAmount * quantity;
       if (!unitAmount && totalAmount) unitAmount = Math.max(1, Math.round(totalAmount / quantity));
@@ -338,12 +410,20 @@ function sanitizeReceiptParseResult(value: unknown): ReceiptParseResult {
     .filter((item): item is ReceiptParsedCost => Boolean(item))
     .slice(0, 50);
 
-  if (items.length === 0) throw new Error("No valid receipt items found");
+  if (items.length === 0 && rawTotalAmount > 0) {
+    items = [{
+      label: "Tổng hóa đơn",
+      unitAmount: rawTotalAmount,
+      quantity: 1,
+      totalAmount: rawTotalAmount,
+      type: "other",
+      confidence: 0.45,
+    }];
+  }
 
-  const merchantName = String(record.merchantName ?? record.merchant_name ?? "").trim();
-  const purchasedAt = String(record.purchasedAt ?? record.purchased_at ?? record.date ?? "").trim();
-  const totalAmount = normalizeReceiptAmount(record.totalAmount ?? record.total_amount ?? record.total)
-    || items.reduce((sum, item) => sum + item.totalAmount, 0);
+  if (items.length === 0) throw new Error("AI did not return any receipt item or total amount");
+
+  const totalAmount = rawTotalAmount || items.reduce((sum, item) => sum + item.totalAmount, 0);
 
   return {
     merchantName: merchantName || undefined,
@@ -1175,6 +1255,9 @@ sessions.post("/:id/receipt/parse", async (c) => {
     "Đọc ảnh hóa đơn giấy tiếng Việt và trích xuất các dòng chi phí để nhập vào app chia tiền cầu lông.",
     "Trả về JSON đúng schema, không giải thích thêm.",
     "Đơn vị tiền là VND. Bỏ dấu chấm/phẩy phân tách nghìn, không tự thêm số 0 nếu không chắc.",
+    "Hóa đơn có thể là phiếu siêu thị dài với cột Description và các dòng số lượng/đơn vị ở ngay bên dưới tên món.",
+    "Chỉ lấy các dòng hàng hóa/dịch vụ trong phần Description; bỏ qua VAT, thuế, thanh toán, điểm còn lại, QR, mã vạch và lời cảm ơn.",
+    "Tổng hóa đơn thường nằm ở dòng TONG CONG/Tổng cộng.",
     "Mỗi item cần label ngắn, quantity, unitAmount, totalAmount và type.",
     "type: court cho phí sân/giờ chơi; water cho nước/đồ uống; shuttle cho cầu lông/dụng cụ; other cho mục còn lại.",
     "Nếu chỉ đọc được tổng hóa đơn mà không thấy dòng hàng, tạo một item label 'Tổng hóa đơn' type other.",
@@ -1205,7 +1288,7 @@ sessions.post("/:id/receipt/parse", async (c) => {
         },
       ],
       temperature: 0,
-      max_completion_tokens: 1200,
+      max_completion_tokens: 2000,
       response_format: {
         type: "json_schema",
         json_schema: RECEIPT_JSON_SCHEMA,

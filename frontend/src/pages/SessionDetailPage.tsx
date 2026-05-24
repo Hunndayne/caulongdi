@@ -107,7 +107,8 @@ type ReceiptDraft = Omit<ReceiptParseResult, "items"> & {
   items: ReceiptDraftItem[];
 };
 
-const MAX_RECEIPT_IMAGE_EDGE = 1400;
+const MAX_RECEIPT_IMAGE_WIDTH = 1200;
+const MAX_RECEIPT_IMAGE_HEIGHT = 3200;
 const MAX_RECEIPT_UPLOAD_BYTES = 3 * 1024 * 1024;
 const RECEIPT_IMAGE_QUALITY = 0.82;
 
@@ -276,8 +277,7 @@ async function resizeReceiptImage(file: File) {
   }
 
   const image = await loadImage(file);
-  const largestSide = Math.max(image.width, image.height);
-  const scale = Math.min(1, MAX_RECEIPT_IMAGE_EDGE / largestSide);
+  const scale = Math.min(1, MAX_RECEIPT_IMAGE_WIDTH / image.width, MAX_RECEIPT_IMAGE_HEIGHT / image.height);
 
   if (scale >= 1 && file.size <= MAX_RECEIPT_UPLOAD_BYTES) {
     return file;
