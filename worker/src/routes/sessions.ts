@@ -55,6 +55,43 @@ type CostBody = {
   consumer_pending?: number;
 };
 
+type ReceiptCostType = "court" | "water" | "shuttle" | "other";
+
+type ReceiptParsedCost = {
+  label: string;
+  unitAmount: number;
+  quantity: number;
+  totalAmount: number;
+  type: ReceiptCostType;
+  confidence?: number;
+};
+
+type ReceiptParseResult = {
+  merchantName?: string;
+  purchasedAt?: string;
+  totalAmount?: number;
+  currency: "VND";
+  items: ReceiptParsedCost[];
+};
+
+type AiUsageStatus = {
+  feature: string;
+  usageDate: string;
+  estimatedNeurons: number;
+  requestCount: number;
+  dailyBudget: number;
+  reservedNeuronsPerScan: number;
+  remainingNeurons: number;
+  enabled: boolean;
+  resetAt: string;
+};
+
+type AiUsageReservation = {
+  feature: string;
+  usageDate: string;
+  reservedNeurons: number;
+};
+
 type GroupSessionNotificationRow = {
   group_name: string;
   creator_name?: string | null;
@@ -67,6 +104,43 @@ type PaymentNotificationRow = {
   recipient_name?: string | null;
   amount_owed: number;
 };
+
+const RECEIPT_AI_MODEL = "@cf/google/gemma-4-26b-a4b-it";
+const RECEIPT_AI_FEATURE = "receipt_scan";
+const GEMMA4_INPUT_NEURONS_PER_MILLION_TOKENS = 9091;
+const GEMMA4_OUTPUT_NEURONS_PER_MILLION_TOKENS = 27273;
+const AI_FREE_DAILY_NEURON_LIMIT = 10_000;
+const DEFAULT_AI_DAILY_NEURON_BUDGET = 9_000;
+const DEFAULT_RECEIPT_SCAN_RESERVED_NEURONS = 500;
+const MAX_RECEIPT_IMAGE_BYTES = 3 * 1024 * 1024;
+const RECEIPT_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+const RECEIPT_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    merchantName: { type: "string" },
+    purchasedAt: { type: "string" },
+    totalAmount: { type: "integer" },
+    currency: { type: "string", enum: ["VND"] },
+    items: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          label: { type: "string" },
+          unitAmount: { type: "integer" },
+          quantity: { type: "integer" },
+          totalAmount: { type: "integer" },
+          type: { type: "string", enum: ["court", "water", "shuttle", "other"] },
+          confidence: { type: "number" },
+        },
+        required: ["label", "unitAmount", "quantity", "totalAmount", "type", "confidence"],
+      },
+    },
+  },
+  required: ["merchantName", "purchasedAt", "totalAmount", "currency", "items"],
+};
+
+let aiUsageTableEnsured = false;
 
 function normalizePaymentRecipient(value: string | null | undefined) {
   if (!value) return null;
@@ -124,6 +198,320 @@ function splitAmountEvenly(amount: number, count: number) {
     if (remainder > 0) remainder -= 1;
     return share;
   });
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  const chunkSize = 0x8000;
+
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    let chunk = "";
+    const end = Math.min(index + chunkSize, bytes.length);
+    for (let cursor = index; cursor < end; cursor += 1) {
+      chunk += String.fromCharCode(bytes[cursor]);
+    }
+    binary += chunk;
+  }
+
+  return btoa(binary);
+}
+
+function normalizeReceiptAmount(value: unknown) {
+  if (typeof value === "number") {
+    const rounded = Math.round(value);
+    return Number.isFinite(rounded) && rounded > 0 ? rounded : 0;
+  }
+
+  const raw = String(value ?? "").trim();
+  if (!raw) return 0;
+  const digits = raw.replace(/[^\d]/g, "");
+  if (!digits) return 0;
+  const amount = Number(digits);
+  return Number.isFinite(amount) && amount > 0 ? amount : 0;
+}
+
+function normalizeReceiptQuantity(value: unknown) {
+  const quantity = Math.round(Number(String(value ?? "1").replace(/[^\d.]/g, "")));
+  return Number.isFinite(quantity) && quantity > 0 ? quantity : 1;
+}
+
+function normalizeReceiptCostType(value: unknown, label: string): ReceiptCostType {
+  const raw = String(value ?? "").trim().toLowerCase();
+  if (raw === "court" || raw === "water" || raw === "shuttle" || raw === "other") return raw;
+
+  const normalizedLabel = label
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+
+  if (/(san|court|gio|phi san|dia diem)/.test(normalizedLabel)) return "court";
+  if (/(nuoc|water|sting|revive|tra|cafe|bia|drink)/.test(normalizedLabel)) return "water";
+  if (/(cau|shuttle|long vu|vot|ong cau|dung cu)/.test(normalizedLabel)) return "shuttle";
+  return "other";
+}
+
+function getRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function parseJsonObjectText(text: string) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1];
+    if (fenced) {
+      try {
+        return JSON.parse(fenced);
+      } catch {
+        // Try the first object below.
+      }
+    }
+
+    const start = text.indexOf("{");
+    const end = text.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      return JSON.parse(text.slice(start, end + 1));
+    }
+
+    throw new Error("AI response is not valid JSON");
+  }
+}
+
+function getAiResponsePayload(value: unknown): unknown {
+  const record = getRecord(value);
+  if (!record) return value;
+
+  if (record.response !== undefined) return record.response;
+  if (record.result !== undefined) return getAiResponsePayload(record.result);
+
+  const choices = Array.isArray(record.choices) ? record.choices : [];
+  const firstChoice = getRecord(choices[0]);
+  const message = getRecord(firstChoice?.message);
+  const content = message?.content ?? firstChoice?.text;
+
+  if (Array.isArray(content)) {
+    return content.map((item) => {
+      if (typeof item === "string") return item;
+      const itemRecord = getRecord(item);
+      return typeof itemRecord?.text === "string" ? itemRecord.text : "";
+    }).join("");
+  }
+
+  return content ?? value;
+}
+
+function sanitizeReceiptParseResult(value: unknown): ReceiptParseResult {
+  const payload = typeof value === "string" ? parseJsonObjectText(value) : value;
+  const record = getRecord(payload);
+  if (!record) throw new Error("AI response is not an object");
+
+  const rawItems = Array.isArray(record.items) ? record.items : [];
+  const items = rawItems
+    .map((item): ReceiptParsedCost | null => {
+      const itemRecord = getRecord(item);
+      if (!itemRecord) return null;
+
+      const label = String(itemRecord.label ?? itemRecord.name ?? itemRecord.description ?? "").trim();
+      if (!label) return null;
+
+      const quantity = normalizeReceiptQuantity(itemRecord.quantity ?? itemRecord.qty);
+      let totalAmount = normalizeReceiptAmount(itemRecord.totalAmount ?? itemRecord.total_amount ?? itemRecord.amount ?? itemRecord.lineTotal);
+      let unitAmount = normalizeReceiptAmount(itemRecord.unitAmount ?? itemRecord.unit_amount ?? itemRecord.unitPrice ?? itemRecord.price);
+
+      if (!totalAmount && unitAmount) totalAmount = unitAmount * quantity;
+      if (!unitAmount && totalAmount) unitAmount = Math.max(1, Math.round(totalAmount / quantity));
+      if (!totalAmount || !unitAmount) return null;
+
+      const confidenceRaw = Number(itemRecord.confidence ?? 0.7);
+      const confidence = Number.isFinite(confidenceRaw) ? Math.min(1, Math.max(0, confidenceRaw)) : 0.7;
+
+      return {
+        label: label.slice(0, 120),
+        unitAmount,
+        quantity,
+        totalAmount,
+        type: normalizeReceiptCostType(itemRecord.type, label),
+        confidence,
+      };
+    })
+    .filter((item): item is ReceiptParsedCost => Boolean(item))
+    .slice(0, 50);
+
+  if (items.length === 0) throw new Error("No valid receipt items found");
+
+  const merchantName = String(record.merchantName ?? record.merchant_name ?? "").trim();
+  const purchasedAt = String(record.purchasedAt ?? record.purchased_at ?? record.date ?? "").trim();
+  const totalAmount = normalizeReceiptAmount(record.totalAmount ?? record.total_amount ?? record.total)
+    || items.reduce((sum, item) => sum + item.totalAmount, 0);
+
+  return {
+    merchantName: merchantName || undefined,
+    purchasedAt: purchasedAt || undefined,
+    totalAmount,
+    currency: "VND",
+    items,
+  };
+}
+
+function readPositiveInteger(value: string | undefined, fallback: number) {
+  const parsed = Math.floor(Number(value));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function getDailyAiNeuronBudget(c: any) {
+  const configured = readPositiveInteger(c.env.AI_DAILY_NEURON_BUDGET, DEFAULT_AI_DAILY_NEURON_BUDGET);
+  return Math.min(configured, AI_FREE_DAILY_NEURON_LIMIT);
+}
+
+function getReceiptScanReservedNeurons(c: any) {
+  return readPositiveInteger(c.env.AI_RECEIPT_SCAN_RESERVED_NEURONS, DEFAULT_RECEIPT_SCAN_RESERVED_NEURONS);
+}
+
+function getUtcDayKey(date = new Date()) {
+  return date.toISOString().slice(0, 10);
+}
+
+function getNextUtcReset(date = new Date()) {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + 1)).toISOString();
+}
+
+async function ensureAiUsageTable(c: any) {
+  if (aiUsageTableEnsured) return;
+
+  await c.env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS ai_usage_daily (
+      usage_date TEXT NOT NULL,
+      feature TEXT NOT NULL,
+      estimated_neurons INTEGER NOT NULL DEFAULT 0,
+      request_count INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (usage_date, feature)
+    )
+  `).run();
+  await c.env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_ai_usage_daily_date ON ai_usage_daily(usage_date)").run();
+
+  aiUsageTableEnsured = true;
+}
+
+async function getAiUsageStatus(c: any, feature = RECEIPT_AI_FEATURE): Promise<AiUsageStatus> {
+  await ensureAiUsageTable(c);
+
+  const usageDate = getUtcDayKey();
+  const row = await c.env.DB.prepare(`
+    SELECT estimated_neurons, request_count
+    FROM ai_usage_daily
+    WHERE usage_date = ? AND feature = ?
+  `)
+    .bind(usageDate, feature)
+    .first() as { estimated_neurons: number; request_count: number } | null;
+
+  const dailyBudget = getDailyAiNeuronBudget(c);
+  const reservedNeuronsPerScan = getReceiptScanReservedNeurons(c);
+  const estimatedNeurons = Math.max(0, Math.round(Number(row?.estimated_neurons ?? 0)));
+  const requestCount = Math.max(0, Math.round(Number(row?.request_count ?? 0)));
+  const remainingNeurons = Math.max(0, dailyBudget - estimatedNeurons);
+
+  return {
+    feature,
+    usageDate,
+    estimatedNeurons,
+    requestCount,
+    dailyBudget,
+    reservedNeuronsPerScan,
+    remainingNeurons,
+    enabled: remainingNeurons >= reservedNeuronsPerScan,
+    resetAt: getNextUtcReset(),
+  };
+}
+
+async function reserveAiNeurons(c: any, feature = RECEIPT_AI_FEATURE): Promise<{ ok: true; reservation: AiUsageReservation } | { ok: false; status: AiUsageStatus }> {
+  await ensureAiUsageTable(c);
+
+  const now = new Date().toISOString();
+  const usageDate = getUtcDayKey();
+  const dailyBudget = getDailyAiNeuronBudget(c);
+  const reservedNeurons = getReceiptScanReservedNeurons(c);
+
+  await c.env.DB.prepare(`
+    INSERT OR IGNORE INTO ai_usage_daily (usage_date, feature, estimated_neurons, request_count, updated_at)
+    VALUES (?, ?, 0, 0, ?)
+  `)
+    .bind(usageDate, feature, now)
+    .run();
+
+  const result = await c.env.DB.prepare(`
+    UPDATE ai_usage_daily
+    SET estimated_neurons = estimated_neurons + ?,
+        request_count = request_count + 1,
+        updated_at = ?
+    WHERE usage_date = ?
+      AND feature = ?
+      AND estimated_neurons + ? <= ?
+  `)
+    .bind(reservedNeurons, now, usageDate, feature, reservedNeurons, dailyBudget)
+    .run();
+
+  if (!result.meta?.changes) {
+    return { ok: false, status: await getAiUsageStatus(c, feature) };
+  }
+
+  return { ok: true, reservation: { feature, usageDate, reservedNeurons } };
+}
+
+async function adjustAiNeuronReservation(c: any, reservation: AiUsageReservation, estimatedNeurons: number) {
+  const delta = Math.round(estimatedNeurons) - reservation.reservedNeurons;
+  if (delta === 0) return;
+
+  await c.env.DB.prepare(`
+    UPDATE ai_usage_daily
+    SET estimated_neurons = MAX(0, estimated_neurons + ?),
+        updated_at = ?
+    WHERE usage_date = ? AND feature = ?
+  `)
+    .bind(delta, new Date().toISOString(), reservation.usageDate, reservation.feature)
+    .run();
+}
+
+function findAiUsageRecord(value: unknown): Record<string, unknown> | null {
+  const record = getRecord(value);
+  if (!record) return null;
+
+  const usage = getRecord(record.usage);
+  if (usage) return usage;
+
+  const resultUsage = findAiUsageRecord(record.result);
+  if (resultUsage) return resultUsage;
+
+  const choices = Array.isArray(record.choices) ? record.choices : [];
+  for (const choice of choices) {
+    const choiceUsage = findAiUsageRecord(choice);
+    if (choiceUsage) return choiceUsage;
+  }
+
+  return null;
+}
+
+function readUsageTokenCount(usage: Record<string, unknown> | null, names: string[]) {
+  if (!usage) return 0;
+  for (const name of names) {
+    const count = Number(usage[name]);
+    if (Number.isFinite(count) && count > 0) return count;
+  }
+  return 0;
+}
+
+function estimateAiNeuronsFromResult(aiResult: unknown, fallbackNeurons: number) {
+  const usage = findAiUsageRecord(aiResult);
+  const inputTokens = readUsageTokenCount(usage, ["prompt_tokens", "input_tokens"]);
+  const outputTokens = readUsageTokenCount(usage, ["completion_tokens", "output_tokens"]);
+
+  if (!inputTokens && !outputTokens) return fallbackNeurons;
+
+  return Math.max(1, Math.ceil(
+    (inputTokens * GEMMA4_INPUT_NEURONS_PER_MILLION_TOKENS
+      + outputTokens * GEMMA4_OUTPUT_NEURONS_PER_MILLION_TOKENS) / 1_000_000
+  ));
 }
 
 function queueTask(c: any, task: Promise<unknown>, label: string) {
@@ -748,6 +1136,99 @@ sessions.post("/:id/members", async (c) => {
   await c.env.DB.prepare("DELETE FROM payments WHERE session_id = ? AND paid = 0").bind(id).run();
 
   return c.json({ success: true });
+});
+
+sessions.get("/:id/receipt/usage", async (c) => {
+  const { id } = c.req.param();
+  const session = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first<SessionRow>();
+  if (!session) return c.json({ error: "Not found" }, 404);
+  if (!(await canManageSession(c, session))) return c.json({ error: "Forbidden" }, 403);
+
+  return c.json(await getAiUsageStatus(c));
+});
+
+sessions.post("/:id/receipt/parse", async (c) => {
+  const { id } = c.req.param();
+  const session = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first<SessionRow>();
+  if (!session) return c.json({ error: "Not found" }, 404);
+  if (!(await canManageSession(c, session))) return c.json({ error: "Forbidden" }, 403);
+  if (!c.env.AI) return c.json({ error: "Workers AI is not configured" }, 503);
+
+  const formData = await c.req.formData();
+  const file = formData.get("file");
+  if (!(file instanceof File)) {
+    return c.json({ error: "Cần tải lên ảnh hóa đơn" }, 400);
+  }
+
+  const contentType = file.type || "application/octet-stream";
+  if (!RECEIPT_IMAGE_TYPES.has(contentType)) {
+    return c.json({ error: "Chỉ hỗ trợ ảnh JPG, PNG hoặc WebP" }, 400);
+  }
+
+  if (file.size <= 0 || file.size > MAX_RECEIPT_IMAGE_BYTES) {
+    return c.json({ error: "Ảnh hóa đơn cần nhỏ hơn 3MB" }, 400);
+  }
+
+  const imageBase64 = arrayBufferToBase64(await file.arrayBuffer());
+  const imageUrl = `data:${contentType};base64,${imageBase64}`;
+  const prompt = [
+    "Đọc ảnh hóa đơn giấy tiếng Việt và trích xuất các dòng chi phí để nhập vào app chia tiền cầu lông.",
+    "Trả về JSON đúng schema, không giải thích thêm.",
+    "Đơn vị tiền là VND. Bỏ dấu chấm/phẩy phân tách nghìn, không tự thêm số 0 nếu không chắc.",
+    "Mỗi item cần label ngắn, quantity, unitAmount, totalAmount và type.",
+    "type: court cho phí sân/giờ chơi; water cho nước/đồ uống; shuttle cho cầu lông/dụng cụ; other cho mục còn lại.",
+    "Nếu chỉ đọc được tổng hóa đơn mà không thấy dòng hàng, tạo một item label 'Tổng hóa đơn' type other.",
+  ].join("\n");
+
+  const aiReservation = await reserveAiNeurons(c);
+  if (!aiReservation.ok) {
+    return c.json({
+      error: "Tính năng quét hóa đơn AI đã tạm tắt vì gần hết hạn mức neuron miễn phí hôm nay.",
+      usage: aiReservation.status,
+    }, 429);
+  }
+
+  let aiResult: unknown = null;
+  try {
+    aiResult = await (c.env.AI as any).run(RECEIPT_AI_MODEL, {
+      messages: [
+        {
+          role: "system",
+          content: "Bạn là bộ trích xuất dữ liệu hóa đơn. Luôn trả JSON hợp lệ, ưu tiên độ chính xác số tiền.",
+        },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: prompt },
+            { type: "image_url", image_url: { url: imageUrl, detail: "high" } },
+          ],
+        },
+      ],
+      temperature: 0,
+      max_completion_tokens: 1200,
+      response_format: {
+        type: "json_schema",
+        json_schema: RECEIPT_JSON_SCHEMA,
+      },
+    });
+
+    const parsed = sanitizeReceiptParseResult(getAiResponsePayload(aiResult));
+    await adjustAiNeuronReservation(
+      c,
+      aiReservation.reservation,
+      estimateAiNeuronsFromResult(aiResult, aiReservation.reservation.reservedNeurons)
+    );
+    return c.json({ ...parsed, aiUsage: await getAiUsageStatus(c) });
+  } catch (error) {
+    await adjustAiNeuronReservation(
+      c,
+      aiReservation.reservation,
+      aiResult ? estimateAiNeuronsFromResult(aiResult, aiReservation.reservation.reservedNeurons) : 0
+    );
+    console.error("[receipt-ai]", error);
+    const message = error instanceof Error ? error.message : "Không đọc được hóa đơn";
+    return c.json({ error: `Không đọc được hóa đơn: ${message}` }, 502);
+  }
 });
 
 sessions.post("/:id/costs", async (c) => {

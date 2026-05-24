@@ -4,6 +4,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeft,
   ArrowRightLeft,
+  Camera,
   Check,
   Copy,
   Download,
@@ -40,7 +41,7 @@ import { formatCurrency, formatDate } from "@/lib/utils";
 import { useGroupsStore } from "@/stores/groupsStore";
 import { useMembersStore } from "@/stores/membersStore";
 import { useSessionsStore } from "@/stores/sessionsStore";
-import type { Cost, Member, Payment } from "@/types";
+import type { AiUsageStatus, Cost, Member, Payment, ReceiptParseResult, ReceiptParsedCost } from "@/types";
 
 const TABS = ["Điểm danh", "Chi phí", "Thanh toán"] as const;
 type Tab = (typeof TABS)[number];
@@ -93,6 +94,22 @@ type ImportedCostRow = {
   consumer_pending: number;
   costId: string | null;
 };
+
+type ReceiptDraftItem = ReceiptParsedCost & {
+  id: string;
+  selected: boolean;
+  payerId: string;
+  consumerMode: CostConsumerMode;
+  consumerIds: string[];
+};
+
+type ReceiptDraft = Omit<ReceiptParseResult, "items"> & {
+  items: ReceiptDraftItem[];
+};
+
+const MAX_RECEIPT_IMAGE_EDGE = 1400;
+const MAX_RECEIPT_UPLOAD_BYTES = 3 * 1024 * 1024;
+const RECEIPT_IMAGE_QUALITY = 0.82;
 
 type BankDirectoryEntry = {
   bin: string;
@@ -232,6 +249,65 @@ function safeFileName(value: string) {
   return value.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "qr";
 }
 
+function createReceiptDraftId(index: number) {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
+  return `${Date.now()}-${index}`;
+}
+
+function loadImage(file: File) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(image);
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("Không đọc được ảnh hóa đơn."));
+    };
+    image.src = url;
+  });
+}
+
+async function resizeReceiptImage(file: File) {
+  if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
+    throw new Error("Chỉ hỗ trợ ảnh JPG, PNG hoặc WebP.");
+  }
+
+  const image = await loadImage(file);
+  const largestSide = Math.max(image.width, image.height);
+  const scale = Math.min(1, MAX_RECEIPT_IMAGE_EDGE / largestSide);
+
+  if (scale >= 1 && file.size <= MAX_RECEIPT_UPLOAD_BYTES) {
+    return file;
+  }
+
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(image.width * scale));
+  canvas.height = Math.max(1, Math.round(image.height * scale));
+
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("Không xử lý được ảnh hóa đơn.");
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+  const blob = await new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((nextBlob) => {
+      if (nextBlob) resolve(nextBlob);
+      else reject(new Error("Không nén được ảnh hóa đơn."));
+    }, "image/jpeg", RECEIPT_IMAGE_QUALITY);
+  });
+
+  if (blob.size > MAX_RECEIPT_UPLOAD_BYTES) {
+    throw new Error("Ảnh hóa đơn vẫn quá lớn sau khi nén. Hãy chụp gần hơn hoặc cắt bớt nền.");
+  }
+
+  const name = file.name.replace(/\.[^.]+$/, "") || "receipt";
+  return new File([blob], `${name}.jpg`, { type: "image/jpeg" });
+}
+
 export default function SessionDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -246,6 +322,10 @@ export default function SessionDetailPage() {
   const [addingCost, setAddingCost] = useState(false);
   const [editingCostId, setEditingCostId] = useState<string | null>(null);
   const [importingCosts, setImportingCosts] = useState(false);
+  const [scanningReceipt, setScanningReceipt] = useState(false);
+  const [savingReceiptDraft, setSavingReceiptDraft] = useState(false);
+  const [receiptDraft, setReceiptDraft] = useState<ReceiptDraft | null>(null);
+  const [receiptAiUsage, setReceiptAiUsage] = useState<AiUsageStatus | null>(null);
   const [recalculating, setRecalculating] = useState(false);
   const [joining, setJoining] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -257,6 +337,7 @@ export default function SessionDetailPage() {
   const [bankDialogPayment, setBankDialogPayment] = useState<PaymentQrData | null>(null);
   const [bankOpenNotice, setBankOpenNotice] = useState("");
   const costImportInputRef = useRef<HTMLInputElement | null>(null);
+  const receiptInputRef = useRef<HTMLInputElement | null>(null);
 
   const currentUserId = (authSession?.user as { id?: string } | undefined)?.id;
   const managersList = useMemo(() => parseManagers(currentSession?.managers), [currentSession?.managers]);
@@ -302,6 +383,26 @@ export default function SessionDetailPage() {
       setRecipientId(raw);
     }
   }, [currentSession?.id, currentSession?.payment_recipient]);
+
+  useEffect(() => {
+    if (!currentSession?.id || !canManageSession || tab !== "Chi phí") {
+      setReceiptAiUsage(null);
+      return;
+    }
+
+    let cancelled = false;
+    api.getReceiptAiUsage(currentSession.id)
+      .then((usage) => {
+        if (!cancelled) setReceiptAiUsage(usage);
+      })
+      .catch(() => {
+        if (!cancelled) setReceiptAiUsage(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentSession?.id, canManageSession, tab]);
 
   const s = currentSession;
 
@@ -617,6 +718,154 @@ export default function SessionDetailPage() {
       alert(error.message);
     } finally {
       setImportingCosts(false);
+    }
+  };
+
+  const handleScanReceipt = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    if (receiptAiUsage && !receiptAiUsage.enabled) {
+      alert("Tính năng quét hóa đơn AI đang tạm tắt vì gần hết hạn mức neuron miễn phí hôm nay.");
+      return;
+    }
+
+    setScanningReceipt(true);
+    try {
+      const preparedImage = await resizeReceiptImage(file);
+      const formData = new FormData();
+      formData.append("file", preparedImage);
+
+      const parsed = await api.parseReceipt(s.id, formData);
+      if (parsed.aiUsage) setReceiptAiUsage(parsed.aiUsage);
+      if (parsed.items.length === 0) throw new Error("Không tìm thấy dòng chi phí nào trong hóa đơn.");
+
+      setReceiptDraft({
+        ...parsed,
+        items: parsed.items.map((item, index) => {
+          const quantity = Math.max(1, Math.round(Number(item.quantity || 1)));
+          const unitAmount = Math.max(0, Math.round(Number(item.unitAmount || item.totalAmount / quantity || 0)));
+          const totalAmount = Math.max(0, Math.round(Number(item.totalAmount || unitAmount * quantity)));
+          return {
+            ...item,
+            id: createReceiptDraftId(index),
+            selected: totalAmount > 0,
+            payerId: "",
+            consumerMode: "shared",
+            consumerIds: [],
+            quantity,
+            unitAmount,
+            totalAmount,
+          };
+        }),
+      });
+    } catch (error: any) {
+      alert(error.message);
+    } finally {
+      setScanningReceipt(false);
+    }
+  };
+
+  const updateReceiptDraftItem = (itemId: string, patch: Partial<ReceiptDraftItem>) => {
+    setReceiptDraft((current) => current
+      ? {
+        ...current,
+        items: current.items.map((item) => item.id === itemId ? { ...item, ...patch } : item),
+      }
+      : current);
+  };
+
+  const updateReceiptDraftAmount = (itemId: string, field: "unitAmount" | "quantity", raw: string) => {
+    setReceiptDraft((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        items: current.items.map((item) => {
+          if (item.id !== itemId) return item;
+          const next = { ...item };
+          if (field === "quantity") {
+            next.quantity = parseImportQuantity(raw) ?? 1;
+          } else {
+            next.unitAmount = parseImportAmount(raw) ?? 0;
+          }
+          next.totalAmount = Math.round(next.unitAmount * next.quantity);
+          return next;
+        }),
+      };
+    });
+  };
+
+  const setReceiptDraftConsumerMode = (itemId: string, consumerMode: CostConsumerMode) => {
+    setReceiptDraft((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        items: current.items.map((item) => item.id === itemId
+          ? {
+            ...item,
+            consumerMode,
+            consumerIds: consumerMode === "specific" ? item.consumerIds : [],
+          }
+          : item),
+      };
+    });
+  };
+
+  const toggleReceiptDraftConsumer = (itemId: string, memberId: string) => {
+    setReceiptDraft((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        items: current.items.map((item) => {
+          if (item.id !== itemId) return item;
+          const selected = item.consumerIds.includes(memberId);
+          return {
+            ...item,
+            consumerIds: selected
+              ? item.consumerIds.filter((idValue) => idValue !== memberId)
+              : [...item.consumerIds, memberId],
+          };
+        }),
+      };
+    });
+  };
+
+  const handleAddReceiptDraftCosts = async () => {
+    if (!receiptDraft) return;
+    const selectedItems = receiptDraft.items.filter((item) => item.selected);
+    if (selectedItems.length === 0) {
+      alert("Chọn ít nhất một dòng hóa đơn để thêm.");
+      return;
+    }
+    const missingConsumers = selectedItems.find((item) => item.consumerMode === "specific" && item.consumerIds.length === 0);
+    if (missingConsumers) {
+      alert(`Chọn người dùng cho "${missingConsumers.label}".`);
+      return;
+    }
+
+    setSavingReceiptDraft(true);
+    try {
+      for (const item of selectedItems) {
+        const consumerIds = item.consumerMode === "specific" ? item.consumerIds : [];
+        await api.addCost(s.id, {
+          label: item.label.trim(),
+          amount: Math.round(item.totalAmount || item.unitAmount * item.quantity),
+          quantity: item.quantity,
+          type: item.type,
+          payer_id: item.payerId || null,
+          consumer_id: consumerIds[0] ?? null,
+          consumer_ids: consumerIds.length > 0 ? JSON.stringify(consumerIds) : null,
+          consumer_pending: item.consumerMode === "pending" ? 1 : 0,
+        });
+      }
+
+      setReceiptDraft(null);
+      await refresh(s.id);
+      alert(`Đã thêm ${selectedItems.length} dòng từ hóa đơn.`);
+    } catch (error: any) {
+      alert(error.message);
+    } finally {
+      setSavingReceiptDraft(false);
     }
   };
 
@@ -942,6 +1191,12 @@ export default function SessionDetailPage() {
   };
 
   const creatorName = s.members.find((member) => member.user_id === s.created_by)?.name ?? "Ẩn danh";
+  const receiptDraftSelectedItems = receiptDraft?.items.filter((item) => item.selected) ?? [];
+  const receiptDraftSelectedTotal = receiptDraftSelectedItems.reduce((sum, item) => sum + item.totalAmount, 0);
+  const receiptAiDisabled = receiptAiUsage?.enabled === false;
+  const receiptAiUsageText = receiptAiUsage
+    ? `${receiptAiUsage.estimatedNeurons.toLocaleString("vi-VN")}/${receiptAiUsage.dailyBudget.toLocaleString("vi-VN")} neurons hôm nay`
+    : "";
 
   return (
     <div>
@@ -1247,7 +1502,7 @@ export default function SessionDetailPage() {
 
       {tab === "Chi phí" && (
         <div className="space-y-4">
-          <div className="flex gap-2">
+          <div className={`grid grid-cols-1 gap-2 ${canManageSession ? "sm:grid-cols-3" : ""}`}>
             <Button variant="outline" size="sm" onClick={handleExportCosts} className="flex-1">
               <Download size={14} className="mr-1" />
               Xuất Excel
@@ -1261,6 +1516,13 @@ export default function SessionDetailPage() {
                   onChange={handleImportCosts}
                   className="hidden"
                 />
+                <input
+                  ref={receiptInputRef}
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
+                  onChange={handleScanReceipt}
+                  className="hidden"
+                />
                 <Button
                   variant="outline"
                   size="sm"
@@ -1271,9 +1533,31 @@ export default function SessionDetailPage() {
                   <Upload size={14} className="mr-1" />
                   {importingCosts ? "Đang nhập..." : "Nhập Excel"}
                 </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => receiptInputRef.current?.click()}
+                  disabled={scanningReceipt || receiptAiDisabled}
+                  className="flex-1"
+                >
+                  <Camera size={14} className="mr-1" />
+                  {receiptAiDisabled ? "Tạm tắt AI" : scanningReceipt ? "Đang quét..." : "Quét hóa đơn"}
+                </Button>
               </>
             )}
           </div>
+          {canManageSession && receiptAiUsage && (
+            <div className={`rounded-lg border px-3 py-2 text-xs ${
+              receiptAiDisabled
+                ? "border-amber-200 bg-amber-50 text-amber-700"
+                : "border-gray-200 bg-gray-50 text-gray-500"
+            }`}
+            >
+              AI hóa đơn: {receiptAiUsageText}. {receiptAiDisabled
+                ? "Đã gần hết hạn mức miễn phí, tự mở lại sau 00:00 UTC."
+                : `Còn khoảng ${receiptAiUsage.remainingNeurons.toLocaleString("vi-VN")} neurons.`}
+            </div>
+          )}
 
           {canManageSession && !editingCostId && (
             <div className="space-y-3 rounded-xl bg-gray-50 p-4">
@@ -1667,6 +1951,166 @@ export default function SessionDetailPage() {
           )}
         </div>
       )}
+
+      <Dialog
+        open={Boolean(receiptDraft)}
+        onClose={() => {
+          if (!savingReceiptDraft) setReceiptDraft(null);
+        }}
+        title="Duyệt hóa đơn"
+        className="sm:max-w-2xl"
+      >
+        {receiptDraft && (
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 gap-2 rounded-lg bg-gray-50 p-3 text-sm sm:grid-cols-3">
+              <div>
+                <div className="text-xs text-gray-500">Cửa hàng</div>
+                <div className="font-medium text-gray-900">{receiptDraft.merchantName || "-"}</div>
+              </div>
+              <div>
+                <div className="text-xs text-gray-500">Ngày hóa đơn</div>
+                <div className="font-medium text-gray-900">{receiptDraft.purchasedAt || "-"}</div>
+              </div>
+              <div>
+                <div className="text-xs text-gray-500">Tổng nhận diện</div>
+                <div className="font-semibold text-gray-900">{formatCurrency(receiptDraft.totalAmount ?? 0)}</div>
+              </div>
+            </div>
+
+            <div className="max-h-[55vh] space-y-3 overflow-y-auto pr-1">
+              {receiptDraft.items.map((item, index) => (
+                <div
+                  key={item.id}
+                  className={`rounded-lg border p-3 ${item.selected ? "border-gray-200 bg-white" : "border-gray-100 bg-gray-50 opacity-75"}`}
+                >
+                  <div className="mb-3 flex items-start gap-2">
+                    <input
+                      type="checkbox"
+                      checked={item.selected}
+                      onChange={(event) => updateReceiptDraftItem(item.id, { selected: event.target.checked })}
+                      disabled={savingReceiptDraft}
+                      className="mt-2 h-4 w-4 rounded border-gray-300 text-green-600 focus:ring-green-500"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <Input
+                        value={item.label}
+                        onChange={(event) => updateReceiptDraftItem(item.id, { label: event.target.value })}
+                        disabled={!item.selected || savingReceiptDraft}
+                        placeholder={`Dòng ${index + 1}`}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                    <select
+                      value={item.type}
+                      onChange={(event) => updateReceiptDraftItem(item.id, { type: event.target.value as Cost["type"] })}
+                      disabled={!item.selected || savingReceiptDraft}
+                      className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 disabled:bg-gray-100"
+                    >
+                      {COST_TYPES.map((costType) => (
+                        <option key={costType.value} value={costType.value}>{costType.label}</option>
+                      ))}
+                    </select>
+                    <Input
+                      value={item.unitAmount || ""}
+                      onChange={(event) => updateReceiptDraftAmount(item.id, "unitAmount", event.target.value)}
+                      disabled={!item.selected || savingReceiptDraft}
+                      placeholder="Đơn giá"
+                      type="number"
+                      min="0"
+                      step="1"
+                    />
+                    <Input
+                      value={item.quantity || ""}
+                      onChange={(event) => updateReceiptDraftAmount(item.id, "quantity", event.target.value)}
+                      disabled={!item.selected || savingReceiptDraft}
+                      placeholder="Số lượng"
+                      type="number"
+                      min="1"
+                      step="1"
+                    />
+                  </div>
+
+                  <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    <div>
+                      <label className="mb-1 block text-xs text-gray-500">Người ứng tiền</label>
+                      <select
+                        value={item.payerId}
+                        onChange={(event) => updateReceiptDraftItem(item.id, { payerId: event.target.value })}
+                        disabled={!item.selected || savingReceiptDraft}
+                        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 disabled:bg-gray-100"
+                      >
+                        <option value="">Người nhận chung</option>
+                        {s.members.map((member) => (
+                          <option key={member.id} value={member.id}>{member.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs text-gray-500">Người dùng</label>
+                      <select
+                        value={item.consumerMode}
+                        onChange={(event) => setReceiptDraftConsumerMode(item.id, event.target.value as CostConsumerMode)}
+                        disabled={!item.selected || savingReceiptDraft}
+                        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 disabled:bg-gray-100"
+                      >
+                        <option value="shared">Dùng chung</option>
+                        <option value="specific">Chọn người dùng</option>
+                        <option value="pending">Chưa rõ</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {item.consumerMode === "specific" && item.selected && (
+                    <div className="mt-2 grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+                      {s.members.map((member) => {
+                        const checked = item.consumerIds.includes(member.id);
+                        return (
+                          <label
+                            key={member.id}
+                            className={`flex min-w-0 items-center gap-2 rounded-lg border px-2.5 py-2 text-sm transition-colors ${
+                              checked ? "border-green-300 bg-green-50 text-green-900" : "border-gray-200 bg-white text-gray-700"
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => toggleReceiptDraftConsumer(item.id, member.id)}
+                              disabled={savingReceiptDraft}
+                              className="h-4 w-4 flex-shrink-0 rounded border-gray-300 text-green-600 focus:ring-green-500"
+                            />
+                            <span className="truncate">{member.name}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  <div className="mt-2 flex items-center justify-between text-sm">
+                    <span className="text-gray-500">Thành tiền</span>
+                    <span className="font-semibold text-gray-900">{formatCurrency(item.totalAmount)}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="flex items-center justify-between rounded-lg border border-green-200 bg-green-50 p-3 text-sm">
+              <span className="font-medium text-green-800">{receiptDraftSelectedItems.length} dòng được chọn</span>
+              <span className="font-bold text-green-800">{formatCurrency(receiptDraftSelectedTotal)}</span>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <Button variant="outline" onClick={() => setReceiptDraft(null)} disabled={savingReceiptDraft}>
+                Hủy
+              </Button>
+              <Button onClick={handleAddReceiptDraftCosts} disabled={savingReceiptDraft || receiptDraftSelectedItems.length === 0}>
+                {savingReceiptDraft ? "Đang thêm..." : "Thêm chi phí"}
+              </Button>
+            </div>
+          </div>
+        )}
+      </Dialog>
 
       <Dialog
         open={Boolean(bankDialogPayment)}

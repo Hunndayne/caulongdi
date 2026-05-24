@@ -148,6 +148,36 @@ export interface Cost {
   consumer_pending?: number;   // 1 = chưa rõ ai dùng, không tính vào chia đều
 }
 
+export interface ReceiptParsedCost {
+  label: string;
+  unitAmount: number;
+  quantity: number;
+  totalAmount: number;
+  type: Cost["type"];
+  confidence?: number;
+}
+
+export interface ReceiptParseResult {
+  merchantName?: string;
+  purchasedAt?: string;
+  totalAmount?: number;
+  currency: "VND";
+  items: ReceiptParsedCost[];
+  aiUsage?: AiUsageStatus;
+}
+
+export interface AiUsageStatus {
+  feature: string;
+  usageDate: string;
+  estimatedNeurons: number;
+  requestCount: number;
+  dailyBudget: number;
+  reservedNeuronsPerScan: number;
+  remainingNeurons: number;
+  enabled: boolean;
+  resetAt: string;
+}
+
 export interface Payment {
   id: string;
   session_id: string;

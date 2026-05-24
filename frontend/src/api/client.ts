@@ -13,12 +13,16 @@ import type {
   GroupSearchResult,
   GroupInviteLink,
   JoinLinkPreview,
+  ReceiptParseResult,
+  AiUsageStatus,
 } from "@/types";
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
+  const isFormData = typeof FormData !== "undefined" && options?.body instanceof FormData;
+  const headers = isFormData ? options?.headers : { "Content-Type": "application/json", ...options?.headers };
   const res = await fetch(url, {
     credentials: "include",
-    headers: { "Content-Type": "application/json", ...options?.headers },
+    headers,
     ...options,
   });
   if (!res.ok) {
@@ -83,6 +87,10 @@ export const api = {
     request<{ success: boolean }>(`/api/sessions/${sessionId}/costs/${costId}`, { method: "DELETE" }),
   recalculate: (sessionId: string) =>
     request<Payment[]>(`/api/sessions/${sessionId}/recalculate`, { method: "POST" }),
+  getReceiptAiUsage: (sessionId: string) =>
+    request<AiUsageStatus>(`/api/sessions/${sessionId}/receipt/usage`),
+  parseReceipt: (sessionId: string, data: FormData) =>
+    request<ReceiptParseResult>(`/api/sessions/${sessionId}/receipt/parse`, { method: "POST", body: data }),
 
   // Payments
   togglePayment: (id: string) =>

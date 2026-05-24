@@ -1,6 +1,7 @@
 export interface Env {
   DB: D1Database;
   ASSETS: Fetcher;
+  AI: Ai;
   FRONTEND_URL: string;
   GOOGLE_CLIENT_ID: string;
   GOOGLE_CLIENT_SECRET: string;
@@ -13,6 +14,8 @@ export interface Env {
   SMTP_PASSWORD: string;
   SMTP_FROM_EMAIL?: string;
   SMTP_FROM_NAME?: string;
+  AI_DAILY_NEURON_BUDGET?: string;
+  AI_RECEIPT_SCAN_RESERVED_NEURONS?: string;
 }
 
 export type AppRole = 'admin' | 'member';
