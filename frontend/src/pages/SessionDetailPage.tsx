@@ -1967,6 +1967,24 @@ export default function SessionDetailPage() {
         </div>
       )}
 
+      {scanningReceipt && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+          <div className="flex flex-col items-center gap-4 rounded-2xl bg-white px-6 py-5 shadow-xl">
+            <img
+              src="https://storage.hiseku.net/loading.webp"
+              alt="Đang xử lý"
+              width={360}
+              height={360}
+              className="h-40 w-40 sm:h-56 sm:w-56"
+            />
+            <div className="text-center">
+              <div className="text-base font-semibold text-gray-900">Đang quét hóa đơn…</div>
+              <div className="mt-1 text-xs text-gray-500">AI đang đọc và bóc tách các dòng chi phí. Quá trình này có thể mất 10–30 giây.</div>
+            </div>
+          </div>
+        </div>
+      )}
+
       <Dialog
         open={Boolean(receiptDraft)}
         onClose={() => {
