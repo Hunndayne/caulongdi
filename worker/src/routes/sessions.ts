@@ -351,6 +351,20 @@ function parseReceiptFromReasoning(reasoning: string): ReceiptParseResult | null
     });
   }
 
+  // Format A2 (preferred when present): "  1.  `RAW | q | UnitLbl | unit | total` -> label: \"restored\", quantity: X, unitAmount: Y, totalAmount: Z, type: \"T\""
+  for (const m of reasoning.matchAll(/^\s*\d+\.\s*[`'"]([^`'"]+)[`'"]\s*->\s*label\s*:\s*["']([^"']+)["']\s*,\s*quantity\s*:\s*([\d.]+)\s*,\s*unitAmount\s*:\s*([\d.]+)\s*,\s*totalAmount\s*:\s*([\d.]+)\s*,\s*type\s*:\s*["']?(\w+)/gim)) {
+    const rawRow = m[1];
+    const rawLabel = rawRow.split("|")[0].trim();
+    if (!rawLabel) continue;
+    upsert(rawLabel, {
+      restoredLabel: m[2].trim(),
+      quantityRaw: m[3],
+      unitAmount: normalizeReceiptAmount(m[4]),
+      totalAmount: normalizeReceiptAmount(m[5]),
+      type: m[6].toLowerCase(),
+    });
+  }
+
   // Format B: "`LABEL` -> `restored` (type: other)" — type spec optional
   for (const m of reasoning.matchAll(/[`'"]([^`'"]+)[`'"]\s*->\s*[`'"]([^`'"]+)[`'"](?:\s*\(\s*type\s*:\s*(\w+))?/gi)) {
     upsert(m[1], {
