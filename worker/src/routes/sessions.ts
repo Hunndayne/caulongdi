@@ -163,6 +163,24 @@ async function isGroupAdmin(c: any, groupId?: string | null) {
   return row?.role === "admin";
 }
 
+async function canOverrideAttendanceLock(c: any, session: Pick<SessionRow, "group_id">) {
+  if (c.get("userRole") === "admin") return true;
+  return isGroupAdmin(c, session.group_id);
+}
+
+async function sessionHasCalculatedPayments(c: any, sessionId: string) {
+  const row = await c.env.DB.prepare(`
+    SELECT id
+    FROM payments
+    WHERE session_id = ?
+    LIMIT 1
+  `)
+    .bind(sessionId)
+    .first() as { id: string } | null;
+
+  return Boolean(row);
+}
+
 async function canAccessSession(c: any, session: SessionRow) {
   if (!session.group_id) return true;
   if (c.get("userRole") === "admin") return true;
@@ -655,6 +673,10 @@ sessions.delete("/:id/join", async (c) => {
     return c.json({ error: "Forbidden" }, 403);
   }
 
+  if (await sessionHasCalculatedPayments(c, id) && !(await canOverrideAttendanceLock(c, session as SessionRow))) {
+    return c.json({ error: "Đã tính tiền, chỉ admin mới được bỏ điểm danh buổi này" }, 409);
+  }
+
   const member = await c.env.DB.prepare(`
     SELECT m.id
     FROM members m
@@ -697,10 +719,27 @@ sessions.post("/:id/members", async (c) => {
   if (!(await canManageSession(c, session))) return c.json({ error: "Forbidden" }, 403);
 
   const body = await c.req.json<{ memberIds: string[] }>();
+  const nextMemberIds = Array.isArray(body.memberIds) ? body.memberIds : [];
+
+  if (await sessionHasCalculatedPayments(c, id) && !(await canOverrideAttendanceLock(c, session))) {
+    const currentMembers = await c.env.DB.prepare(`
+      SELECT member_id
+      FROM session_members
+      WHERE session_id = ?
+    `)
+      .bind(id)
+      .all<{ member_id: string }>();
+    const nextMemberIdSet = new Set(nextMemberIds);
+    const removesMember = currentMembers.results.some((member) => !nextMemberIdSet.has(member.member_id));
+    if (removesMember) {
+      return c.json({ error: "Đã tính tiền, chỉ admin mới được bỏ điểm danh buổi này" }, 409);
+    }
+  }
+
   await c.env.DB.prepare("DELETE FROM session_members WHERE session_id = ?").bind(id).run();
 
-  if (body.memberIds?.length) {
-    const stmts = body.memberIds.map((memberId) =>
+  if (nextMemberIds.length) {
+    const stmts = nextMemberIds.map((memberId) =>
       c.env.DB.prepare("INSERT INTO session_members (session_id, member_id, attended) VALUES (?, ?, 1)")
         .bind(id, memberId)
     );

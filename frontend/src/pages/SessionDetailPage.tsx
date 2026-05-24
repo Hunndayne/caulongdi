@@ -316,6 +316,9 @@ export default function SessionDetailPage() {
   const checkedInIds = new Set(s.members.map((member) => member.id));
   const myMember = currentUserId ? s.members.find((member) => member.user_id === currentUserId) : undefined;
   const hasJoined = Boolean(myMember);
+  const hasCalculatedPayments = s.payments.length > 0;
+  const canOverrideAttendanceLock = isAdminUser(authSession?.user) || groupRole === "admin";
+  const attendanceLeaveLocked = hasCalculatedPayments && !canOverrideAttendanceLock;
 
   const allMembers = [...members, ...s.members];
   const memberById = new Map<string, Member>();
@@ -393,15 +396,30 @@ export default function SessionDetailPage() {
 
   const toggleMember = async (memberId: string) => {
     if (!canManageSession) return;
-    const nextIds = checkedInIds.has(memberId)
+    const isLeaving = checkedInIds.has(memberId);
+    if (isLeaving && attendanceLeaveLocked) {
+      alert("Đã tính tiền, chỉ admin mới được bỏ điểm danh buổi này.");
+      return;
+    }
+
+    const nextIds = isLeaving
       ? [...checkedInIds].filter((idValue) => idValue !== memberId)
       : [...checkedInIds, memberId];
-    await api.setSessionMembers(s.id, nextIds);
-    await refresh(s.id);
+    try {
+      await api.setSessionMembers(s.id, nextIds);
+      await refresh(s.id);
+    } catch (error: any) {
+      alert(error.message);
+    }
   };
 
   const handleJoinToggle = async () => {
     if (s.status !== "upcoming") return;
+    if (hasJoined && attendanceLeaveLocked) {
+      alert("Đã tính tiền, chỉ admin mới được bỏ điểm danh buổi này.");
+      return;
+    }
+
     setJoining(true);
     try {
       if (hasJoined) {
@@ -961,7 +979,7 @@ export default function SessionDetailPage() {
       <div className="mb-4 grid grid-cols-2 gap-2">
         <Button
           onClick={handleJoinToggle}
-          disabled={joining || s.status !== "upcoming"}
+          disabled={joining || s.status !== "upcoming" || (hasJoined && attendanceLeaveLocked)}
           variant={hasJoined ? "outline" : "default"}
           className="w-full"
         >
@@ -973,6 +991,12 @@ export default function SessionDetailPage() {
           {shareCopied ? "Đã copy" : "Chia sẻ"}
         </Button>
       </div>
+
+      {attendanceLeaveLocked && (
+        <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700">
+          Đã tính tiền, chỉ admin mới được bỏ điểm danh khỏi buổi này.
+        </div>
+      )}
 
       {canManageSessionStrict && (
         <div className="mb-4">
@@ -1201,12 +1225,13 @@ export default function SessionDetailPage() {
           <div className="space-y-2">
             {(s.group_id && members.filter((member) => member.is_active).length > 0 ? members.filter((member) => member.is_active) : s.members).map((member) => {
               const checked = checkedInIds.has(member.id);
+              const leaveLocked = checked && attendanceLeaveLocked;
               return (
                 <button
                   key={member.id}
                   onClick={() => toggleMember(member.id)}
-                  disabled={!canManageSession}
-                  className={`flex w-full items-center gap-3 rounded-xl border p-3 transition-colors ${checked ? "border-green-200 bg-green-50" : "border-gray-100 bg-white"}`}
+                  disabled={!canManageSession || leaveLocked}
+                  className={`flex w-full items-center gap-3 rounded-xl border p-3 transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${checked ? "border-green-200 bg-green-50" : "border-gray-100 bg-white"}`}
                 >
                   <Avatar name={member.name} color={member.avatar_color} size="sm" />
                   <span className="flex-1 text-left font-medium text-gray-900">{member.name}</span>
