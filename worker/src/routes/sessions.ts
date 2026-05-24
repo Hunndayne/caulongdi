@@ -105,7 +105,7 @@ type PaymentNotificationRow = {
   amount_owed: number;
 };
 
-const RECEIPT_AI_MODEL = "@cf/google/gemma-4-26b-a4b-it";
+const RECEIPT_AI_MODEL = "@cf/google/gemma-3-12b-it";
 const RECEIPT_AI_FEATURE = "receipt_scan";
 const GEMMA4_INPUT_NEURONS_PER_MILLION_TOKENS = 9091;
 const GEMMA4_OUTPUT_NEURONS_PER_MILLION_TOKENS = 27273;
@@ -385,6 +385,17 @@ function parseReceiptFromReasoning(reasoning: string): ReceiptParseResult | null
 
   // Original "*Item N:* `label`, qty X, unit Y, total Z, type T"
   for (const m of reasoning.matchAll(/\*\s*Item\s+\d+\s*:\*?\s*[`'"]([^`'"]+)[`'"]\s*,?\s*qty\s+([\d.]+)\s*,?\s*unit\s+([\d.]+)\s*,?\s*total\s+([\d.]+)\s*,?\s*type\s+(\w+)/gi)) {
+    upsert(m[1], {
+      restoredLabel: m[1].trim(),
+      quantityRaw: m[2],
+      unitAmount: normalizeReceiptAmount(m[3]),
+      totalAmount: normalizeReceiptAmount(m[4]),
+      type: m[5].toLowerCase(),
+    });
+  }
+
+  // Format F (numeric final list): "1. `restored label`, qty X, unit Y, total Z, type T"
+  for (const m of reasoning.matchAll(/^\s*\d+\.\s*[`'"]([^`'"]+)[`'"]\s*,\s*qty\s+([\d.]+)\s*,\s*unit\s+([\d.]+)\s*,\s*total\s+([\d.]+)\s*,\s*type\s+(\w+)/gim)) {
     upsert(m[1], {
       restoredLabel: m[1].trim(),
       quantityRaw: m[2],
@@ -1488,7 +1499,6 @@ sessions.post("/:id/receipt/parse", async (c) => {
     "- Hóa đơn: 'GO! THIT HEO XAY VIE | 0.342 | Kg | 99,900 | 34,166' → output: label='thịt heo xay (0.342 kg)', quantity=1, unitAmount=34166, totalAmount=34166.",
     "- Hóa đơn: 'KHOAI LANG GIANG NHUA | 0.402 | Kg | 17,900 | 7,196' → output: label='khoai lang giấy nhựa (0.402 kg)', quantity=1, unitAmount=7196, totalAmount=7196.",
     "Lưu ý: với hàng bán theo cái/gói/hộp/lốc thì giữ quantity là số nguyên bình thường (1, 2, 3...).",
-    "QUY TRÌNH BẮT BUỘC: (1) đọc ảnh → (2) liệt kê items 1 lần trong đầu → (3) xuất JSON content NGAY. KHÔNG self-correct, KHÔNG refine, KHÔNG liệt kê lại. Mỗi item chỉ xuất hiện 1 lần duy nhất trong output JSON.",
     "",
     "VÍ DỤ output mẫu (chỉ tham khảo format, KHÔNG copy nội dung):",
     JSON.stringify({
@@ -1529,7 +1539,7 @@ sessions.post("/:id/receipt/parse", async (c) => {
         },
       ],
       temperature: 0,
-      max_completion_tokens: 6000,
+      max_completion_tokens: 2500,
       response_format: {
         type: "json_schema",
         json_schema: RECEIPT_JSON_SCHEMA,
