@@ -1811,7 +1811,6 @@ sessions.post("/:id/receipt/parse", async (c) => {
         },
       ],
       temperature: 0,
-      max_completion_tokens: 2500,
       response_format: { type: "json_schema", json_schema: RECEIPT_JSON_SCHEMA },
     });
     console.log("[receipt-ai] raw response", JSON.stringify(aiResult));
