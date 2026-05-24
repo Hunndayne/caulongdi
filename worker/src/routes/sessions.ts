@@ -1321,7 +1321,11 @@ sessions.post("/:id/receipt/parse", async (c) => {
     );
     console.error("[receipt-ai] failed", error, "raw response:", aiResult ? JSON.stringify(aiResult) : "<no response>");
     const message = error instanceof Error ? error.message : "Không đọc được hóa đơn";
-    return c.json({ error: `Không đọc được hóa đơn: ${message}` }, 502);
+    return c.json({
+      error: `Không đọc được hóa đơn: ${message}`,
+      aiRaw: aiResult ?? null,
+      aiPayload: aiResult ? getAiResponsePayload(aiResult) : null,
+    }, 502);
   }
 });
 
