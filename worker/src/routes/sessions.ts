@@ -313,42 +313,113 @@ function getReasoningText(value: unknown): string | null {
   return null;
 }
 
+type ReasoningItemAcc = {
+  rawLabel: string;
+  restoredLabel?: string;
+  type?: string;
+  quantityRaw?: string;
+  unitAmount?: number;
+  totalAmount?: number;
+  order: number;
+};
+
 function parseReceiptFromReasoning(reasoning: string): ReceiptParseResult | null {
-  const itemPattern = /\*\s*Item\s+(\d+)\s*:\*?\s*[`'"]([^`'"]+)[`'"]\s*,?\s*qty\s+([\d.]+)\s*,?\s*unit\s+([\d.]+)\s*,?\s*total\s+([\d.]+)\s*,?\s*type\s+(\w+)/gi;
-  const itemsByIndex = new Map<number, ReceiptParsedCost>();
+  const map = new Map<string, ReasoningItemAcc>();
+  let counter = 0;
 
-  for (const match of reasoning.matchAll(itemPattern)) {
-    const index = Number(match[1]);
-    const label = match[2].trim();
-    if (!label) continue;
+  const keyOf = (label: string) => label.trim().toUpperCase().replace(/\s+/g, " ");
+  const upsert = (rawLabel: string, patch: Partial<ReasoningItemAcc>) => {
+    const key = keyOf(rawLabel);
+    if (!key) return;
+    const existing = map.get(key);
+    if (existing) {
+      for (const k of Object.keys(patch) as Array<keyof ReasoningItemAcc>) {
+        const value = patch[k];
+        if (value !== undefined && value !== "") (existing as any)[k] = value;
+      }
+    } else {
+      map.set(key, { rawLabel: rawLabel.trim(), order: counter++, ...patch });
+    }
+  };
 
-    const quantity = normalizeReceiptQuantity(match[3]);
-    let unitAmount = normalizeReceiptAmount(match[4]);
-    const totalAmount = normalizeReceiptAmount(match[5]);
-    if (!totalAmount) continue;
-    if (!unitAmount) unitAmount = Math.max(1, Math.round(totalAmount / quantity));
-
-    itemsByIndex.set(index, {
-      label: label.slice(0, 120),
-      quantity,
-      unitAmount,
-      totalAmount,
-      type: normalizeReceiptCostType(match[6], label),
-      confidence: 0.55,
+  // Format A: "  1.  `LABEL` | qty | UnitLabel | unitPrice | totalPrice"
+  for (const m of reasoning.matchAll(/^\s*\d+\.\s*[`'"]([^`'"]+)[`'"]\s*\|\s*([\d.,]+)\s*\|\s*[^|]*\|\s*([\d.,]+)\s*\|\s*([\d.,]+)/gm)) {
+    upsert(m[1], {
+      quantityRaw: m[2],
+      unitAmount: normalizeReceiptAmount(m[3]),
+      totalAmount: normalizeReceiptAmount(m[4]),
     });
   }
 
-  if (itemsByIndex.size === 0) return null;
+  // Format B: "`LABEL` -> `restored` (type: other)"
+  for (const m of reasoning.matchAll(/[`'"]([^`'"]+)[`'"]\s*->\s*[`'"]([^`'"]+)[`'"]\s*\(\s*type\s*:\s*(\w+)/gi)) {
+    upsert(m[1], { restoredLabel: m[2].trim(), type: m[3].toLowerCase() });
+  }
 
-  const items = Array.from(itemsByIndex.entries())
-    .sort(([a], [b]) => a - b)
-    .map(([, item]) => item);
+  // Format C: "`LABEL`: qty X, unit Y, total Z" (without type)
+  for (const m of reasoning.matchAll(/[`'"]([^`'"]+)[`'"]\s*:\s*qty\s+([\d.]+)\s*,?\s*unit\s+([\d.]+)\s*,?\s*total\s+([\d.]+)/gi)) {
+    upsert(m[1], {
+      quantityRaw: m[2],
+      unitAmount: normalizeReceiptAmount(m[3]),
+      totalAmount: normalizeReceiptAmount(m[4]),
+    });
+  }
 
-  const merchantMatch = reasoning.match(/Merchant(?:\s*Name)?[^:\n]*:\s*([^\n(]+?)(?:\s*\(|$)/im);
-  const purchasedAtMatch = reasoning.match(/Purchased\s*At[^:\n]*:\s*(\d{4}-\d{2}-\d{2})/im)
-    ?? reasoning.match(/Date[^:\n]*:\s*(\d{1,2}\/\d{1,2}\/\d{2,4})/im);
+  // Original "*Item N:* `label`, qty X, unit Y, total Z, type T"
+  for (const m of reasoning.matchAll(/\*\s*Item\s+\d+\s*:\*?\s*[`'"]([^`'"]+)[`'"]\s*,?\s*qty\s+([\d.]+)\s*,?\s*unit\s+([\d.]+)\s*,?\s*total\s+([\d.]+)\s*,?\s*type\s+(\w+)/gi)) {
+    upsert(m[1], {
+      restoredLabel: m[1].trim(),
+      quantityRaw: m[2],
+      unitAmount: normalizeReceiptAmount(m[3]),
+      totalAmount: normalizeReceiptAmount(m[4]),
+      type: m[5].toLowerCase(),
+    });
+  }
+
+  if (map.size === 0) return null;
+
+  const items: ReceiptParsedCost[] = Array.from(map.values())
+    .filter((acc) => acc.totalAmount && acc.totalAmount > 0)
+    .sort((a, b) => a.order - b.order)
+    .map((acc) => {
+      let label = (acc.restoredLabel || acc.rawLabel).trim();
+      let totalAmount = acc.totalAmount!;
+      let unitAmount = acc.unitAmount || totalAmount;
+      let quantity = 1;
+
+      const qtyRawNum = acc.quantityRaw ? Number(acc.quantityRaw.replace(/,/g, "")) : NaN;
+      const isWeighted = totalAmount < unitAmount
+        || (Number.isFinite(qtyRawNum) && qtyRawNum > 0 && qtyRawNum < 100 && !Number.isInteger(qtyRawNum));
+
+      if (isWeighted) {
+        quantity = 1;
+        unitAmount = totalAmount;
+        if (!/kg\b|\bg\b/i.test(label) && Number.isFinite(qtyRawNum) && qtyRawNum > 0) {
+          label = `${label} (${qtyRawNum} kg)`;
+        }
+      } else {
+        const computed = unitAmount > 0 ? Math.round(totalAmount / unitAmount) : 1;
+        quantity = computed >= 1 && computed <= 999 ? computed : 1;
+      }
+
+      return {
+        label: label.slice(0, 120),
+        quantity,
+        unitAmount,
+        totalAmount,
+        type: normalizeReceiptCostType(acc.type ?? "", label),
+        confidence: 0.55,
+      };
+    });
+
+  if (items.length === 0) return null;
+
+  const merchantMatch = reasoning.match(/Merchant(?:\s*Name)?\s*[:`]\s*[`'"]?([^\n(`"]+)/im);
+  const purchasedAtMatch = reasoning.match(/Purchased\s*At\s*[:`]\s*[`'"]?(\d{4}-\d{2}-\d{2})/im)
+    ?? reasoning.match(/Date\s*[:`]\s*[`'"]?(\d{1,2}\/\d{1,2}\/\d{2,4})/im);
   const totalMatch = reasoning.match(/T[ỔO]NG\s*C[ỘO]NG[^\d]*([\d.,]+)/i)
-    ?? reasoning.match(/Total[^:\n]*:\s*[`]?([\d.,]+)/im);
+    ?? reasoning.match(/[Tt]otal\s*Amount\s*[:`]\s*[`'"]?([\d.,]+)/im);
+
   const totalFromReasoning = totalMatch ? normalizeReceiptAmount(totalMatch[1]) : 0;
   const totalAmount = totalFromReasoning || items.reduce((sum, item) => sum + item.totalAmount, 0);
 
