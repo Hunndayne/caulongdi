@@ -1251,6 +1251,12 @@ sessions.post("/:id/receipt/parse", async (c) => {
 
   const imageBase64 = arrayBufferToBase64(await file.arrayBuffer());
   const imageUrl = `data:${contentType};base64,${imageBase64}`;
+  console.log("[receipt-ai] image", {
+    name: file.name,
+    contentType,
+    bytes: file.size,
+    base64Length: imageBase64.length,
+  });
   const prompt = [
     "Đọc ảnh hóa đơn giấy tiếng Việt và trích xuất các dòng chi phí để nhập vào app chia tiền cầu lông.",
     "Trả về JSON đúng schema, không giải thích thêm.",
@@ -1295,7 +1301,12 @@ sessions.post("/:id/receipt/parse", async (c) => {
       },
     });
 
-    const parsed = sanitizeReceiptParseResult(getAiResponsePayload(aiResult));
+    console.log("[receipt-ai] raw response", JSON.stringify(aiResult));
+    const payload = getAiResponsePayload(aiResult);
+    console.log("[receipt-ai] extracted payload", typeof payload === "string" ? payload : JSON.stringify(payload));
+
+    const parsed = sanitizeReceiptParseResult(payload);
+    console.log("[receipt-ai] parsed items", parsed.items.length, "total", parsed.totalAmount);
     await adjustAiNeuronReservation(
       c,
       aiReservation.reservation,
@@ -1308,7 +1319,7 @@ sessions.post("/:id/receipt/parse", async (c) => {
       aiReservation.reservation,
       aiResult ? estimateAiNeuronsFromResult(aiResult, aiReservation.reservation.reservedNeurons) : 0
     );
-    console.error("[receipt-ai]", error);
+    console.error("[receipt-ai] failed", error, "raw response:", aiResult ? JSON.stringify(aiResult) : "<no response>");
     const message = error instanceof Error ? error.message : "Không đọc được hóa đơn";
     return c.json({ error: `Không đọc được hóa đơn: ${message}` }, 502);
   }

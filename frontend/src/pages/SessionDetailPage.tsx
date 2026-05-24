@@ -278,8 +278,17 @@ async function resizeReceiptImage(file: File) {
 
   const image = await loadImage(file);
   const scale = Math.min(1, MAX_RECEIPT_IMAGE_WIDTH / image.width, MAX_RECEIPT_IMAGE_HEIGHT / image.height);
+  console.log("[receipt] source image", {
+    name: file.name,
+    type: file.type,
+    bytes: file.size,
+    width: image.width,
+    height: image.height,
+    scale,
+  });
 
   if (scale >= 1 && file.size <= MAX_RECEIPT_UPLOAD_BYTES) {
+    console.log("[receipt] uploading without resize");
     return file;
   }
 
@@ -305,7 +314,13 @@ async function resizeReceiptImage(file: File) {
   }
 
   const name = file.name.replace(/\.[^.]+$/, "") || "receipt";
-  return new File([blob], `${name}.jpg`, { type: "image/jpeg" });
+  const resized = new File([blob], `${name}.jpg`, { type: "image/jpeg" });
+  console.log("[receipt] resized image", {
+    bytes: resized.size,
+    width: canvas.width,
+    height: canvas.height,
+  });
+  return resized;
 }
 
 export default function SessionDetailPage() {
