@@ -1265,6 +1265,13 @@ sessions.post("/:id/receipt/parse", async (c) => {
     "Chỉ lấy các dòng hàng hóa/dịch vụ trong phần Description; bỏ qua VAT, thuế, thanh toán, điểm còn lại, QR, mã vạch và lời cảm ơn.",
     "Tổng hóa đơn thường nằm ở dòng TONG CONG/Tổng cộng.",
     "Mỗi item cần label ngắn, quantity, unitAmount, totalAmount và type.",
+    "Label PHẢI là tiếng Việt có dấu, viết thường (trừ tên riêng/thương hiệu). Hóa đơn gốc thường VIẾT HOA KHÔNG DẤU và bị viết tắt do hạn chế ký tự máy in — bạn cần phục hồi lại.",
+    "Quy tắc phục hồi label:",
+    "- Thêm dấu thanh/dấu mũ đúng tiếng Việt (vd: BANH MANDU THIT → bánh mandu thịt, KHOAI LANG GIANG NHUA → khoai lang giấy nhựa, DUONG MIA → đường mía, MI TRUNG THUANG HANG → mì trứng thượng hạng).",
+    "- Mở rộng viết tắt phổ biến khi chắc chắn: SCU=sữa chua, TT=thịt, B.=bánh, CJ=CJ (thương hiệu giữ nguyên), VISSAN=Vissan, GO=Go!, TC=tiệt trùng, T.C=tiệt trùng, NZ=New Zealand, KG=kg, G=g, ML=ml.",
+    "- Không bịa thông tin không thấy trên hóa đơn. Nếu không chắc một từ viết tắt nghĩa gì thì giữ nguyên dạng gốc cho từ đó (vd: 'BAO LAC' không rõ → giữ 'bao lac').",
+    "- Bỏ mã hàng (vd: '40G', '30G*10') ra khỏi label trừ khi đó là quy cách thực sự cần thiết để phân biệt.",
+    "- Tên thương hiệu/sản phẩm có sẵn dấu (Vissan, Ponnie, Probi) giữ nguyên cách viết chuẩn của thương hiệu.",
     "type: court cho phí sân/giờ chơi; water cho nước/đồ uống; shuttle cho cầu lông/dụng cụ; other cho mục còn lại.",
     "Nếu chỉ đọc được tổng hóa đơn mà không thấy dòng hàng, tạo một item label 'Tổng hóa đơn' type other.",
   ].join("\n");
@@ -1294,7 +1301,7 @@ sessions.post("/:id/receipt/parse", async (c) => {
         },
       ],
       temperature: 0,
-      max_completion_tokens: 2000,
+      max_completion_tokens: 6000,
       response_format: {
         type: "json_schema",
         json_schema: RECEIPT_JSON_SCHEMA,
