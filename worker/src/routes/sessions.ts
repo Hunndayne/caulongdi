@@ -141,6 +141,7 @@ const RECEIPT_JSON_SCHEMA = {
 };
 
 let aiUsageTableEnsured = false;
+let receiptCacheTableEnsured = false;
 
 function normalizePaymentRecipient(value: string | null | undefined) {
   if (!value) return null;
@@ -620,6 +621,56 @@ async function ensureAiUsageTable(c: any) {
   await c.env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_ai_usage_daily_date ON ai_usage_daily(usage_date)").run();
 
   aiUsageTableEnsured = true;
+}
+
+async function ensureReceiptCacheTable(c: any) {
+  if (receiptCacheTableEnsured) return;
+  await c.env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS receipt_parse_cache (
+      image_hash TEXT PRIMARY KEY,
+      result_json TEXT NOT NULL,
+      cached_at TEXT NOT NULL,
+      hit_count INTEGER NOT NULL DEFAULT 0
+    )
+  `).run();
+  receiptCacheTableEnsured = true;
+}
+
+async function hashImageBytes(buffer: ArrayBuffer): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", buffer);
+  return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function getCachedReceipt(c: any, imageHash: string): Promise<ReceiptParseResult | null> {
+  await ensureReceiptCacheTable(c);
+  const row = await c.env.DB.prepare(
+    "SELECT result_json FROM receipt_parse_cache WHERE image_hash = ?"
+  )
+    .bind(imageHash)
+    .first<{ result_json: string }>();
+  if (!row?.result_json) return null;
+  try {
+    const parsed = JSON.parse(row.result_json) as ReceiptParseResult;
+    await c.env.DB.prepare(
+      "UPDATE receipt_parse_cache SET hit_count = hit_count + 1 WHERE image_hash = ?"
+    )
+      .bind(imageHash)
+      .run();
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+async function setCachedReceipt(c: any, imageHash: string, result: ReceiptParseResult) {
+  await ensureReceiptCacheTable(c);
+  await c.env.DB.prepare(`
+    INSERT INTO receipt_parse_cache (image_hash, result_json, cached_at, hit_count)
+    VALUES (?, ?, ?, 0)
+    ON CONFLICT(image_hash) DO UPDATE SET result_json = excluded.result_json, cached_at = excluded.cached_at
+  `)
+    .bind(imageHash, JSON.stringify(result), new Date().toISOString())
+    .run();
 }
 
 async function getAiUsageStatus(c: any, feature = RECEIPT_AI_FEATURE): Promise<AiUsageStatus> {
@@ -1397,12 +1448,22 @@ sessions.post("/:id/receipt/parse", async (c) => {
     return c.json({ error: "Ảnh hóa đơn cần nhỏ hơn 3MB" }, 400);
   }
 
-  const imageBase64 = arrayBufferToBase64(await file.arrayBuffer());
+  const imageBuffer = await file.arrayBuffer();
+  const imageHash = await hashImageBytes(imageBuffer);
+
+  const cachedResult = await getCachedReceipt(c, imageHash);
+  if (cachedResult) {
+    console.log("[receipt-ai] cache hit", imageHash);
+    return c.json({ ...cachedResult, aiUsage: await getAiUsageStatus(c), cached: true });
+  }
+
+  const imageBase64 = arrayBufferToBase64(imageBuffer);
   const imageUrl = `data:${contentType};base64,${imageBase64}`;
   console.log("[receipt-ai] image", {
     name: file.name,
     contentType,
     bytes: file.size,
+    hash: imageHash,
     base64Length: imageBase64.length,
   });
   const prompt = [
@@ -1495,7 +1556,8 @@ sessions.post("/:id/receipt/parse", async (c) => {
       aiReservation.reservation,
       estimateAiNeuronsFromResult(aiResult, aiReservation.reservation.reservedNeurons)
     );
-    return c.json({ ...parsed, aiUsage: await getAiUsageStatus(c) });
+    await setCachedReceipt(c, imageHash, parsed);
+    return c.json({ ...parsed, aiUsage: await getAiUsageStatus(c), cached: false });
   } catch (error) {
     await adjustAiNeuronReservation(
       c,
