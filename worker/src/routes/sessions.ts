@@ -105,7 +105,8 @@ type PaymentNotificationRow = {
   amount_owed: number;
 };
 
-const RECEIPT_AI_MODEL = "@cf/google/gemma-4-26b-a4b-it";
+const RECEIPT_AI_MODEL = "@cf/meta/llama-4-scout-17b-16e-instruct";
+const RECEIPT_AI_IS_REASONING = RECEIPT_AI_MODEL.includes("gemma-4");
 const RECEIPT_PROMPT_VERSION = "receipt-gemma-items-v6";
 const RECEIPT_AI_FEATURE = "receipt_scan";
 const RECEIPT_AI_MAX_COMPLETION_TOKENS = 12000;
@@ -1903,7 +1904,7 @@ sessions.post("/:id/receipt/parse", async (c) => {
 
   let aiResult: unknown = null;
   try {
-    aiResult = await (c.env.AI as any).run(RECEIPT_AI_MODEL, {
+    const aiInput: Record<string, unknown> = {
       messages: [
         {
           role: "system",
@@ -1924,10 +1925,13 @@ sessions.post("/:id/receipt/parse", async (c) => {
       ],
       temperature: 0,
       top_p: 0.1,
-      reasoning_effort: RECEIPT_AI_REASONING_EFFORT,
       max_completion_tokens: RECEIPT_AI_MAX_COMPLETION_TOKENS,
       response_format: { type: "json_schema", json_schema: RECEIPT_JSON_SCHEMA },
-    });
+    };
+    // reasoning_effort only applies to the Gemma 4 reasoning model.
+    if (RECEIPT_AI_IS_REASONING) aiInput.reasoning_effort = RECEIPT_AI_REASONING_EFFORT;
+
+    aiResult = await (c.env.AI as any).run(RECEIPT_AI_MODEL, aiInput);
     console.log("[receipt-ai] raw response", JSON.stringify(aiResult));
     const payload = getAiResponsePayload(aiResult);
     const reasoning = getReasoningText(aiResult);
