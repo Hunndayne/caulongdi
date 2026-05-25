@@ -430,7 +430,8 @@ function isTotalOnlyReceipt(result: ReceiptParseResult) {
   const label = result.items[0].label
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase();
+    .toLowerCase()
+    .replace(/\u0111/g, "d");
   return /tong\s+hoa\s+don/.test(label) && result.items[0].totalAmount === result.totalAmount;
 }
 
