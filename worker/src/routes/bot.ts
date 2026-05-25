@@ -303,10 +303,11 @@ async function handleQuery(env: Env, threadId: string, text: string): Promise<Bo
     rows = await querySessions(env, link.group_id, { recent: true });
     header = `📅 Các buổi gần đây của ${groupName}`;
   } else if (intent === "next") {
-    rows = await querySessions(env, link.group_id, { from: today, onlyUpcoming: true, limit: 1 });
+    // "Sắp tới" theo status (giống badge trên web), không lọc theo ngày.
+    rows = await querySessions(env, link.group_id, { onlyUpcoming: true, limit: 1 });
     header = `📅 Buổi kế tiếp của ${groupName}`;
   } else {
-    rows = await querySessions(env, link.group_id, { from: today, onlyUpcoming: true });
+    rows = await querySessions(env, link.group_id, { onlyUpcoming: true });
     header = `📅 Buổi sắp tới của ${groupName}`;
   }
 
