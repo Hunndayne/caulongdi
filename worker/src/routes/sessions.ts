@@ -391,12 +391,23 @@ function sanitizeReceiptResult(result: ReceiptParseResult, contextText?: string 
         return null;
       }
 
-      const quantity = Math.max(1, Math.min(999, Math.round(Number(item.quantity || 1))));
+      let quantity = Math.max(1, Math.min(999, Math.round(Number(item.quantity || 1))));
+      let finalUnitAmount = unitAmount;
+      // Weighted row: model kept the per-kg price as unitAmount so total < unit.
+      // The line total is the source of truth → unit = total, qty = 1.
+      if (totalAmount < unitAmount) {
+        finalUnitAmount = totalAmount;
+        quantity = 1;
+      } else if (quantity > 1 && unitAmount * quantity !== totalAmount) {
+        // Trust the printed total; recompute qty when unit*qty disagrees.
+        const computed = Math.round(totalAmount / unitAmount);
+        quantity = computed >= 1 && computed <= 999 ? computed : 1;
+      }
       const confidence = Number(item.confidence);
 
       return {
         label,
-        unitAmount,
+        unitAmount: finalUnitAmount,
         quantity,
         totalAmount,
         type: normalizeReceiptCostType(item.type, label),
