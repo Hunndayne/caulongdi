@@ -107,7 +107,7 @@ type PaymentNotificationRow = {
 
 const RECEIPT_AI_MODEL = "@cf/mistralai/mistral-small-3.1-24b-instruct";
 const RECEIPT_AI_IS_REASONING = RECEIPT_AI_MODEL.includes("gemma-4");
-const RECEIPT_PROMPT_VERSION = "receipt-gemma-items-v6";
+const RECEIPT_PROMPT_VERSION = "receipt-mistral-vi-v7";
 const RECEIPT_AI_FEATURE = "receipt_scan";
 const RECEIPT_AI_MAX_COMPLETION_TOKENS = 12000;
 const RECEIPT_AI_REASONING_EFFORT = "low";
@@ -1911,8 +1911,11 @@ sessions.post("/:id/receipt/parse", async (c) => {
     "{\"merchantName\":\"\",\"purchasedAt\":\"\",\"totalAmount\":0,\"currency\":\"VND\",\"items\":[{\"label\":\"\",\"unitAmount\":0,\"quantity\":1,\"totalAmount\":0,\"type\":\"other\",\"confidence\":0.0}]}",
     "",
     "MANDATORY: items MUST list every visible purchasable row in the Description/item table — typically 10-30 rows on supermarket receipts.",
-    "Never collapse the table into one Tong hoa don/Tong cong summary item. A rough raw OCR label for a row is far better than skipping that row.",
-    "Keep labels short and raw as seen; do not translate, beautify, restore accents, or infer missing product details.",
+    "Never collapse the table into one Tong hoa don/Tong cong summary item. A rough label for a row is far better than skipping that row.",
+    "Labels: restore to clean, readable Vietnamese with correct diacritics, lowercase (except brand/proper names). Receipts print ALL-CAPS, no accents, heavily abbreviated — reconstruct the natural Vietnamese product name.",
+    "Expand common abbreviations: B.=bánh, TT/T.=thịt, SCU=sữa chua, T.C=tiệt trùng, NZ=New Zealand, Xxich=xúc xích, KG/kg=kg, ML=ml.",
+    "Keep brand/proper names as printed (Vissan, Bibigo, CJ, Aquafina, Co.opmart, Coop Select, Ngọc Thơm, Lý Sơn).",
+    "Do NOT invent products or details not on the receipt. If a token is unreadable, keep it close to the original characters instead of guessing a different product.",
     "",
     "Parse rules:",
     "Read only purchasable goods/services in the item area.",
