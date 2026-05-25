@@ -342,6 +342,7 @@ export default function SessionDetailPage() {
   const [scanningReceipt, setScanningReceipt] = useState(false);
   const [savingReceiptDraft, setSavingReceiptDraft] = useState(false);
   const [receiptDraft, setReceiptDraft] = useState<ReceiptDraft | null>(null);
+  const [receiptDiscount, setReceiptDiscount] = useState("");
   const [receiptAiUsage, setReceiptAiUsage] = useState<AiUsageStatus | null>(null);
   const [recalculating, setRecalculating] = useState(false);
   const [joining, setJoining] = useState(false);
@@ -757,6 +758,7 @@ export default function SessionDetailPage() {
       if (parsed.aiUsage) setReceiptAiUsage(parsed.aiUsage);
       if (parsed.items.length === 0) throw new Error("Không tìm thấy dòng chi phí nào trong hóa đơn.");
 
+      setReceiptDiscount("");
       setReceiptDraft({
         ...parsed,
         items: parsed.items.map((item, index) => {
@@ -860,13 +862,36 @@ export default function SessionDetailPage() {
       return;
     }
 
+    // Phân bổ giảm giá theo tỉ lệ thành tiền từng món (làm tròn, dồn phần dư vào dòng cuối).
+    const selectedTotal = selectedItems.reduce((sum, item) => sum + item.totalAmount, 0);
+    const discount = Math.min(Math.max(0, parseImportAmount(receiptDiscount) ?? 0), selectedTotal);
+    const lineAmounts = new Map<string, number>();
+    if (discount > 0 && selectedTotal > 0) {
+      let allocated = 0;
+      selectedItems.forEach((item, index) => {
+        const itemDiscount = index === selectedItems.length - 1
+          ? discount - allocated
+          : Math.round((discount * item.totalAmount) / selectedTotal);
+        allocated += itemDiscount;
+        lineAmounts.set(item.id, Math.max(0, item.totalAmount - itemDiscount));
+      });
+    } else {
+      selectedItems.forEach((item) => lineAmounts.set(item.id, item.totalAmount));
+    }
+
+    const payableItems = selectedItems.filter((item) => (lineAmounts.get(item.id) ?? 0) > 0);
+    if (payableItems.length === 0) {
+      alert("Số tiền giảm giá lớn hơn hoặc bằng tổng các món được chọn.");
+      return;
+    }
+
     setSavingReceiptDraft(true);
     try {
-      for (const item of selectedItems) {
+      for (const item of payableItems) {
         const consumerIds = item.consumerMode === "specific" ? item.consumerIds : [];
         await api.addCost(s.id, {
           label: item.label.trim(),
-          amount: Math.round(item.totalAmount || item.unitAmount * item.quantity),
+          amount: lineAmounts.get(item.id) ?? Math.round(item.totalAmount || item.unitAmount * item.quantity),
           quantity: item.quantity,
           type: item.type,
           payer_id: item.payerId || null,
@@ -878,7 +903,8 @@ export default function SessionDetailPage() {
 
       setReceiptDraft(null);
       await refresh(s.id);
-      alert(`Đã thêm ${selectedItems.length} dòng từ hóa đơn.`);
+      const discountNote = discount > 0 ? ` (đã trừ ${formatCurrency(discount)} giảm giá)` : "";
+      alert(`Đã thêm ${payableItems.length} dòng từ hóa đơn${discountNote}.`);
     } catch (error: any) {
       alert(error.message);
     } finally {
@@ -1210,6 +1236,8 @@ export default function SessionDetailPage() {
   const creatorName = s.members.find((member) => member.user_id === s.created_by)?.name ?? "Ẩn danh";
   const receiptDraftSelectedItems = receiptDraft?.items.filter((item) => item.selected) ?? [];
   const receiptDraftSelectedTotal = receiptDraftSelectedItems.reduce((sum, item) => sum + item.totalAmount, 0);
+  const receiptDiscountValue = Math.min(Math.max(0, parseImportAmount(receiptDiscount) ?? 0), receiptDraftSelectedTotal);
+  const receiptDraftAfterDiscount = receiptDraftSelectedTotal - receiptDiscountValue;
   const receiptAiDisabled = receiptAiUsage?.enabled === false;
   const receiptAiUsageText = receiptAiUsage
     ? `${receiptAiUsage.estimatedNeurons.toLocaleString("vi-VN")}/${receiptAiUsage.dailyBudget.toLocaleString("vi-VN")} neurons hôm nay`
@@ -2130,9 +2158,33 @@ export default function SessionDetailPage() {
               ))}
             </div>
 
-            <div className="flex items-center justify-between rounded-lg border border-green-200 bg-green-50 p-3 text-sm">
-              <span className="font-medium text-green-800">{receiptDraftSelectedItems.length} dòng được chọn</span>
-              <span className="font-bold text-green-800">{formatCurrency(receiptDraftSelectedTotal)}</span>
+            <div className="flex items-center justify-between gap-2 rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm">
+              <label className="font-medium text-gray-700">Giảm giá (phân bổ vào các món)</label>
+              <Input
+                value={receiptDiscount}
+                onChange={(event) => setReceiptDiscount(event.target.value)}
+                disabled={savingReceiptDraft}
+                placeholder="0"
+                type="number"
+                min="0"
+                step="1000"
+                className="w-32 text-right"
+              />
+            </div>
+
+            <div className="space-y-1 rounded-lg border border-green-200 bg-green-50 p-3 text-sm">
+              <div className="flex items-center justify-between">
+                <span className="font-medium text-green-800">{receiptDraftSelectedItems.length} dòng được chọn</span>
+                <span className={receiptDiscountValue > 0 ? "text-gray-500 line-through" : "font-bold text-green-800"}>
+                  {formatCurrency(receiptDraftSelectedTotal)}
+                </span>
+              </div>
+              {receiptDiscountValue > 0 && (
+                <div className="flex items-center justify-between">
+                  <span className="font-medium text-green-800">Sau giảm {formatCurrency(receiptDiscountValue)}</span>
+                  <span className="font-bold text-green-800">{formatCurrency(receiptDraftAfterDiscount)}</span>
+                </div>
+              )}
             </div>
 
             <div className="grid grid-cols-2 gap-2">
