@@ -16,3 +16,31 @@ body {
   color: #18181b;
   -webkit-font-smoothing: antialiased;
 }
+
+@keyframes session-title-marquee {
+  0%,
+  12% {
+    transform: translateX(0);
+  }
+
+  48%,
+  64% {
+    transform: translateX(calc(var(--session-title-distance, 0px) * -1));
+  }
+
+  100% {
+    transform: translateX(0);
+  }
+}
+
+.session-title-marquee {
+  animation: session-title-marquee var(--session-title-duration, 8s) ease-in-out infinite;
+  will-change: transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .session-title-marquee {
+    animation: none;
+    transform: translateX(0);
+  }
+}

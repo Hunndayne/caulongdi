@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { Link } from "react-router-dom";
 import {
   Calendar,
@@ -212,6 +212,71 @@ function StatusChip({ children, tone }: { children: React.ReactNode; tone: "upco
   return <span className={`whitespace-nowrap rounded-full px-[9px] py-1 text-[11px] font-semibold ${classes}`}>{children}</span>;
 }
 
+type MarqueeStyle = CSSProperties & {
+  "--session-title-distance"?: string;
+  "--session-title-duration"?: string;
+};
+
+function SessionTitle({ text, marquee }: { text: string; marquee: boolean }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const textRef = useRef<HTMLSpanElement>(null);
+  const [overflowDistance, setOverflowDistance] = useState(0);
+
+  useEffect(() => {
+    if (!marquee) {
+      setOverflowDistance(0);
+      return;
+    }
+
+    const updateOverflow = () => {
+      const container = containerRef.current;
+      const textElement = textRef.current;
+      if (!container || !textElement) return;
+
+      const distance = Math.ceil(textElement.scrollWidth - container.clientWidth);
+      setOverflowDistance(distance > 4 ? distance : 0);
+    };
+
+    updateOverflow();
+
+    const resizeObserver = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(updateOverflow);
+    if (resizeObserver && containerRef.current && textRef.current) {
+      resizeObserver.observe(containerRef.current);
+      resizeObserver.observe(textRef.current);
+    }
+
+    window.addEventListener("resize", updateOverflow);
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", updateOverflow);
+    };
+  }, [marquee, text]);
+
+  const shouldMarquee = marquee && overflowDistance > 0;
+  const style: MarqueeStyle | undefined = shouldMarquee
+    ? {
+        "--session-title-distance": `${overflowDistance}px`,
+        "--session-title-duration": `${Math.min(18, Math.max(7, overflowDistance / 16))}s`,
+      }
+    : undefined;
+
+  return (
+    <div
+      ref={containerRef}
+      className="min-w-0 overflow-hidden text-[13.5px] font-semibold text-[#18181b]"
+      title={text}
+    >
+      <span
+        ref={textRef}
+        className={cn("block whitespace-nowrap", shouldMarquee ? "session-title-marquee" : "truncate")}
+        style={style}
+      >
+        {text}
+      </span>
+    </div>
+  );
+}
+
 function SessionRow({
   session,
   kind,
@@ -224,8 +289,8 @@ function SessionRow({
   return (
     <div className="flex items-center gap-3 rounded-xl border border-[#e8e7e2] bg-white px-3.5 py-3 transition-colors hover:border-[#18181b]">
       <SessionThumb kind={kind} />
-      <Link to={`/sessions/${session.id}`} className="min-w-0 flex-1">
-        <div className="truncate text-[13.5px] font-semibold text-[#18181b]">{session.venue}</div>
+      <Link to={`/sessions/${session.id}`} className="min-w-0 flex-1 overflow-hidden">
+        <SessionTitle text={session.venue} marquee={kind === "group"} />
         <div className="mt-0.5 truncate text-xs text-[#71717a]">
           {formatDate(session.date)} · {session.start_time}
         </div>
