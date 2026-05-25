@@ -374,14 +374,21 @@ function buildTotalOnlyReceipt(totalAmount: number, contextText?: string | null)
 
 function sanitizeReceiptResult(result: ReceiptParseResult, contextText?: string | null): ReceiptParseResult | null {
   const contextTotal = extractReceiptTotalFromText(contextText);
+  const rejected: Array<{ reason: string; raw: unknown }> = [];
   const items = result.items
     .map((item): ReceiptParsedCost | null => {
       const label = cleanReceiptLabel(item.label);
-      if (!label || label.length < 2) return null;
+      if (!label || label.length < 2) {
+        rejected.push({ reason: "empty label after cleanReceiptLabel", raw: { label: item.label, unitAmount: item.unitAmount, totalAmount: item.totalAmount } });
+        return null;
+      }
 
       const unitAmount = Math.round(Number(item.unitAmount));
       const totalAmount = Math.round(Number(item.totalAmount));
-      if (!isSaneReceiptItemAmount(unitAmount) || !isSaneReceiptItemAmount(totalAmount)) return null;
+      if (!isSaneReceiptItemAmount(unitAmount) || !isSaneReceiptItemAmount(totalAmount)) {
+        rejected.push({ reason: "unsane amount", raw: { label, unitAmount, totalAmount } });
+        return null;
+      }
 
       const quantity = Math.max(1, Math.min(999, Math.round(Number(item.quantity || 1))));
       const confidence = Number(item.confidence);
@@ -396,6 +403,10 @@ function sanitizeReceiptResult(result: ReceiptParseResult, contextText?: string 
       };
     })
     .filter((item): item is ReceiptParsedCost => Boolean(item));
+
+  if (rejected.length > 0) {
+    console.log("[receipt-ai] sanitize rejected", rejected.length, "items:", JSON.stringify(rejected.slice(0, 5)));
+  }
 
   const itemSum = items.reduce((sum, item) => sum + item.totalAmount, 0);
   const rawTotal = Math.round(Number(result.totalAmount ?? 0));
@@ -1857,7 +1868,13 @@ sessions.post("/:id/receipt/parse", async (c) => {
       estimateAiNeuronsFromResult(aiResult, aiReservation.reservation.reservedNeurons)
     );
     await setCachedReceipt(c, receiptCacheKey, parsed);
-    return c.json({ ...parsed, aiUsage: await getAiUsageStatus(c), cached: false });
+    const responseBody: Record<string, unknown> = { ...parsed, aiUsage: await getAiUsageStatus(c), cached: false };
+    if (isTotalOnlyReceipt(parsed)) {
+      responseBody.debug_aiRaw = aiResult;
+      responseBody.debug_aiPayload = payload;
+      responseBody.debug_reasoning = reasoning;
+    }
+    return c.json(responseBody);
   } catch (error) {
     await adjustAiNeuronReservation(
       c,
