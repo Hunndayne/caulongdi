@@ -107,9 +107,9 @@ type PaymentNotificationRow = {
 
 const RECEIPT_AI_MODEL = "@cf/mistralai/mistral-small-3.1-24b-instruct";
 const RECEIPT_AI_IS_REASONING = RECEIPT_AI_MODEL.includes("gemma-4");
-const RECEIPT_PROMPT_VERSION = "receipt-mistral-vi-v7";
+const RECEIPT_PROMPT_VERSION = "receipt-mistral-vi-v8";
 const RECEIPT_AI_FEATURE = "receipt_scan";
-const RECEIPT_AI_MAX_COMPLETION_TOKENS = 12000;
+const RECEIPT_AI_MAX_COMPLETION_TOKENS = 4000;
 const RECEIPT_AI_REASONING_EFFORT = "low";
 const GEMMA4_INPUT_NEURONS_PER_MILLION_TOKENS = 9091;
 const GEMMA4_OUTPUT_NEURONS_PER_MILLION_TOKENS = 27273;
@@ -330,6 +330,14 @@ const NON_ITEM_LABELS = new Set([
   "tien khach dua", "chiet khau", "giam gia", "khuyen mai", "diem", "tich diem",
 ]);
 
+// Payment / deduction lines (gift cards, vouchers...) that reduce the bill.
+// They appear with trailing codes/amounts so match by substring, not exact.
+const NON_ITEM_KEYWORDS = [
+  "the qua tang", "phieu qua tang", "qua tang", "phieu mua hang", "phieu mua",
+  "voucher", "phieu giam gia", "the tra truoc", "the thanh toan", "thanh toan the",
+  "tien khach dua", "tien thua",
+];
+
 function isNonItemLabel(label: string) {
   const normalized = label
     .normalize("NFD")
@@ -339,7 +347,8 @@ function isNonItemLabel(label: string) {
     .replace(/[^a-z\s]/g, "")
     .replace(/\s+/g, " ")
     .trim();
-  return NON_ITEM_LABELS.has(normalized);
+  if (NON_ITEM_LABELS.has(normalized)) return true;
+  return NON_ITEM_KEYWORDS.some((keyword) => normalized.includes(keyword));
 }
 
 function extractReceiptTotalFromText(text?: string | null) {
@@ -395,23 +404,24 @@ function buildTotalOnlyReceipt(totalAmount: number, contextText?: string | null)
 
 function sanitizeReceiptResult(result: ReceiptParseResult, contextText?: string | null): ReceiptParseResult | null {
   const contextTotal = extractReceiptTotalFromText(contextText);
-  const rejected: Array<{ reason: string; raw: unknown }> = [];
+  // [debug] bật lại `rejected` + log cuối hàm để soi item nào bị loại:
+  // const rejected: Array<{ reason: string; raw: unknown }> = [];
   const items = result.items
     .map((item): ReceiptParsedCost | null => {
       const label = cleanReceiptLabel(item.label);
       if (!label || label.length < 2) {
-        rejected.push({ reason: "empty label after cleanReceiptLabel", raw: { label: item.label, unitAmount: item.unitAmount, totalAmount: item.totalAmount } });
+        // rejected.push({ reason: "empty label after cleanReceiptLabel", raw: { label: item.label, unitAmount: item.unitAmount, totalAmount: item.totalAmount } });
         return null;
       }
       if (isNonItemLabel(label)) {
-        rejected.push({ reason: "non-item metadata label", raw: { label, unitAmount: item.unitAmount, totalAmount: item.totalAmount } });
+        // rejected.push({ reason: "non-item metadata label", raw: { label, unitAmount: item.unitAmount, totalAmount: item.totalAmount } });
         return null;
       }
 
       const unitAmount = Math.round(Number(item.unitAmount));
       const totalAmount = Math.round(Number(item.totalAmount));
       if (!isSaneReceiptItemAmount(unitAmount) || !isSaneReceiptItemAmount(totalAmount)) {
-        rejected.push({ reason: "unsane amount", raw: { label, unitAmount, totalAmount } });
+        // rejected.push({ reason: "unsane amount", raw: { label, unitAmount, totalAmount } });
         return null;
       }
 
@@ -440,9 +450,9 @@ function sanitizeReceiptResult(result: ReceiptParseResult, contextText?: string 
     })
     .filter((item): item is ReceiptParsedCost => Boolean(item));
 
-  if (rejected.length > 0) {
-    console.log("[receipt-ai] sanitize rejected", rejected.length, "items:", JSON.stringify(rejected.slice(0, 5)));
-  }
+  // [debug] if (rejected.length > 0) {
+  //   console.log("[receipt-ai] sanitize rejected", rejected.length, "items:", JSON.stringify(rejected.slice(0, 5)));
+  // }
 
   const itemSum = items.reduce((sum, item) => sum + item.totalAmount, 0);
   const rawTotal = Math.round(Number(result.totalAmount ?? 0));
@@ -1893,14 +1903,15 @@ sessions.post("/:id/receipt/parse", async (c) => {
 
   const imageBase64 = arrayBufferToBase64(imageBuffer);
   const imageUrl = `data:${contentType};base64,${imageBase64}`;
-  console.log("[receipt-ai] image", {
-    name: file.name,
-    contentType,
-    bytes: file.size,
-    hash: imageHash,
-    cacheKey: receiptCacheKey,
-    base64Length: imageBase64.length,
-  });
+  // [debug] bật lại để soi kích thước ảnh / cache key:
+  // console.log("[receipt-ai] image", {
+  //   name: file.name,
+  //   contentType,
+  //   bytes: file.size,
+  //   hash: imageHash,
+  //   cacheKey: receiptCacheKey,
+  //   base64Length: imageBase64.length,
+  // });
   const prompt = [
     "Extract receipt line items from the image into ONE compact JSON object only.",
     "No Markdown, no prose, no analysis, no comments, no wrapper keys.",
@@ -1913,13 +1924,15 @@ sessions.post("/:id/receipt/parse", async (c) => {
     "MANDATORY: items MUST list every visible purchasable row in the Description/item table — typically 10-30 rows on supermarket receipts.",
     "Never collapse the table into one Tong hoa don/Tong cong summary item. A rough label for a row is far better than skipping that row.",
     "Labels: restore to clean, readable Vietnamese with correct diacritics, lowercase (except brand/proper names). Receipts print ALL-CAPS, no accents, heavily abbreviated — reconstruct the natural Vietnamese product name.",
-    "Expand common abbreviations: B.=bánh, TT/T.=thịt, SCU=sữa chua, T.C=tiệt trùng, NZ=New Zealand, Xxich=xúc xích, KG/kg=kg, ML=ml.",
-    "Keep brand/proper names as printed (Vissan, Bibigo, CJ, Aquafina, Co.opmart, Coop Select, Ngọc Thơm, Lý Sơn).",
+    "Expand common abbreviations: B.=bánh, TT/T.=thịt, SCU/Scu=sữa chua, Sc=sữa chua, vnm/VNM=Vinamilk, T.C=tiệt trùng, NZ=New Zealand, Xxich=xúc xích, NTC=nước trái cây, 'it duong'=ít đường, 'k duong'=không đường, KG/kg=kg, ML=ml.",
+    "Examples: 'Sc vnm it duong' = 'sữa chua Vinamilk ít đường'; 'NTC cam' = 'nước trái cây cam'.",
+    "Keep brand/proper names as printed (Vissan, Bibigo, CJ, Aquafina, Vinamilk, Co.opmart, Coop Select, Ngọc Thơm, Lý Sơn).",
     "Do NOT invent products or details not on the receipt. If a token is unreadable, keep it close to the original characters instead of guessing a different product.",
     "",
     "Parse rules:",
     "Read only purchasable goods/services in the item area.",
     "Ignore VAT/tax summaries, payment lines, loyalty points, QR/barcode numbers, cashier/ticket metadata, address/hotline, thank-you text.",
+    "EXCLUDE payment/deduction lines, NOT products: thẻ quà tặng, phiếu quà tặng, phiếu mua hàng, voucher, phiếu giảm giá, chiết khấu, tiền thừa, tiền khách đưa, thanh toán thẻ. These reduce the bill; never list them as items (they would wrongly inflate the item total).",
     "Money values are VND integers only: 109,000 -> 109000; 34.166 -> 34166.",
     "totalAmount is the final payable amount. Prefer TONG CONG/TONG TIEN/TOTAL labels.",
     "purchasedAt must come from the actual receipt date stamp; if unsure, return empty string. Never invent a date.",
@@ -1970,7 +1983,8 @@ sessions.post("/:id/receipt/parse", async (c) => {
     if (RECEIPT_AI_IS_REASONING) aiInput.reasoning_effort = RECEIPT_AI_REASONING_EFFORT;
 
     aiResult = await (c.env.AI as any).run(RECEIPT_AI_MODEL, aiInput);
-    console.log("[receipt-ai] raw response", JSON.stringify(aiResult));
+    // [debug] bật lại khi cần xem raw response model trả về:
+    // console.log("[receipt-ai] raw response", JSON.stringify(aiResult));
     const payload = getAiResponsePayload(aiResult);
     const reasoning = getReasoningText(aiResult);
     const truncated = isAiResponseTruncated(aiResult);
@@ -2011,11 +2025,12 @@ sessions.post("/:id/receipt/parse", async (c) => {
     );
     await setCachedReceipt(c, receiptCacheKey, parsed);
     const responseBody: Record<string, unknown> = { ...parsed, aiUsage: await getAiUsageStatus(c), cached: false };
-    if (isTotalOnlyReceipt(parsed)) {
-      responseBody.debug_aiRaw = aiResult;
-      responseBody.debug_aiPayload = payload;
-      responseBody.debug_reasoning = reasoning;
-    }
+    // [debug] bật lại để soi khi kết quả rơi về total-only:
+    // if (isTotalOnlyReceipt(parsed)) {
+    //   responseBody.debug_aiRaw = aiResult;
+    //   responseBody.debug_aiPayload = payload;
+    //   responseBody.debug_reasoning = reasoning;
+    // }
     return c.json(responseBody);
   } catch (error) {
     await adjustAiNeuronReservation(
@@ -2027,8 +2042,9 @@ sessions.post("/:id/receipt/parse", async (c) => {
     const message = error instanceof Error ? error.message : "Không đọc được hóa đơn";
     return c.json({
       error: `Không đọc được hóa đơn: ${message}`,
-      aiRaw: aiResult ?? null,
-      aiPayload: aiResult ? getAiResponsePayload(aiResult) : null,
+      // [debug] bật lại để soi response model khi lỗi 502:
+      // aiRaw: aiResult ?? null,
+      // aiPayload: aiResult ? getAiResponsePayload(aiResult) : null,
     }, 502);
   }
 });
