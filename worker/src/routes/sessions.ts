@@ -109,7 +109,7 @@ const RECEIPT_AI_MODEL = "@cf/google/gemma-4-26b-a4b-it";
 const RECEIPT_PROMPT_VERSION = "receipt-gemma-items-v6";
 const RECEIPT_AI_FEATURE = "receipt_scan";
 const RECEIPT_AI_MAX_COMPLETION_TOKENS = 6000;
-const RECEIPT_AI_REASONING_EFFORT = "low";
+const RECEIPT_AI_REASONING_EFFORT = "medium";
 const GEMMA4_INPUT_NEURONS_PER_MILLION_TOKENS = 9091;
 const GEMMA4_OUTPUT_NEURONS_PER_MILLION_TOKENS = 27273;
 const AI_FREE_DAILY_NEURON_LIMIT = 10_000;
@@ -1804,7 +1804,7 @@ sessions.post("/:id/receipt/parse", async (c) => {
             "You extract receipt data into strict JSON only.",
             "Your entire response must be one JSON object that validates the supplied schema.",
             "Never include Markdown, explanations, alternate keys, or wrapper objects.",
-            "Use minimal reasoning and do not think step by step in the answer.",
+            "Read every visible product row in the item table; never default to a single Tong hoa don entry unless the item table is genuinely unreadable.",
           ].join(" "),
         },
         {
