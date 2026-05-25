@@ -435,8 +435,65 @@ function isTotalOnlyReceipt(result: ReceiptParseResult) {
   return /tong\s+hoa\s+don/.test(label) && result.items[0].totalAmount === result.totalAmount;
 }
 
+function parseReceiptItemsFromReasoningJson(reasoning?: string | null): ReceiptParseResult | null {
+  if (!reasoning) return null;
+
+  const itemsByKey = new Map<string, ReceiptParsedCost>();
+  // Harvest fully-formed JSON item objects the model emits inside its reasoning.
+  for (const match of reasoning.matchAll(/\{[^{}]*?"label"[^{}]*?\}/g)) {
+    let obj: any;
+    try {
+      obj = JSON.parse(match[0]);
+    } catch {
+      continue;
+    }
+    if (!obj || typeof obj !== "object") continue;
+
+    const label = cleanReceiptLabel(obj.label);
+    if (!label || label.length < 2) continue;
+
+    const totalAmount = Math.round(Number(obj.totalAmount ?? obj.total ?? obj.unitAmount));
+    if (!isSaneReceiptItemAmount(totalAmount)) continue;
+    const unitRaw = Math.round(Number(obj.unitAmount ?? obj.unit ?? totalAmount));
+    const unitAmount = isSaneReceiptItemAmount(unitRaw) ? unitRaw : totalAmount;
+    const quantity = Math.max(1, Math.min(999, Math.round(Number(obj.quantity || 1))));
+    const confidence = Number(obj.confidence);
+
+    // Dedupe identical rows (model repeats the block) but keep distinct same-label rows.
+    const key = `${label.toLowerCase()}|${totalAmount}|${quantity}`;
+    itemsByKey.set(key, {
+      label,
+      unitAmount,
+      quantity,
+      totalAmount,
+      type: normalizeReceiptCostType(obj.type, label),
+      confidence: Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : 0.6,
+    });
+  }
+
+  if (itemsByKey.size < 2) return null;
+
+  const items = Array.from(itemsByKey.values());
+  const total = extractReceiptTotalFromText(reasoning) || items.reduce((sum, item) => sum + item.totalAmount, 0);
+  return {
+    merchantName: "",
+    purchasedAt: extractReceiptDateFromText(reasoning),
+    totalAmount: total,
+    currency: "VND",
+    items,
+  };
+}
+
 function parseSaneReceiptFromReasoning(reasoning?: string | null): ReceiptParseResult | null {
   if (!reasoning) return null;
+
+  // Prefer fully-formed JSON item objects emitted in the reasoning — most reliable.
+  const fromJson = parseReceiptItemsFromReasoningJson(reasoning);
+  if (fromJson) {
+    const safeJson = sanitizeReceiptResult(fromJson, reasoning);
+    if (safeJson && !isTotalOnlyReceipt(safeJson) && safeJson.items.length >= 2) return safeJson;
+  }
+
   const parsed = parseReceiptFromReasoning(reasoning);
   if (!parsed) return null;
   const safeParsed = sanitizeReceiptResult(parsed, reasoning);
