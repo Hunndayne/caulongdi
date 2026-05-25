@@ -10,6 +10,7 @@ import statsRouter from "./routes/stats";
 import profilesRouter from "./routes/profiles";
 import groupsRouter from "./routes/groups";
 import paymentWebhooksRouter from "./routes/paymentWebhooks";
+import botRouter from "./routes/bot";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -149,6 +150,8 @@ app.get("/sessions/:id", async (c) => {
 });
 
 app.route("/api/payment-webhooks", paymentWebhooksRouter);
+// Messenger userbot: tự xác thực bằng Bearer BOT_SERVICE_SECRET, không qua cookie auth.
+app.route("/api/bot", botRouter);
 
 // Auth middleware for protected routes
 app.use("/api/*", async (c, next) => {

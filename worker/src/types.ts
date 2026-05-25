@@ -16,6 +16,10 @@ export interface Env {
   SMTP_FROM_NAME?: string;
   AI_DAILY_NEURON_BUDGET?: string;
   AI_RECEIPT_SCAN_RESERVED_NEURONS?: string;
+  BOT_SERVICE_SECRET?: string;
+  DEEPSEEK_API_KEY?: string;
+  DEEPSEEK_MODEL?: string;
+  DEEPSEEK_BASE_URL?: string;
 }
 
 export type AppRole = 'admin' | 'member';

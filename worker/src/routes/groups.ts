@@ -2,6 +2,14 @@ import { Hono } from "hono";
 import { sendGroupInviteNotification } from "../email";
 import { Env } from "../types";
 import { nanoid } from "../utils";
+import { ensureBotTables } from "../db/botTables";
+
+const BOT_LINK_CODE_TTL_MS = 10 * 60 * 1000;
+
+function generateBotLinkCode() {
+  const n = crypto.getRandomValues(new Uint32Array(1))[0] % 1_000_000;
+  return n.toString().padStart(6, "0");
+}
 
 const groups = new Hono<{ Bindings: Env; Variables: { userId: string; userRole: string } }>();
 
@@ -964,6 +972,54 @@ groups.post("/join/:code", async (c) => {
   } catch (error) {
     if (isMissingGroupSchema(error)) {
       return c.json({ error: "Run invite-link database migration first" }, 400);
+    }
+    throw error;
+  }
+});
+
+// ─── Liên kết Messenger ──────────────────────────────────────
+// Sinh mã OTP để admin nhóm gõ /connect <mã> trong group chat Facebook.
+
+groups.post("/:id/bot-link-code", async (c) => {
+  const { id } = c.req.param();
+
+  try {
+    const membership = await getMembership(c, id);
+    if (membership !== "admin") return c.json({ error: "Forbidden" }, 403);
+
+    await ensureBotTables(c.env.DB);
+
+    const now = new Date();
+    const createdAt = now.toISOString();
+    const expiresAt = new Date(now.getTime() + BOT_LINK_CODE_TTL_MS).toISOString();
+
+    // Dọn mã hết hạn / đã dùng để bảng gọn và tránh đụng khoá chính.
+    await c.env.DB.prepare(
+      "DELETE FROM bot_link_codes WHERE expires_at < ? OR used_at IS NOT NULL"
+    )
+      .bind(createdAt)
+      .run();
+
+    let code = "";
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const candidate = generateBotLinkCode();
+      const result = await c.env.DB.prepare(
+        `INSERT OR IGNORE INTO bot_link_codes (code, group_id, issued_by, expires_at, used_at, created_at)
+         VALUES (?, ?, ?, ?, NULL, ?)`
+      )
+        .bind(candidate, id, c.get("userId"), expiresAt, createdAt)
+        .run();
+      if (result.meta?.changes) {
+        code = candidate;
+        break;
+      }
+    }
+    if (!code) return c.json({ error: "Could not generate code, try again" }, 500);
+
+    return c.json({ code, expiresAt, ttlSeconds: Math.floor(BOT_LINK_CODE_TTL_MS / 1000) });
+  } catch (error) {
+    if (isMissingGroupSchema(error)) {
+      return c.json({ error: "Run group database migration first" }, 400);
     }
     throw error;
   }

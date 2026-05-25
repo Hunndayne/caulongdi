@@ -1,0 +1,41 @@
+// Tạo bảng liên kết bot/Messenger nếu chưa có (phòng khi patch chưa chạy trên môi trường đó).
+// Idempotent, guard bằng cờ module để không gọi lại mỗi request.
+
+let ensured = false;
+
+export async function ensureBotTables(db: D1Database) {
+  if (ensured) return;
+
+  await db
+    .prepare(
+      `CREATE TABLE IF NOT EXISTS bot_thread_links (
+        thread_id TEXT PRIMARY KEY,
+        group_id  TEXT NOT NULL UNIQUE,
+        linked_by TEXT,
+        linked_at TEXT NOT NULL
+      )`
+    )
+    .run();
+
+  await db
+    .prepare(
+      `CREATE TABLE IF NOT EXISTS bot_link_codes (
+        code       TEXT PRIMARY KEY,
+        group_id   TEXT NOT NULL,
+        issued_by  TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        used_at    TEXT,
+        created_at TEXT NOT NULL
+      )`
+    )
+    .run();
+
+  await db
+    .prepare("CREATE INDEX IF NOT EXISTS idx_bot_link_codes_group ON bot_link_codes(group_id)")
+    .run();
+  await db
+    .prepare("CREATE INDEX IF NOT EXISTS idx_bot_link_codes_expires ON bot_link_codes(expires_at)")
+    .run();
+
+  ensured = true;
+}

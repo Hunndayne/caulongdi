@@ -169,9 +169,29 @@ CREATE TABLE IF NOT EXISTS ai_usage_daily (
   PRIMARY KEY (usage_date, feature)
 );
 
+CREATE TABLE IF NOT EXISTS bot_thread_links (
+  thread_id TEXT PRIMARY KEY,
+  group_id  TEXT NOT NULL UNIQUE,
+  linked_by TEXT,
+  linked_at TEXT NOT NULL,
+  FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS bot_link_codes (
+  code       TEXT PRIMARY KEY,
+  group_id   TEXT NOT NULL,
+  issued_by  TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  used_at    TEXT,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS idx_group_members_user_id ON group_members(user_id);
 CREATE INDEX IF NOT EXISTS idx_group_invites_user_id ON group_invites(invited_user_id);
 CREATE INDEX IF NOT EXISTS idx_group_invites_group_id ON group_invites(group_id);
 CREATE INDEX IF NOT EXISTS idx_members_group_id ON members(group_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_group_id ON sessions(group_id);
 CREATE INDEX IF NOT EXISTS idx_ai_usage_daily_date ON ai_usage_daily(usage_date);
+CREATE INDEX IF NOT EXISTS idx_bot_link_codes_group ON bot_link_codes(group_id);
+CREATE INDEX IF NOT EXISTS idx_bot_link_codes_expires ON bot_link_codes(expires_at);
