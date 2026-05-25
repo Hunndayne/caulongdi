@@ -108,7 +108,7 @@ type PaymentNotificationRow = {
 const RECEIPT_AI_MODEL = "@cf/google/gemma-4-26b-a4b-it";
 const RECEIPT_PROMPT_VERSION = "receipt-gemma-items-v6";
 const RECEIPT_AI_FEATURE = "receipt_scan";
-const RECEIPT_AI_MAX_COMPLETION_TOKENS = 6000;
+const RECEIPT_AI_MAX_COMPLETION_TOKENS = 12000;
 const RECEIPT_AI_REASONING_EFFORT = "low";
 const GEMMA4_INPUT_NEURONS_PER_MILLION_TOKENS = 9091;
 const GEMMA4_OUTPUT_NEURONS_PER_MILLION_TOKENS = 27273;
@@ -435,11 +435,43 @@ function isTotalOnlyReceipt(result: ReceiptParseResult) {
   return /tong\s+hoa\s+don/.test(label) && result.items[0].totalAmount === result.totalAmount;
 }
 
+function pushReasoningItem(
+  itemsByKey: Map<string, ReceiptParsedCost>,
+  rawLabel: unknown,
+  rawTotal: unknown,
+  rawUnit: unknown,
+  rawQuantity: unknown,
+  rawType: unknown,
+  rawConfidence: unknown,
+) {
+  const label = cleanReceiptLabel(rawLabel);
+  if (!label || label.length < 2) return;
+
+  const totalAmount = normalizeReceiptAmount(rawTotal ?? rawUnit);
+  if (!isSaneReceiptItemAmount(totalAmount)) return;
+  const unitParsed = normalizeReceiptAmount(rawUnit ?? rawTotal);
+  const unitAmount = isSaneReceiptItemAmount(unitParsed) ? unitParsed : totalAmount;
+  const quantity = Math.max(1, Math.min(999, Math.round(Number(rawQuantity || 1)) || 1));
+  const confidence = Number(rawConfidence);
+
+  // Dedupe identical rows (model repeats blocks) but keep distinct same-label rows.
+  const key = `${label.toLowerCase()}|${totalAmount}|${quantity}`;
+  itemsByKey.set(key, {
+    label,
+    unitAmount,
+    quantity,
+    totalAmount,
+    type: normalizeReceiptCostType(rawType, label),
+    confidence: Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : 0.6,
+  });
+}
+
 function parseReceiptItemsFromReasoningJson(reasoning?: string | null): ReceiptParseResult | null {
   if (!reasoning) return null;
 
   const itemsByKey = new Map<string, ReceiptParsedCost>();
-  // Harvest fully-formed JSON item objects the model emits inside its reasoning.
+
+  // Format 1: fully-formed JSON item objects, e.g. {"label":"X","unitAmount":1,"totalAmount":1,...}
   for (const match of reasoning.matchAll(/\{[^{}]*?"label"[^{}]*?\}/g)) {
     let obj: any;
     try {
@@ -448,27 +480,37 @@ function parseReceiptItemsFromReasoningJson(reasoning?: string | null): ReceiptP
       continue;
     }
     if (!obj || typeof obj !== "object") continue;
+    pushReasoningItem(itemsByKey, obj.label, obj.totalAmount ?? obj.total, obj.unitAmount ?? obj.unit, obj.quantity, obj.type, obj.confidence);
+  }
 
-    const label = cleanReceiptLabel(obj.label);
-    if (!label || label.length < 2) continue;
+  // Format 2: markdown key-value lines, e.g.
+  //   `label`: "X", `unitAmount`: 38500, `quantity`: 2, `totalAmount`: 77000, `type`: "other", `confidence`: 0.9
+  if (itemsByKey.size < 2) {
+    const fieldRe = (name: string, quoted: boolean) =>
+      new RegExp(`["'\`]?${name}["'\`]?\\s*[:=]\\s*` + (quoted ? `["']([^"']+)["']` : `["']?([\\d.,]+)["']?`), "i");
+    const labelRe = fieldRe("label", true);
+    const totalRe = fieldRe("totalAmount", false);
+    const unitRe = fieldRe("unitAmount", false);
+    const qtyRe = fieldRe("quantity", false);
+    const typeRe = /["'`]?type["'`]?\s*[:=]\s*["']?(water|court|shuttle|other)/i;
+    const confRe = fieldRe("confidence", false);
 
-    const totalAmount = Math.round(Number(obj.totalAmount ?? obj.total ?? obj.unitAmount));
-    if (!isSaneReceiptItemAmount(totalAmount)) continue;
-    const unitRaw = Math.round(Number(obj.unitAmount ?? obj.unit ?? totalAmount));
-    const unitAmount = isSaneReceiptItemAmount(unitRaw) ? unitRaw : totalAmount;
-    const quantity = Math.max(1, Math.min(999, Math.round(Number(obj.quantity || 1))));
-    const confidence = Number(obj.confidence);
-
-    // Dedupe identical rows (model repeats the block) but keep distinct same-label rows.
-    const key = `${label.toLowerCase()}|${totalAmount}|${quantity}`;
-    itemsByKey.set(key, {
-      label,
-      unitAmount,
-      quantity,
-      totalAmount,
-      type: normalizeReceiptCostType(obj.type, label),
-      confidence: Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : 0.6,
-    });
+    for (const line of reasoning.split(/\r?\n/)) {
+      const labelM = labelRe.exec(line);
+      if (!labelM) continue;
+      const totalM = totalRe.exec(line);
+      const unitM = unitRe.exec(line);
+      if (!totalM && !unitM) continue;
+      pushReasoningItem(
+        itemsByKey,
+        labelM[1],
+        totalM?.[1],
+        unitM?.[1],
+        qtyRe.exec(line)?.[1],
+        typeRe.exec(line)?.[1],
+        confRe.exec(line)?.[1],
+      );
+    }
   }
 
   if (itemsByKey.size < 2) return null;
