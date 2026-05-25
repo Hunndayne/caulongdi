@@ -106,9 +106,9 @@ type PaymentNotificationRow = {
 };
 
 const RECEIPT_AI_MODEL = "@cf/google/gemma-4-26b-a4b-it";
-const RECEIPT_PROMPT_VERSION = "receipt-gemma-guarded-v5";
+const RECEIPT_PROMPT_VERSION = "receipt-gemma-items-v6";
 const RECEIPT_AI_FEATURE = "receipt_scan";
-const RECEIPT_AI_MAX_COMPLETION_TOKENS = 3200;
+const RECEIPT_AI_MAX_COMPLETION_TOKENS = 6000;
 const RECEIPT_AI_REASONING_EFFORT = "low";
 const GEMMA4_INPUT_NEURONS_PER_MILLION_TOKENS = 9091;
 const GEMMA4_OUTPUT_NEURONS_PER_MILLION_TOKENS = 27273;
@@ -412,6 +412,24 @@ function sanitizeReceiptResult(result: ReceiptParseResult, contextText?: string 
     currency: "VND",
     items,
   };
+}
+
+function isTotalOnlyReceipt(result: ReceiptParseResult) {
+  if (result.items.length !== 1) return false;
+  const label = result.items[0].label
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+  return /tong\s+hoa\s+don/.test(label) && result.items[0].totalAmount === result.totalAmount;
+}
+
+function parseSaneReceiptFromReasoning(reasoning?: string | null): ReceiptParseResult | null {
+  if (!reasoning) return null;
+  const parsed = parseReceiptFromReasoning(reasoning);
+  if (!parsed) return null;
+  const safeParsed = sanitizeReceiptResult(parsed, reasoning);
+  if (!safeParsed || isTotalOnlyReceipt(safeParsed) || safeParsed.items.length < 2) return null;
+  return safeParsed;
 }
 
 function getRecord(value: unknown): Record<string, unknown> | null {
@@ -1737,51 +1755,35 @@ sessions.post("/:id/receipt/parse", async (c) => {
     base64Length: imageBase64.length,
   });
   const prompt = [
-    "You are a deterministic receipt-to-JSON extractor for Vietnamese paper receipts.",
-    "Return EXACTLY ONE JSON object. No Markdown. No code fence. No prose. No comments. No trailing text.",
-    "The JSON object MUST validate against the provided JSON Schema and MUST use only these top-level keys: merchantName, purchasedAt, totalAmount, currency, items.",
-    "Do NOT return alternative containers or keys such as receipt, data, result, products, lineItems, line_items, rows, entries, amount, total, unitPrice, price, name, description, confidenceScore.",
-    "Do NOT omit required keys. If a value is unknown, use an empty string for merchantName/purchasedAt, 0 for totalAmount/unitAmount/totalAmount, and [] only when no line item is visible.",
-    "currency MUST always be the exact string VND.",
+    "Extract receipt line items from the image into ONE compact JSON object only.",
+    "No Markdown, no prose, no analysis, no comments, no wrapper keys.",
+    "Use exactly these top-level keys: merchantName, purchasedAt, totalAmount, currency, items.",
+    "currency must be VND. purchasedAt must be YYYY-MM-DD or an empty string.",
     "",
     "Required output shape:",
     "{\"merchantName\":\"\",\"purchasedAt\":\"\",\"totalAmount\":0,\"currency\":\"VND\",\"items\":[{\"label\":\"\",\"unitAmount\":0,\"quantity\":1,\"totalAmount\":0,\"type\":\"other\",\"confidence\":0.0}]}",
     "",
-    "Extraction rules:",
-    "1. Read only purchasable goods/services in the Description/item area.",
-    "2. Ignore VAT/tax summaries, payment method, loyalty points, QR codes, barcode numbers, cashier/ticket metadata, hotline/address text, and thank-you text.",
-    "3. Money values are VND integers only. Remove separators: 109,000 -> 109000; 34.166 -> 34166. Never append or remove zeros by guessing.",
-    "4. purchasedAt must be YYYY-MM-DD when a date is visible. Example 18/05/2026 -> 2026-05-18.",
-    "5. totalAmount is the final amount payable on the receipt. Prefer labels like TỔNG CỘNG, TONG CONG, TOTAL, or final paid amount. If not visible, use the sum of item totalAmount values.",
-    "6. items must contain one object per visible purchasable line. Each item object MUST use only these keys: label, unitAmount, quantity, totalAmount, type, confidence.",
-    "7. For ordinary count-based goods (Cái/Gói/Hộp/Lốc/etc.), quantity is an integer count. totalAmount should equal unitAmount * quantity when the receipt line clearly shows both.",
-    "8. For weighted goods sold by Kg/g, quantity MUST be 1. Put the weight into label, and set unitAmount equal to the line totalAmount.",
-    "9. If only the grand total is readable and no item is readable, return one item: {\"label\":\"Tổng hóa đơn\",\"unitAmount\":totalAmount,\"quantity\":1,\"totalAmount\":totalAmount,\"type\":\"other\",\"confidence\":0.4}.",
+    "Critical item rule:",
+    "If a Description/item table is visible, items MUST contain the visible purchasable rows.",
+    "Do NOT return a single Tong hoa don/Tong cong item unless the item table is completely unreadable.",
+    "A rough raw OCR label is better than omitting a visible item.",
+    "Keep labels short and raw as seen; do not translate, beautify, restore accents, or infer missing product details.",
     "",
-    "Label normalization rules:",
-    "1. label must be short Vietnamese with accents and lowercase, except proper nouns/brands.",
-    "2. Restore accents from uppercase no-accent receipt text when confident: BANH MANDU THIT -> bánh mandu thịt; KHOAI LANG -> khoai lang.",
-    "3. Expand only common abbreviations when confident: SCU=sữa chua, TT=thịt, B.=bánh, T.C/TC=tiệt trùng, NZ=New Zealand, KG=kg, G=g, ML=ml.",
-    "4. Keep uncertain abbreviations unchanged. Do not invent product details.",
-    "5. Remove product codes/pack-size codes from label unless needed to distinguish the product: 40G, SCX35G, LC4AI-40, 30G*10.",
-    "6. Keep brand casing when known: Vissan, Ponnie, Probi, Aquafina, CJ, Yonex.",
+    "Parse rules:",
+    "Read only purchasable goods/services in the item area.",
+    "Ignore VAT/tax summaries, payment lines, loyalty points, QR/barcode numbers, cashier/ticket metadata, address/hotline, thank-you text.",
+    "Money values are VND integers only: 109,000 -> 109000; 34.166 -> 34166.",
+    "totalAmount is the final payable amount. Prefer TONG CONG/TONG TIEN/TOTAL labels.",
+    "For count rows like '2 Goi x 54500 109000': quantity=2, unitAmount=54500, totalAmount=109000.",
+    "For rows where only unit and total are visible: if total/unit is a small integer, use that as quantity; otherwise quantity=1.",
+    "For weighted rows like '0.342 Kg x 99900 34166': quantity=1, unitAmount=34166, totalAmount=34166, and include '(0.342 kg)' in label.",
+    "Every item must use exactly: label, unitAmount, quantity, totalAmount, type, confidence.",
+    "type is water only for drinks; court only for court rental; shuttle only for badminton shuttle/sports equipment; otherwise other.",
     "",
-    "type mapping:",
-    "- court: court rental, sports venue, playing time.",
-    "- water: water, soft drink, beer, tea, coffee, milk, yogurt, drinkable items.",
-    "- shuttle: badminton shuttlecock, racket, sports equipment.",
-    "- other: everything else.",
+    "Fallback only when no product row is readable:",
+    "{\"label\":\"Tong hoa don\",\"unitAmount\":totalAmount,\"quantity\":1,\"totalAmount\":totalAmount,\"type\":\"other\",\"confidence\":0.35}",
     "",
-    "Weighted item examples:",
-    "GO! THIT HEO XAY VIE / 0.342 Kg / 99900 / 34166 -> {\"label\":\"thịt heo xay (0.342 kg)\",\"unitAmount\":34166,\"quantity\":1,\"totalAmount\":34166,\"type\":\"other\",\"confidence\":0.85}",
-    "KHOAI LANG GIANG NHUA / 0.402 Kg / 17900 / 7196 -> {\"label\":\"khoai lang giống Nhật (0.402 kg)\",\"unitAmount\":7196,\"quantity\":1,\"totalAmount\":7196,\"type\":\"other\",\"confidence\":0.85}",
-    "",
-    "Before final answer, silently verify:",
-    "- The response begins with { and ends with }.",
-    "- There are no keys outside the schema.",
-    "- Every item has exactly label, unitAmount, quantity, totalAmount, type, confidence.",
-    "- All amount fields and quantity are integers.",
-    "- confidence is a number from 0 to 1.",
+    "Output compact JSON now. Start with { and end with }.",
   ].join("\n");
 
   const aiReservation = await reserveAiNeurons(c);
@@ -1828,22 +1830,29 @@ sessions.post("/:id/receipt/parse", async (c) => {
     try {
       parsed = sanitizeReceiptParseResult(payload);
     } catch (sanitizeError) {
-      if (truncated) {
+      const fromReasoning = parseSaneReceiptFromReasoning(reasoning);
+      if (fromReasoning) {
+        console.log("[receipt-ai] fallback: parsed sane items from reasoning", fromReasoning.items.length, "items");
+        parsed = fromReasoning;
+      } else if (truncated) {
         const totalOnly = buildTotalOnlyReceipt(extractReceiptTotalFromText(reasoning), reasoning);
         if (!totalOnly) throw sanitizeError;
         console.log("[receipt-ai] fallback: truncated response, using total only");
         parsed = totalOnly;
       } else {
-        const fromReasoning = reasoning ? parseReceiptFromReasoning(reasoning) : null;
-        if (!fromReasoning) throw sanitizeError;
-        console.log("[receipt-ai] fallback: parsed from reasoning", fromReasoning.items.length, "items");
-        parsed = fromReasoning;
+        throw sanitizeError;
       }
     }
 
     const safeParsed = sanitizeReceiptResult(parsed, reasoning);
     if (!safeParsed) throw new Error("AI response did not contain a sane receipt total or item list");
-    parsed = safeParsed;
+    const reasoningParsed = isTotalOnlyReceipt(safeParsed) ? parseSaneReceiptFromReasoning(reasoning) : null;
+    if (reasoningParsed) {
+      console.log("[receipt-ai] replacing total-only payload with reasoning items", reasoningParsed.items.length, "items");
+      parsed = reasoningParsed;
+    } else {
+      parsed = safeParsed;
+    }
     console.log("[receipt-ai] parsed items", parsed.items.length, "total", parsed.totalAmount);
 
     await adjustAiNeuronReservation(
