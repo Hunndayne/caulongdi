@@ -322,6 +322,26 @@ function cleanReceiptLabel(value: unknown) {
     .slice(0, 120);
 }
 
+// Receipt metadata lines the OCR model sometimes mistakes for products
+// (e.g. "Giá gốc 63.200" → phantom item "Gia"). Reject by normalized label.
+const NON_ITEM_LABELS = new Set([
+  "gia", "gia goc", "don gia", "thanh tien", "thanh tn", "tong", "tong cong",
+  "tong tien", "tong tien thanh toan", "vat", "thue", "tien thua", "tien mat",
+  "tien khach dua", "chiet khau", "giam gia", "khuyen mai", "diem", "tich diem",
+]);
+
+function isNonItemLabel(label: string) {
+  const normalized = label
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/đ/g, "d")
+    .toLowerCase()
+    .replace(/[^a-z\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return NON_ITEM_LABELS.has(normalized);
+}
+
 function extractReceiptTotalFromText(text?: string | null) {
   if (!text) return 0;
   const normalizedText = text
@@ -381,6 +401,10 @@ function sanitizeReceiptResult(result: ReceiptParseResult, contextText?: string 
       const label = cleanReceiptLabel(item.label);
       if (!label || label.length < 2) {
         rejected.push({ reason: "empty label after cleanReceiptLabel", raw: { label: item.label, unitAmount: item.unitAmount, totalAmount: item.totalAmount } });
+        return null;
+      }
+      if (isNonItemLabel(label)) {
+        rejected.push({ reason: "non-item metadata label", raw: { label, unitAmount: item.unitAmount, totalAmount: item.totalAmount } });
         return null;
       }
 
