@@ -14,7 +14,18 @@ const DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com";
 const MAX_NLU_CALLS_PER_DAY = 1000; // trần an toàn chống vòng lặp gọi API tốn tiền
 const MAX_SESSIONS_IN_REPLY = 8;
 
-type Intent = "help" | "next" | "upcoming" | "today" | "week" | "recent";
+type Intent =
+  | "help"
+  | "next"
+  | "upcoming"
+  | "today"
+  | "week"
+  | "recent"
+  | "list_members"
+  | "list_attendees"
+  | "add_member";
+
+type ParsedIntent = { intent: Intent; names: string[] };
 
 type SessionRow = {
   id: string;
@@ -87,10 +98,11 @@ function helpText() {
   return [
     "🤖 TingTing bot — các lệnh:",
     "• /buoi — buổi sắp tới của nhóm",
-    '• "buổi hôm nay" — buổi trong hôm nay',
-    '• "buổi tuần này" — buổi trong tuần',
-    '• "buổi kế tiếp" — buổi gần nhất sắp tới',
+    '• "buổi hôm nay" / "buổi tuần này" / "buổi kế tiếp" — lọc theo thời gian',
     '• "các buổi gần đây" — lịch sử gần đây',
+    '• "thành viên" — danh sách thành viên nhóm',
+    '• "buổi sắp tới có ai" — ai tham gia buổi sắp tới',
+    '• "thêm <tên> vào buổi" — thêm người vào buổi sắp tới',
     "• /connect <mã> — liên kết nhóm chat với nhóm TingTing (lấy mã trên web)",
     "• /disconnect — huỷ liên kết",
   ].join("\n");
@@ -146,7 +158,11 @@ async function withinDailyNluCap(db: D1Database): Promise<boolean> {
 
 function detectIntentByRegex(text: string): Intent | null {
   const t = removeDiacritics(text.toLowerCase()).trim();
+  // Câu "thêm người vào buổi" -> trả null để DeepSeek rút tên (đừng để regex "sắp tới" nuốt mất).
+  if (/(^|\s|\/)(them|add)(\s|$)/.test(t) || /\b(cho|dua)\b.*\b(vao|tham gia)\b.*buoi/.test(t)) return null;
   if (/^\/help\b/.test(t) || /\b(huong dan|cac lenh|menu|help)\b/.test(t)) return "help";
+  if (/^\/thanhvien\b|thanh vien|ai trong nhom|danh sach (thanh vien|nguoi)/.test(t)) return "list_members";
+  if (/co ai|co nhung ai|nhung ai|ai tham gia|ai danh|ai choi|ai di/.test(t)) return "list_attendees";
   if (/\bhom nay\b|\btoday\b/.test(t)) return "today";
   if (/tuan nay|trong tuan|this week/.test(t)) return "week";
   if (/ke tiep|tiep theo|buoi toi|gan nhat|\bnext\b/.test(t)) return "next";
@@ -155,18 +171,38 @@ function detectIntentByRegex(text: string): Intent | null {
   return null;
 }
 
-// Gọi DeepSeek (API tương thích OpenAI) để phân loại ý định.
-async function classifyWithAI(env: Env, text: string): Promise<Intent | null> {
+function normalizeIntent(value: unknown): Intent | null {
+  const v = String(value ?? "").toLowerCase().trim();
+  const valid: Intent[] = [
+    "next",
+    "upcoming",
+    "today",
+    "week",
+    "recent",
+    "list_members",
+    "list_attendees",
+    "add_member",
+    "help",
+  ];
+  if ((valid as string[]).includes(v)) return v as Intent;
+  if (v === "unknown") return "help";
+  return null;
+}
+
+// Gọi DeepSeek (API tương thích OpenAI) để phân loại ý định + rút tên người (cho add_member).
+async function classifyWithAI(env: Env, text: string): Promise<ParsedIntent | null> {
   const apiKey = env.DEEPSEEK_API_KEY?.trim();
   if (!apiKey) return null;
   const baseUrl = (env.DEEPSEEK_BASE_URL?.trim() || DEFAULT_DEEPSEEK_BASE_URL).replace(/\/+$/, "");
   const model = env.DEEPSEEK_MODEL?.trim() || DEFAULT_DEEPSEEK_MODEL;
 
   const system = [
-    "Bạn phân loại ý định câu hỏi về lịch chơi cầu lông của một nhóm.",
-    "Chỉ trả lời DUY NHẤT một từ trong: next, upcoming, today, week, recent, help, unknown.",
-    "next=buổi sắp tới gần nhất; upcoming=danh sách buổi sắp tới; today=hôm nay; week=tuần này;",
-    "recent=các buổi gần đây/lịch sử; help=cần hướng dẫn; unknown=không liên quan.",
+    "Bạn phân tích câu của người dùng về lịch chơi cầu lông của một nhóm và TRẢ VỀ JSON.",
+    'Định dạng JSON: {"intent": "...", "names": ["..."]}.',
+    "intent là MỘT trong: next, upcoming, today, week, recent, list_members, list_attendees, add_member, help, unknown.",
+    "Ý nghĩa: next=buổi sắp tới gần nhất; upcoming=danh sách buổi sắp tới; today=hôm nay; week=tuần này; recent=các buổi gần đây/lịch sử;",
+    "list_members=liệt kê thành viên nhóm; list_attendees=ai tham gia buổi; add_member=thêm người vào buổi; help=hướng dẫn; unknown=không liên quan.",
+    'names CHỈ điền khi intent=add_member: danh sách tên người cần thêm, ví dụ ["An","Bình"]. Các intent khác để names rỗng [].',
   ].join(" ");
 
   const resp = await fetch(`${baseUrl}/chat/completions`, {
@@ -179,7 +215,8 @@ async function classifyWithAI(env: Env, text: string): Promise<Intent | null> {
         { role: "user", content: text },
       ],
       temperature: 0,
-      max_tokens: 8,
+      max_tokens: 200,
+      response_format: { type: "json_object" },
       stream: false,
     }),
   });
@@ -189,32 +226,40 @@ async function classifyWithAI(env: Env, text: string): Promise<Intent | null> {
     return null;
   }
 
-  const data = (await resp.json()) as {
-    choices?: Array<{ message?: { content?: string } }>;
-  };
-  const out = removeDiacritics(String(data?.choices?.[0]?.message?.content ?? "").toLowerCase());
-  const labels: Intent[] = ["upcoming", "recent", "today", "week", "next", "help"];
-  for (const label of labels) {
-    if (out.includes(label)) return label;
+  const data = (await resp.json()) as { choices?: Array<{ message?: { content?: string } }> };
+  const content = data?.choices?.[0]?.message?.content ?? "";
+  let obj: { intent?: unknown; names?: unknown };
+  try {
+    obj = JSON.parse(content);
+  } catch {
+    console.error("[bot-nlu] deepseek non-JSON", content);
+    return null;
   }
-  if (out.includes("unknown")) return "help";
-  return null;
+
+  const intent = normalizeIntent(obj?.intent);
+  if (!intent) return null;
+  const names = Array.isArray(obj?.names)
+    ? (obj.names as unknown[])
+        .filter((n): n is string => typeof n === "string" && n.trim().length > 0)
+        .map((n) => n.trim())
+    : [];
+  return { intent, names };
 }
 
-async function resolveQueryIntent(env: Env, text: string): Promise<Intent> {
+async function resolveIntent(env: Env, text: string): Promise<ParsedIntent> {
   const byRegex = detectIntentByRegex(text);
-  if (byRegex) return byRegex;
+  if (byRegex) return { intent: byRegex, names: [] };
 
   const cleaned = text.replace(/^\/buoi\b/i, "").trim();
-  if (!cleaned) return "upcoming"; // chỉ gõ "/buoi"
+  if (!cleaned) return { intent: "upcoming", names: [] }; // chỉ gõ "/buoi"
 
-  if (!env.DEEPSEEK_API_KEY?.trim()) return "upcoming"; // chưa cấu hình DeepSeek -> mặc định
-  if (!(await withinDailyNluCap(env.DB))) return "upcoming"; // chạm trần số lần gọi/ngày
+  if (!env.DEEPSEEK_API_KEY?.trim()) return { intent: "upcoming", names: [] }; // chưa cấu hình DeepSeek
+  if (!(await withinDailyNluCap(env.DB))) return { intent: "upcoming", names: [] }; // chạm trần/ngày
   try {
-    return (await classifyWithAI(env, text)) ?? "upcoming";
+    return (await classifyWithAI(env, text)) ?? { intent: "upcoming", names: [] };
   } catch (error) {
     console.error("[bot-nlu]", error);
-    return "upcoming";
+    return { intent: "upcoming", names: [] };
   }
 }
 
@@ -266,6 +311,15 @@ async function querySessions(env: Env, groupId: string, opts: QueryOpts): Promis
   return result.results ?? [];
 }
 
+function normalizeName(value: string) {
+  return removeDiacritics(value.toLowerCase()).replace(/\s+/g, " ").trim();
+}
+
+async function soonestUpcoming(env: Env, groupId: string): Promise<SessionRow | null> {
+  const rows = await querySessions(env, groupId, { onlyUpcoming: true, limit: 1 });
+  return rows[0] ?? null;
+}
+
 async function handleQuery(env: Env, threadId: string, text: string): Promise<BotReply> {
   const link = await env.DB.prepare("SELECT group_id FROM bot_thread_links WHERE thread_id = ?")
     .bind(threadId)
@@ -284,30 +338,45 @@ async function handleQuery(env: Env, threadId: string, text: string): Promise<Bo
     .bind(link.group_id)
     .first<{ name: string }>();
   const groupName = group?.name ?? "nhóm";
+  const groupId = link.group_id;
 
-  const intent = await resolveQueryIntent(env, text);
-  if (intent === "help") return { ok: true, reply: helpText() };
+  const parsed = await resolveIntent(env, text);
 
+  switch (parsed.intent) {
+    case "help":
+      return { ok: true, reply: helpText() };
+    case "list_members":
+      return replyMembers(env, groupId, groupName);
+    case "list_attendees":
+      return replyAttendees(env, groupId, groupName);
+    case "add_member":
+      return replyAddMembers(env, groupId, groupName, parsed.names);
+    default:
+      return replySessions(env, groupId, groupName, parsed.intent);
+  }
+}
+
+async function replySessions(env: Env, groupId: string, groupName: string, intent: Intent): Promise<BotReply> {
   const today = vnToday();
   let rows: SessionRow[];
   let header: string;
 
   if (intent === "today") {
-    rows = await querySessions(env, link.group_id, { date: today });
+    rows = await querySessions(env, groupId, { date: today });
     header = `📅 Buổi hôm nay (${formatDate(today)}) của ${groupName}`;
   } else if (intent === "week") {
     const week = vnWeekRange();
-    rows = await querySessions(env, link.group_id, { from: week.from, to: week.to });
+    rows = await querySessions(env, groupId, { from: week.from, to: week.to });
     header = `📅 Buổi tuần này của ${groupName}`;
   } else if (intent === "recent") {
-    rows = await querySessions(env, link.group_id, { recent: true });
+    rows = await querySessions(env, groupId, { recent: true });
     header = `📅 Các buổi gần đây của ${groupName}`;
   } else if (intent === "next") {
     // "Sắp tới" theo status (giống badge trên web), không lọc theo ngày.
-    rows = await querySessions(env, link.group_id, { onlyUpcoming: true, limit: 1 });
+    rows = await querySessions(env, groupId, { onlyUpcoming: true, limit: 1 });
     header = `📅 Buổi kế tiếp của ${groupName}`;
   } else {
-    rows = await querySessions(env, link.group_id, { onlyUpcoming: true });
+    rows = await querySessions(env, groupId, { onlyUpcoming: true });
     header = `📅 Buổi sắp tới của ${groupName}`;
   }
 
@@ -317,6 +386,108 @@ async function handleQuery(env: Env, threadId: string, text: string): Promise<Bo
   }
 
   return { ok: true, reply: `${header}\n\n${rows.map(formatSession).join("\n\n")}` };
+}
+
+async function replyMembers(env: Env, groupId: string, groupName: string): Promise<BotReply> {
+  const result = await env.DB
+    .prepare("SELECT name FROM members WHERE group_id = ? AND is_active = 1 ORDER BY name COLLATE NOCASE")
+    .bind(groupId)
+    .all<{ name: string }>();
+  const members = result.results ?? [];
+  if (!members.length) return { ok: true, reply: `Nhóm ${groupName} chưa có thành viên nào.` };
+  const list = members.map((m, i) => `${i + 1}. ${m.name}`).join("\n");
+  return { ok: true, reply: `👥 Thành viên nhóm ${groupName} (${members.length}):\n${list}` };
+}
+
+async function replyAttendees(env: Env, groupId: string, groupName: string): Promise<BotReply> {
+  const session = await soonestUpcoming(env, groupId);
+  if (!session) return { ok: true, reply: `${groupName}: chưa có buổi sắp tới nào.` };
+
+  const result = await env.DB
+    .prepare(
+      `SELECT m.name FROM session_members sm
+       JOIN members m ON m.id = sm.member_id
+       WHERE sm.session_id = ? AND sm.attended = 1
+       ORDER BY m.name COLLATE NOCASE`
+    )
+    .bind(session.id)
+    .all<{ name: string }>();
+  const names = result.results ?? [];
+  const header = `🏸 ${formatDate(session.date)} • ${session.start_time} • ${session.venue}`;
+  if (!names.length) return { ok: true, reply: `${header}\nChưa có ai tham gia.` };
+  const list = names.map((n) => `• ${n.name}`).join("\n");
+  return { ok: true, reply: `${header}\n👥 ${names.length} người tham gia:\n${list}` };
+}
+
+async function replyAddMembers(
+  env: Env,
+  groupId: string,
+  groupName: string,
+  names: string[]
+): Promise<BotReply> {
+  if (!names.length) {
+    return { ok: false, reply: 'Bạn muốn thêm ai? Ví dụ: "thêm An vào buổi".' };
+  }
+
+  const session = await soonestUpcoming(env, groupId);
+  if (!session) return { ok: true, reply: `${groupName}: chưa có buổi sắp tới nào để thêm người.` };
+
+  const members =
+    (await env.DB.prepare("SELECT id, name FROM members WHERE group_id = ? AND is_active = 1")
+      .bind(groupId)
+      .all<{ id: string; name: string }>()).results ?? [];
+  const attendingRows =
+    (await env.DB.prepare("SELECT member_id FROM session_members WHERE session_id = ? AND attended = 1")
+      .bind(session.id)
+      .all<{ member_id: string }>()).results ?? [];
+  const attending = new Set(attendingRows.map((r) => r.member_id));
+
+  const added: string[] = [];
+  const already: string[] = [];
+  const ambiguous: string[] = [];
+  const notFound: string[] = [];
+  const toInsert: string[] = [];
+
+  for (const raw of names) {
+    const q = normalizeName(raw);
+    if (!q) continue;
+    let matches = members.filter((m) => normalizeName(m.name) === q);
+    if (matches.length === 0) matches = members.filter((m) => normalizeName(m.name).includes(q));
+    if (matches.length === 0) {
+      notFound.push(raw);
+      continue;
+    }
+    if (matches.length > 1) {
+      ambiguous.push(raw);
+      continue;
+    }
+    const member = matches[0];
+    if (attending.has(member.id)) {
+      already.push(member.name);
+      continue;
+    }
+    toInsert.push(member.id);
+    added.push(member.name);
+    attending.add(member.id);
+  }
+
+  if (toInsert.length) {
+    const stmts = toInsert.map((memberId) =>
+      env.DB.prepare("INSERT OR IGNORE INTO session_members (session_id, member_id, attended) VALUES (?, ?, 1)")
+        .bind(session.id, memberId)
+    );
+    // Xoá payment chưa trả để tính lại chia tiền (giống flow join/điểm danh của app).
+    stmts.push(env.DB.prepare("DELETE FROM payments WHERE session_id = ? AND paid = 0").bind(session.id));
+    await env.DB.batch(stmts);
+  }
+
+  const header = `🏸 ${formatDate(session.date)} • ${session.start_time} • ${session.venue}`;
+  const lines = [header];
+  if (added.length) lines.push(`✅ Đã thêm: ${added.join(", ")}`);
+  if (already.length) lines.push(`ℹ️ Đã có sẵn: ${already.join(", ")}`);
+  if (ambiguous.length) lines.push(`⚠️ Trùng tên, ghi rõ hơn: ${ambiguous.join(", ")}`);
+  if (notFound.length) lines.push(`❓ Không tìm thấy: ${notFound.join(", ")} (gõ "thành viên" để xem danh sách)`);
+  return { ok: true, reply: lines.join("\n") };
 }
 
 // --- Liên kết / huỷ liên kết ---
