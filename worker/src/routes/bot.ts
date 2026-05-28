@@ -23,7 +23,8 @@ type Intent =
   | "recent"
   | "list_members"
   | "list_attendees"
-  | "add_member";
+  | "add_member"
+  | "chat";
 
 type ParsedIntent = { intent: Intent; names: string[] };
 
@@ -174,7 +175,7 @@ function extractNamesHeuristic(text: string): string[] {
 
 function detectIntentByRegex(text: string): Intent | null {
   const t = removeDiacritics(text.toLowerCase()).trim();
-  if (/^\/help\b/.test(t) || /\b(huong dan|cac lenh|menu|help)\b/.test(t)) return "help";
+  if (/^\/help\b/.test(t) || /\b(huong dan|cac lenh|menu)\b/.test(t)) return "help";
   if (/^\/thanhvien\b|thanh vien|ai trong nhom|danh sach (thanh vien|nguoi)/.test(t)) return "list_members";
   if (/co ai|co nhung ai|nhung ai|ai tham gia|ai danh|ai choi|ai di/.test(t)) return "list_attendees";
   if (/\bhom nay\b|\btoday\b/.test(t)) return "today";
@@ -197,9 +198,10 @@ function normalizeIntent(value: unknown): Intent | null {
     "list_attendees",
     "add_member",
     "help",
+    "chat",
   ];
   if ((valid as string[]).includes(v)) return v as Intent;
-  if (v === "unknown") return "help";
+  if (v === "unknown" || v === "smalltalk" || v === "general") return "chat";
   return null;
 }
 
@@ -260,6 +262,53 @@ async function classifyWithAI(env: Env, text: string): Promise<ParsedIntent | nu
   return { intent, names };
 }
 
+function naturalChatFallback(groupName: string) {
+  return [
+    `Mình đang ở đây với ${groupName} nè.`,
+    "Câu này hơi ngoài phần lịch chơi nên mình chưa trả lời sâu được lúc này. Hỏi mình kiểu tự nhiên tiếp đi, hoặc hỏi về buổi chơi/thành viên thì mình xử ngay.",
+  ].join("\n");
+}
+
+async function replyNaturalChat(env: Env, groupName: string, text: string): Promise<BotReply> {
+  const apiKey = env.DEEPSEEK_API_KEY?.trim();
+  if (!apiKey) return { ok: true, reply: naturalChatFallback(groupName) };
+  if (!(await withinDailyNluCap(env.DB))) return { ok: true, reply: naturalChatFallback(groupName) };
+
+  const baseUrl = (env.DEEPSEEK_BASE_URL?.trim() || DEFAULT_DEEPSEEK_BASE_URL).replace(/\/+$/, "");
+  const model = env.DEEPSEEK_MODEL?.trim() || DEFAULT_DEEPSEEK_MODEL;
+  const system = [
+    "Bạn là Ting AI trong group chat của một nhóm cầu lông trên TingTing.",
+    "Trả lời tự nhiên, thân thiện, vui vừa phải, bằng tiếng Việt.",
+    "Ưu tiên câu trả lời ngắn gọn 1-4 câu, hợp văn cảnh chat nhóm.",
+    "Nếu người dùng hỏi về lịch chơi, thành viên, ai tham gia, hoặc thêm người vào buổi thì nhắc họ có thể hỏi trực tiếp bằng /ting.",
+    "Không tự bịa dữ liệu lịch, công nợ, thành viên nếu không được cung cấp trong tin nhắn.",
+  ].join(" ");
+
+  const resp = await fetch(`${baseUrl}/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: `Nhóm: ${groupName}\nTin nhắn: ${text}` },
+      ],
+      temperature: 0.7,
+      max_tokens: 450,
+      stream: false,
+    }),
+  });
+
+  if (!resp.ok) {
+    console.error("[bot-chat] deepseek http", resp.status, await resp.text().catch(() => ""));
+    return { ok: true, reply: naturalChatFallback(groupName) };
+  }
+
+  const data = (await resp.json()) as { choices?: Array<{ message?: { content?: string } }> };
+  const reply = data?.choices?.[0]?.message?.content?.trim();
+  return { ok: true, reply: reply ? reply.slice(0, 1600) : naturalChatFallback(groupName) };
+}
+
 async function resolveIntent(env: Env, text: string): Promise<ParsedIntent> {
   const t = removeDiacritics(text.toLowerCase()).trim();
   const addLike = isAddLike(t);
@@ -288,7 +337,7 @@ async function resolveIntent(env: Env, text: string): Promise<ParsedIntent> {
     return { intent: "add_member", names };
   }
 
-  return ai ?? { intent: "upcoming", names: [] };
+  return ai ?? { intent: "chat", names: [] };
 }
 
 // --- Truy vấn buổi chơi ---
@@ -379,6 +428,8 @@ async function handleQuery(env: Env, threadId: string, text: string): Promise<Bo
       return replyAttendees(env, groupId, groupName);
     case "add_member":
       return replyAddMembers(env, groupId, groupName, parsed.names);
+    case "chat":
+      return replyNaturalChat(env, groupName, text);
     default:
       return replySessions(env, groupId, groupName, parsed.intent);
   }
@@ -401,6 +452,8 @@ export async function handleGroupBotQuery(env: Env, groupId: string, text: strin
       return replyAttendees(env, groupId, groupName);
     case "add_member":
       return replyAddMembers(env, groupId, groupName, parsed.names);
+    case "chat":
+      return replyNaturalChat(env, groupName, text);
     default:
       return replySessions(env, groupId, groupName, parsed.intent);
   }
