@@ -38,7 +38,7 @@ type SessionRow = {
   attendee_count: number;
 };
 
-type BotReply = { ok: boolean; reply: string };
+export type BotReply = { ok: boolean; reply: string };
 
 function bearerToken(header?: string | null) {
   const match = header?.match(/^Bearer\s+(.+)$/i);
@@ -367,6 +367,28 @@ async function handleQuery(env: Env, threadId: string, text: string): Promise<Bo
     .first<{ name: string }>();
   const groupName = group?.name ?? "nhóm";
   const groupId = link.group_id;
+
+  const parsed = await resolveIntent(env, text);
+
+  switch (parsed.intent) {
+    case "help":
+      return { ok: true, reply: helpText() };
+    case "list_members":
+      return replyMembers(env, groupId, groupName);
+    case "list_attendees":
+      return replyAttendees(env, groupId, groupName);
+    case "add_member":
+      return replyAddMembers(env, groupId, groupName, parsed.names);
+    default:
+      return replySessions(env, groupId, groupName, parsed.intent);
+  }
+}
+
+export async function handleGroupBotQuery(env: Env, groupId: string, text: string): Promise<BotReply> {
+  const group = await env.DB.prepare("SELECT name FROM groups WHERE id = ?")
+    .bind(groupId)
+    .first<{ name: string }>();
+  const groupName = group?.name ?? "nhom";
 
   const parsed = await resolveIntent(env, text);
 

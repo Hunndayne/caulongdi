@@ -16,6 +16,7 @@ import type {
   ReceiptParseResult,
   AiUsageStatus,
   ChatMessage,
+  SendChatMessageResponse,
 } from "@/types";
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
@@ -107,10 +108,10 @@ export const api = {
   getChatMessages: (groupId: string, limit = 80) =>
     request<ChatMessage[]>(`/api/chat/${encodeURIComponent(groupId)}/messages?limit=${limit}`),
   sendChatMessage: (groupId: string, body: string) =>
-    request<ChatMessage>(`/api/chat/${encodeURIComponent(groupId)}/messages`, {
+    request<SendChatMessageResponse | ChatMessage>(`/api/chat/${encodeURIComponent(groupId)}/messages`, {
       method: "POST",
       body: JSON.stringify({ body }),
-    }),
+    }).then((response) => ("messages" in response ? response : { messages: [response] })),
 
   // Groups
   getGroups: () => request<PlayGroup[]>("/api/groups"),

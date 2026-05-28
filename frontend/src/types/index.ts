@@ -219,3 +219,7 @@ export interface ChatMessage {
     avatarUrl?: string;
   };
 }
+
+export interface SendChatMessageResponse {
+  messages: ChatMessage[];
+}

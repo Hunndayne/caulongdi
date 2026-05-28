@@ -1,12 +1,16 @@
 import { Hono } from "hono";
 import { Env } from "../types";
 import { nanoid } from "../utils";
+import { handleGroupBotQuery } from "./bot";
 
 const chat = new Hono<{ Bindings: Env; Variables: { userId: string; userRole: string } }>();
 
 const MAX_MESSAGE_LENGTH = 1000;
 const DEFAULT_LIMIT = 80;
 const MAX_LIMIT = 120;
+const TING_BOT_USER_ID = "tingting-bot";
+const TING_BOT_EMAIL = "ting@tingting.local";
+const TING_BOT_NAME = "Ting AI";
 
 type ChatMessageRow = {
   id: string;
@@ -20,6 +24,7 @@ type ChatMessageRow = {
 };
 
 let chatTablesEnsured = false;
+let tingBotUserEnsured = false;
 
 async function ensureChatTables(db: D1Database) {
   if (chatTablesEnsured) return;
@@ -41,6 +46,20 @@ async function ensureChatTables(db: D1Database) {
     .run();
 
   chatTablesEnsured = true;
+}
+
+async function ensureTingBotUser(db: D1Database) {
+  if (tingBotUserEnsured) return;
+  const now = new Date().toISOString();
+  await db
+    .prepare(
+      `INSERT OR IGNORE INTO users (
+        id, name, email, email_verified, avatar_url, role, created_at, updated_at
+      ) VALUES (?, ?, ?, 1, NULL, 'member', ?, ?)`
+    )
+    .bind(TING_BOT_USER_ID, TING_BOT_NAME, TING_BOT_EMAIL, now, now)
+    .run();
+  tingBotUserEnsured = true;
 }
 
 function toChatMessage(row: ChatMessageRow) {
@@ -73,6 +92,36 @@ function parseLimit(raw?: string) {
   const value = Number(raw ?? DEFAULT_LIMIT);
   if (!Number.isFinite(value)) return DEFAULT_LIMIT;
   return Math.max(1, Math.min(MAX_LIMIT, Math.floor(value)));
+}
+
+function parseTingPrompt(text: string) {
+  if (!/^\/ting(?:\s|$)/i.test(text)) return null;
+  return text.replace(/^\/ting\s*/i, "").trim();
+}
+
+async function getChatMessage(db: D1Database, id: string) {
+  const row = await db
+    .prepare(
+      `SELECT cm.id, cm.group_id, cm.user_id, cm.body, cm.created_at,
+        u.name as user_name, u.email as user_email, u.avatar_url as user_avatar_url
+       FROM chat_messages cm
+       JOIN users u ON u.id = cm.user_id
+       WHERE cm.id = ?`
+    )
+    .bind(id)
+    .first<ChatMessageRow>();
+
+  return row ? toChatMessage(row) : null;
+}
+
+async function insertChatMessage(db: D1Database, groupId: string, userId: string, body: string, createdAt: string) {
+  const id = nanoid();
+  await db
+    .prepare("INSERT INTO chat_messages (id, group_id, user_id, body, created_at) VALUES (?, ?, ?, ?, ?)")
+    .bind(id, groupId, userId, body, createdAt)
+    .run();
+
+  return getChatMessage(db, id);
 }
 
 chat.get("/:groupId/messages", async (c) => {
@@ -113,26 +162,33 @@ chat.post("/:groupId/messages", async (c) => {
 
   await ensureChatTables(c.env.DB);
 
-  const id = nanoid();
   const now = new Date().toISOString();
-  await c.env.DB.prepare(
-    "INSERT INTO chat_messages (id, group_id, user_id, body, created_at) VALUES (?, ?, ?, ?, ?)"
-  )
-    .bind(id, groupId, c.get("userId"), text, now)
-    .run();
+  const sentMessage = await insertChatMessage(c.env.DB, groupId, c.get("userId"), text, now);
+  const messages = sentMessage ? [sentMessage] : [];
 
-  const row = await c.env.DB
-    .prepare(
-      `SELECT cm.id, cm.group_id, cm.user_id, cm.body, cm.created_at,
-        u.name as user_name, u.email as user_email, u.avatar_url as user_avatar_url
-       FROM chat_messages cm
-       JOIN users u ON u.id = cm.user_id
-       WHERE cm.id = ?`
-    )
-    .bind(id)
-    .first<ChatMessageRow>();
+  const tingPrompt = parseTingPrompt(text);
+  if (tingPrompt !== null) {
+    await ensureTingBotUser(c.env.DB);
 
-  return c.json(toChatMessage(row!), 201);
+    let reply = "";
+    if (!tingPrompt) {
+      reply = 'Gõ sau /ting điều bạn muốn hỏi. Ví dụ: "/ting buổi tuần này" hoặc "/ting buổi sắp tới có ai".';
+    } else {
+      try {
+        const result = await handleGroupBotQuery(c.env, groupId, tingPrompt);
+        reply = result.reply || "Mình chưa có câu trả lời cho câu này.";
+      } catch (error) {
+        console.error("[web-chat-ting]", error);
+        reply = "Ting đang hơi lag, thử lại giúp mình nhé.";
+      }
+    }
+
+    const replyAt = new Date(Date.now() + 1).toISOString();
+    const botMessage = await insertChatMessage(c.env.DB, groupId, TING_BOT_USER_ID, reply, replyAt);
+    if (botMessage) messages.push(botMessage);
+  }
+
+  return c.json({ messages }, 201);
 });
 
 export default chat;

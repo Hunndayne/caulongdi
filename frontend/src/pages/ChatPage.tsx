@@ -175,8 +175,8 @@ export default function ChatPage() {
     setSending(true);
     setError(null);
     try {
-      const sentMessage = await api.sendChatMessage(activeGroupId, body);
-      setMessages((current) => mergeMessages(current, [sentMessage]));
+      const response = await api.sendChatMessage(activeGroupId, body);
+      setMessages((current) => mergeMessages(current, response.messages));
       setDraft("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Không gửi được tin nhắn");
@@ -382,7 +382,7 @@ export default function ChatPage() {
                 onChange={(event) => setDraft(event.target.value.slice(0, MAX_MESSAGE_LENGTH))}
                 onKeyDown={handleComposerKeyDown}
                 disabled={!activeGroupId}
-                placeholder={activeGroupId ? "Aa" : "Chọn nhóm để chat"}
+                placeholder={activeGroupId ? "Aa, /ting để hỏi Ting" : "Chọn nhóm để chat"}
                 rows={1}
                 className="max-h-32 min-h-9 flex-1 resize-none bg-transparent py-2 text-sm text-[#18181b] outline-none placeholder:text-[#71717a] disabled:cursor-not-allowed"
               />
