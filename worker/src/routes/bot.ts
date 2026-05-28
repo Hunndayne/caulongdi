@@ -173,16 +173,27 @@ function extractNamesHeuristic(text: string): string[] {
     .filter((x) => x.length > 0);
 }
 
+function hasSessionContext(t: string): boolean {
+  return (
+    /^\/buoi\b/.test(t) ||
+    /\b(buoi|lich|choi|cau long|san|tap)\b/.test(t) ||
+    /\b(di danh|danh cau|danh o|di cau)\b/.test(t)
+  );
+}
+
 function detectIntentByRegex(text: string): Intent | null {
   const t = removeDiacritics(text.toLowerCase()).trim();
+  const sessionContext = hasSessionContext(t);
   if (/^\/help\b/.test(t) || /\b(huong dan|cac lenh|menu)\b/.test(t)) return "help";
   if (/^\/thanhvien\b|thanh vien|ai trong nhom|danh sach (thanh vien|nguoi)/.test(t)) return "list_members";
-  if (/co ai|co nhung ai|nhung ai|ai tham gia|ai danh|ai choi|ai di/.test(t)) return "list_attendees";
-  if (/\bhom nay\b|\btoday\b/.test(t)) return "today";
-  if (/tuan nay|trong tuan|this week/.test(t)) return "week";
-  if (/ke tiep|tiep theo|buoi toi|gan nhat|\bnext\b/.test(t)) return "next";
-  if (/gan day|lich su|da choi|truoc day|tat ca|\ball\b|\brecent\b/.test(t)) return "recent";
-  if (/sap toi|sap dien ra|lich choi|upcoming|^\/buoi\b/.test(t)) return "upcoming";
+  if (/\b(ai tham gia|ai danh|ai choi|ai di)\b/.test(t) || (sessionContext && /\b(co ai|co nhung ai|nhung ai)\b/.test(t))) {
+    return "list_attendees";
+  }
+  if (sessionContext && (/\bhom nay\b|\btoday\b/.test(t))) return "today";
+  if (sessionContext && /tuan nay|trong tuan|this week/.test(t)) return "week";
+  if (sessionContext && /ke tiep|tiep theo|buoi toi|gan nhat|\bnext\b/.test(t)) return "next";
+  if (sessionContext && /gan day|lich su|da choi|truoc day|tat ca|\ball\b|\brecent\b/.test(t)) return "recent";
+  if (/^\/buoi\b/.test(t) || (sessionContext && /sap toi|sap dien ra|lich choi|upcoming/.test(t))) return "upcoming";
   return null;
 }
 
@@ -213,6 +224,7 @@ async function classifyWithAI(env: Env, text: string): Promise<ParsedIntent | nu
   const model = env.DEEPSEEK_MODEL?.trim() || DEFAULT_DEEPSEEK_MODEL;
 
   const system = [
+    "Only classify today/week/upcoming/next/recent/list_attendees when the user clearly asks about badminton sessions, schedule, court, or players; casual chat that happens to mention time words must be unknown.",
     "Bạn phân tích câu của người dùng về lịch chơi cầu lông của một nhóm và TRẢ VỀ JSON.",
     'Định dạng JSON: {"intent": "...", "names": ["..."]}.',
     "intent là MỘT trong: next, upcoming, today, week, recent, list_members, list_attendees, add_member, help, unknown.",
