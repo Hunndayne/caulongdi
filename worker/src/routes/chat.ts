@@ -175,7 +175,10 @@ chat.post("/:groupId/messages", async (c) => {
       reply = 'Gõ sau /ting điều bạn muốn hỏi. Ví dụ: "/ting buổi tuần này" hoặc "/ting buổi sắp tới có ai".';
     } else {
       try {
-        const result = await handleGroupBotQuery(c.env, groupId, tingPrompt);
+        const result = await handleGroupBotQuery(c.env, groupId, tingPrompt, {
+          userId: c.get("userId"),
+          name: sentMessage?.user.name,
+        });
         reply = result.reply || "Mình chưa có câu trả lời cho câu này.";
       } catch (error) {
         console.error("[web-chat-ting]", error);

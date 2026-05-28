@@ -24,9 +24,17 @@ type Intent =
   | "list_members"
   | "list_attendees"
   | "add_member"
+  | "create_session"
   | "chat";
 
-type ParsedIntent = { intent: Intent; names: string[] };
+type SessionDraft = {
+  date?: string;
+  startTime?: string;
+  venue?: string;
+  note?: string;
+};
+
+type ParsedIntent = { intent: Intent; names: string[]; session?: SessionDraft };
 
 type SessionRow = {
   id: string;
@@ -40,6 +48,14 @@ type SessionRow = {
 };
 
 export type BotReply = { ok: boolean; reply: string };
+
+type BotActor = {
+  userId?: string;
+  name?: string | null;
+};
+
+const SELF_NAME_TOKEN = "__ting_self__";
+const MEMBER_COLORS = ["#22c55e", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4"];
 
 function bearerToken(header?: string | null) {
   const match = header?.match(/^Bearer\s+(.+)$/i);
@@ -62,6 +78,20 @@ function vnNow() {
 
 function vnToday() {
   return vnNow().toISOString().slice(0, 10);
+}
+
+function vnDateAfter(days: number) {
+  const date = vnNow();
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+function nextVnWeekday(targetWeekday: number) {
+  const now = vnNow();
+  const current = now.getUTCDay();
+  const delta = (targetWeekday - current + 7) % 7 || 7;
+  now.setUTCDate(now.getUTCDate() + delta);
+  return now.toISOString().slice(0, 10);
 }
 
 function vnWeekRange() {
@@ -162,15 +192,135 @@ function isAddLike(t: string): boolean {
   return /(^|\s|\/)(them|add)(\s|$)/.test(t) || /\b(cho|dua)\b.*\b(vao|tham gia)\b.*buoi/.test(t);
 }
 
+function isCreateSessionLike(t: string): boolean {
+  return (
+    /\b(them|add)\b.*\b(buoi|keo)\b.*\bmoi\b/.test(t) ||
+    /\b(tao|set|lap|len|mo)\b.*\b(buoi|keo|lich)\b/.test(t) ||
+    /\b(buoi|keo)\s+moi\b/.test(t)
+  );
+}
+
+function parseCreateDate(text: string): string | undefined {
+  const t = removeDiacritics(text.toLowerCase());
+  if (/\bhom nay\b|\btoday\b/.test(t)) return vnToday();
+  if (/\bngay mai\b|\bmai\b|\btomorrow\b/.test(t)) return vnDateAfter(1);
+  if (/\bngay kia\b|\bngay mot\b|\bmot\b/.test(t) && !/\bmot\s+buoi\b/.test(t)) return vnDateAfter(2);
+
+  const slash = t.match(/\b(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?\b/);
+  if (slash) {
+    const day = Number(slash[1]);
+    const month = Number(slash[2]);
+    const yearRaw = slash[3] ? Number(slash[3]) : vnNow().getUTCFullYear();
+    const year = yearRaw < 100 ? 2000 + yearRaw : yearRaw;
+    if (day >= 1 && day <= 31 && month >= 1 && month <= 12) {
+      return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    }
+  }
+
+  const weekdays: Array<[RegExp, number]> = [
+    [/\bthu\s*(2|hai)\b/, 1],
+    [/\bthu\s*(3|ba)\b/, 2],
+    [/\bthu\s*(4|tu)\b/, 3],
+    [/\bthu\s*(5|nam)\b/, 4],
+    [/\bthu\s*(6|sau)\b/, 5],
+    [/\bthu\s*(7|bay)\b/, 6],
+    [/\b(chu nhat|cn|sunday)\b/, 0],
+  ];
+  const match = weekdays.find(([pattern]) => pattern.test(t));
+  return match ? nextVnWeekday(match[1]) : undefined;
+}
+
+function parseCreateTime(text: string): string | undefined {
+  const t = removeDiacritics(text.toLowerCase());
+  const match =
+    t.match(/\b(?:luc|vao)?\s*(\d{1,2})\s*(?:h|gio|:)\s*(\d{1,2})?\s*(sang|chieu|toi|trua|am|pm)?\b/) ||
+    t.match(/\b(?:luc|vao)\s+(\d{1,2})\s*(sang|chieu|toi|trua|am|pm)\b/);
+  if (!match) return undefined;
+
+  let hour = Number(match[1]);
+  const minuteRaw = match[2] && /^\d+$/.test(match[2]) ? match[2] : undefined;
+  const period = (minuteRaw ? match[3] : match[2]) || "";
+  const minute = minuteRaw ? Number(minuteRaw) : 0;
+  if (hour > 23 || minute > 59) return undefined;
+  if ((period === "chieu" || period === "toi" || period === "pm") && hour < 12) hour += 12;
+  if (period === "trua" && hour < 11) hour += 12;
+  if ((period === "sang" || period === "am") && hour === 12) hour = 0;
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+function cleanupVenue(value: string): string {
+  return value
+    .replace(/\s+(?:vào|vao|lúc|luc)\b.*$/i, "")
+    .replace(/\s+(?:ngày|ngay|hôm|hom|mai|thứ|thu)\b.*$/i, "")
+    .replace(/\b(?:nhé|nhe|nha|ạ|a)\b/gi, " ")
+    .replace(/^[\s,.;:!?]+|[\s,.;:!?]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function parseCreateVenue(text: string): string | undefined {
+  const match = text.match(/(?:^|[\s,.;:!?])(?:ở|o|tại|tai|sân|san)\s+(.+?)(?=\s+(?:vào|vao|lúc|luc)\b|$)/i);
+  const venue = match ? cleanupVenue(match[1]) : "";
+  return venue || undefined;
+}
+
+function parseCreateSessionDraft(text: string): SessionDraft {
+  return {
+    date: parseCreateDate(text),
+    startTime: parseCreateTime(text),
+    venue: parseCreateVenue(text),
+  };
+}
+
 // Tách tên dự phòng khi DeepSeek không rút được (bỏ từ lệnh + phần "vào buổi ...").
-function extractNamesHeuristic(text: string): string[] {
-  let s = text.trim();
-  s = s.replace(/^\/?\s*(thêm|them|add|cho|đưa|dua)\s+/i, "");
-  s = s.replace(/\s+(v[àa]o|vô|vo)\b.*$/i, "");
-  return s
+function extractAddTargetSegment(text: string): string {
+  const match = text.match(/(?:^|[\s,.;:!?])(?:thêm|them|add|cho|đưa|dua)\s+(.+)$/i);
+  return match?.[1]?.trim() || text.trim();
+}
+
+function isSelfReference(value: string): boolean {
+  return /^(toi|minh|tui|em|anh|chi|tao|me|t)$/.test(normalizeName(value));
+}
+
+function cleanupAddNameCandidate(raw: string): string | null {
+  if (raw.trim() === SELF_NAME_TOKEN) return SELF_NAME_TOKEN;
+  let s = extractAddTargetSegment(raw);
+  s = s.replace(/\s+(?:vào|vao|vô|vo|tham gia)\b.*$/i, "");
+  s = s.replace(/\s+(?:lịch|lich|buổi|buoi)\b.*$/i, "");
+  s = s.replace(/\b(?:nhé|nhe|nha|giúp|giup|hộ|ho|với|voi|ạ|a)\b/gi, " ");
+  s = s.replace(/^[\s,.;:!?]+|[\s,.;:!?]+$/g, "").replace(/\s+/g, " ").trim();
+
+  if (!s) return null;
+  if (isSelfReference(s)) return SELF_NAME_TOKEN;
+
+  const q = normalizeName(s);
+  if (q.length > 60 || /\b(them|add|vao|vo|lich|buoi|hom nay|gan nhat|sap toi|nhe|nha|giup|ho|buon|met)\b/.test(q)) {
+    return null;
+  }
+  return s;
+}
+
+function splitNameCandidates(value: string): string[] {
+  return value
     .split(/\s*,\s*|\s+(?:và|va|với|voi|and)\s+/i)
     .map((x) => x.trim())
     .filter((x) => x.length > 0);
+}
+
+function normalizeAddNames(text: string, aiNames: string[] = []): string[] {
+  const source = aiNames.length ? aiNames : [extractAddTargetSegment(text)];
+  const names = source.flatMap(splitNameCandidates).map(cleanupAddNameCandidate).filter((x): x is string => Boolean(x));
+  const textTargets = splitNameCandidates(extractAddTargetSegment(text))
+    .map(cleanupAddNameCandidate)
+    .filter((x): x is string => Boolean(x));
+  if (textTargets.includes(SELF_NAME_TOKEN)) {
+    names.unshift(SELF_NAME_TOKEN);
+  }
+  return [...new Set(names)];
+}
+
+function extractNamesHeuristic(text: string): string[] {
+  return normalizeAddNames(text);
 }
 
 function hasSessionContext(t: string): boolean {
@@ -208,6 +358,7 @@ function normalizeIntent(value: unknown): Intent | null {
     "list_members",
     "list_attendees",
     "add_member",
+    "create_session",
     "help",
     "chat",
   ];
@@ -217,19 +368,21 @@ function normalizeIntent(value: unknown): Intent | null {
 }
 
 // Gọi DeepSeek (API tương thích OpenAI) để phân loại ý định + rút tên người (cho add_member).
-async function classifyWithAI(env: Env, text: string): Promise<ParsedIntent | null> {
+async function classifyWithAI(env: Env, text: string, actor?: BotActor): Promise<ParsedIntent | null> {
   const apiKey = env.DEEPSEEK_API_KEY?.trim();
   if (!apiKey) return null;
   const baseUrl = (env.DEEPSEEK_BASE_URL?.trim() || DEFAULT_DEEPSEEK_BASE_URL).replace(/\/+$/, "");
   const model = env.DEEPSEEK_MODEL?.trim() || DEFAULT_DEEPSEEK_MODEL;
 
   const system = [
+    `Nếu người dùng nói tôi/mình/tui/em/anh/chị để chỉ chính người gửi, trả names ["${SELF_NAME_TOKEN}"].`,
+    "Nếu người dùng muốn tạo/set/lên kèo/buổi/lịch mới, intent là create_session.",
     "Only classify today/week/upcoming/next/recent/list_attendees when the user clearly asks about badminton sessions, schedule, court, or players; casual chat that happens to mention time words must be unknown.",
     "Bạn phân tích câu của người dùng về lịch chơi cầu lông của một nhóm và TRẢ VỀ JSON.",
     'Định dạng JSON: {"intent": "...", "names": ["..."]}.',
-    "intent là MỘT trong: next, upcoming, today, week, recent, list_members, list_attendees, add_member, help, unknown.",
+    "intent là MỘT trong: next, upcoming, today, week, recent, list_members, list_attendees, add_member, create_session, help, unknown.",
     "Ý nghĩa: next=buổi sắp tới gần nhất; upcoming=danh sách buổi sắp tới; today=hôm nay; week=tuần này; recent=các buổi gần đây/lịch sử;",
-    "list_members=liệt kê thành viên nhóm; list_attendees=ai tham gia buổi; add_member=thêm người vào buổi; help=hướng dẫn; unknown=không liên quan.",
+    "list_members=liệt kê thành viên nhóm; list_attendees=ai tham gia buổi; add_member=thêm người vào buổi; create_session=tạo buổi/kèo mới; help=hướng dẫn; unknown=không liên quan.",
     'names CHỈ điền khi intent=add_member: danh sách tên người cần thêm, ví dụ ["An","Bình"]. Các intent khác để names rỗng [].',
   ].join(" ");
 
@@ -240,7 +393,7 @@ async function classifyWithAI(env: Env, text: string): Promise<ParsedIntent | nu
       model,
       messages: [
         { role: "system", content: system },
-        { role: "user", content: text },
+        { role: "user", content: `Người gửi: ${actor?.name || actor?.userId || "không rõ"}\nTin nhắn: ${text}` },
       ],
       temperature: 0,
       max_tokens: 200,
@@ -281,7 +434,7 @@ function naturalChatFallback(groupName: string) {
   ].join("\n");
 }
 
-async function replyNaturalChat(env: Env, groupName: string, text: string): Promise<BotReply> {
+async function replyNaturalChat(env: Env, groupName: string, text: string, actor?: BotActor): Promise<BotReply> {
   const apiKey = env.DEEPSEEK_API_KEY?.trim();
   if (!apiKey) return { ok: true, reply: naturalChatFallback(groupName) };
   if (!(await withinDailyNluCap(env.DB))) return { ok: true, reply: naturalChatFallback(groupName) };
@@ -303,7 +456,7 @@ async function replyNaturalChat(env: Env, groupName: string, text: string): Prom
       model,
       messages: [
         { role: "system", content: system },
-        { role: "user", content: `Nhóm: ${groupName}\nTin nhắn: ${text}` },
+        { role: "user", content: `Nhóm: ${groupName}\nNgười gửi: ${actor?.name || actor?.userId || "không rõ"}\nTin nhắn: ${text}` },
       ],
       temperature: 0.7,
       max_tokens: 450,
@@ -321,9 +474,14 @@ async function replyNaturalChat(env: Env, groupName: string, text: string): Prom
   return { ok: true, reply: reply ? reply.slice(0, 1600) : naturalChatFallback(groupName) };
 }
 
-async function resolveIntent(env: Env, text: string): Promise<ParsedIntent> {
+async function resolveIntent(env: Env, text: string, actor?: BotActor): Promise<ParsedIntent> {
   const t = removeDiacritics(text.toLowerCase()).trim();
+  const createLike = isCreateSessionLike(t);
   const addLike = isAddLike(t);
+
+  if (createLike) {
+    return { intent: "create_session", names: [], session: parseCreateSessionDraft(text) };
+  }
 
   if (!addLike) {
     const byRegex = detectIntentByRegex(text);
@@ -337,7 +495,7 @@ async function resolveIntent(env: Env, text: string): Promise<ParsedIntent> {
   let ai: ParsedIntent | null = null;
   if (env.DEEPSEEK_API_KEY?.trim() && (await withinDailyNluCap(env.DB))) {
     try {
-      ai = await classifyWithAI(env, text);
+      ai = await classifyWithAI(env, text, actor);
     } catch (error) {
       console.error("[bot-nlu]", error);
     }
@@ -345,8 +503,12 @@ async function resolveIntent(env: Env, text: string): Promise<ParsedIntent> {
 
   if (addLike) {
     // Luôn xử lý như "thêm". Ưu tiên tên DeepSeek rút được; không có thì tự tách tên.
-    const names = ai && ai.intent === "add_member" && ai.names.length ? ai.names : extractNamesHeuristic(text);
+    const names = normalizeAddNames(text, ai?.intent === "add_member" ? ai.names : []);
     return { intent: "add_member", names };
+  }
+
+  if (ai?.intent === "create_session") {
+    return { intent: "create_session", names: [], session: parseCreateSessionDraft(text) };
   }
 
   return ai ?? { intent: "chat", names: [] };
@@ -404,12 +566,59 @@ function normalizeName(value: string) {
   return removeDiacritics(value.toLowerCase()).replace(/\s+/g, " ").trim();
 }
 
+function colorForUser(userId: string) {
+  const total = [...userId].reduce((sum, ch) => sum + ch.charCodeAt(0), 0);
+  return MEMBER_COLORS[total % MEMBER_COLORS.length];
+}
+
+async function getOrCreateMemberForUser(
+  env: Env,
+  groupId: string,
+  userId: string
+): Promise<{ id: string; name: string } | null> {
+  const user = await env.DB.prepare("SELECT id, name, email FROM users WHERE id = ?")
+    .bind(userId)
+    .first<{ id: string; name?: string | null; email: string }>();
+  if (!user) return null;
+
+  const displayName = user.name || user.email;
+  const existing = await env.DB.prepare(
+    `SELECT id, name, group_id
+     FROM members
+     WHERE user_id = ?
+       AND (group_id = ? OR group_id IS NULL)
+     ORDER BY CASE WHEN group_id = ? THEN 0 ELSE 1 END
+     LIMIT 1`
+  )
+    .bind(userId, groupId, groupId)
+    .first<{ id: string; name: string; group_id?: string | null }>();
+
+  if (existing) {
+    await env.DB.prepare(
+      `UPDATE members
+       SET name = ?, is_active = 1, group_id = COALESCE(group_id, ?)
+       WHERE id = ?`
+    )
+      .bind(displayName, groupId, existing.id)
+      .run();
+    return { id: existing.id, name: displayName };
+  }
+
+  const memberId = crypto.randomUUID();
+  await env.DB.prepare(
+    "INSERT INTO members (id, group_id, user_id, name, phone, avatar_color, is_active, created_at) VALUES (?, ?, ?, ?, NULL, ?, 1, ?)"
+  )
+    .bind(memberId, groupId, userId, displayName, colorForUser(userId), new Date().toISOString())
+    .run();
+  return { id: memberId, name: displayName };
+}
+
 async function soonestUpcoming(env: Env, groupId: string): Promise<SessionRow | null> {
   const rows = await querySessions(env, groupId, { onlyUpcoming: true, limit: 1 });
   return rows[0] ?? null;
 }
 
-async function handleQuery(env: Env, threadId: string, text: string): Promise<BotReply> {
+async function handleQuery(env: Env, threadId: string, text: string, actor?: BotActor): Promise<BotReply> {
   const link = await env.DB.prepare("SELECT group_id FROM bot_thread_links WHERE thread_id = ?")
     .bind(threadId)
     .first<{ group_id: string }>();
@@ -429,7 +638,7 @@ async function handleQuery(env: Env, threadId: string, text: string): Promise<Bo
   const groupName = group?.name ?? "nhóm";
   const groupId = link.group_id;
 
-  const parsed = await resolveIntent(env, text);
+  const parsed = await resolveIntent(env, text, actor);
 
   switch (parsed.intent) {
     case "help":
@@ -439,21 +648,23 @@ async function handleQuery(env: Env, threadId: string, text: string): Promise<Bo
     case "list_attendees":
       return replyAttendees(env, groupId, groupName);
     case "add_member":
-      return replyAddMembers(env, groupId, groupName, parsed.names);
+      return replyAddMembers(env, groupId, groupName, parsed.names, actor);
+    case "create_session":
+      return replyCreateSession(env, groupId, groupName, parsed.session, actor);
     case "chat":
-      return replyNaturalChat(env, groupName, text);
+      return replyNaturalChat(env, groupName, text, actor);
     default:
       return replySessions(env, groupId, groupName, parsed.intent);
   }
 }
 
-export async function handleGroupBotQuery(env: Env, groupId: string, text: string): Promise<BotReply> {
+export async function handleGroupBotQuery(env: Env, groupId: string, text: string, actor?: BotActor): Promise<BotReply> {
   const group = await env.DB.prepare("SELECT name FROM groups WHERE id = ?")
     .bind(groupId)
     .first<{ name: string }>();
   const groupName = group?.name ?? "nhom";
 
-  const parsed = await resolveIntent(env, text);
+  const parsed = await resolveIntent(env, text, actor);
 
   switch (parsed.intent) {
     case "help":
@@ -463,9 +674,11 @@ export async function handleGroupBotQuery(env: Env, groupId: string, text: strin
     case "list_attendees":
       return replyAttendees(env, groupId, groupName);
     case "add_member":
-      return replyAddMembers(env, groupId, groupName, parsed.names);
+      return replyAddMembers(env, groupId, groupName, parsed.names, actor);
+    case "create_session":
+      return replyCreateSession(env, groupId, groupName, parsed.session, actor);
     case "chat":
-      return replyNaturalChat(env, groupName, text);
+      return replyNaturalChat(env, groupName, text, actor);
     default:
       return replySessions(env, groupId, groupName, parsed.intent);
   }
@@ -534,11 +747,77 @@ async function replyAttendees(env: Env, groupId: string, groupName: string): Pro
   return { ok: true, reply: `${header}\n👥 ${names.length} người tham gia:\n${list}` };
 }
 
+async function replyCreateSession(
+  env: Env,
+  groupId: string,
+  groupName: string,
+  draft?: SessionDraft,
+  actor?: BotActor
+): Promise<BotReply> {
+  const missing: string[] = [];
+  if (!draft?.date) missing.push("ngày");
+  if (!draft?.startTime) missing.push("giờ");
+  if (!draft?.venue) missing.push("địa điểm/sân");
+
+  if (missing.length) {
+    return {
+      ok: false,
+      reply:
+        `Mình tạo kèo được, nhưng còn thiếu ${missing.join(", ")}.\n` +
+        'Ví dụ: "set kèo mới ngày mai ở Thủ Đức lúc 17:00".',
+    };
+  }
+
+  const sessionDate = draft!.date!;
+  const startTime = draft!.startTime!;
+  const venue = draft!.venue!;
+
+  const existing = await env.DB.prepare(
+    `SELECT s.id, s.date, s.start_time, s.venue, s.location, s.note, s.status,
+      (SELECT COUNT(*) FROM session_members sm WHERE sm.session_id = s.id AND sm.attended = 1) AS attendee_count
+     FROM sessions s
+     WHERE s.group_id = ? AND s.date = ? AND s.start_time = ? AND lower(s.venue) = lower(?) AND s.status = 'upcoming'
+     LIMIT 1`
+  )
+    .bind(groupId, sessionDate, startTime, venue)
+    .first<SessionRow>();
+
+  if (existing) {
+    return { ok: true, reply: `Kèo này đã có rồi nè:\n${formatSession(existing)}` };
+  }
+
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  await env.DB.prepare(
+    `INSERT INTO sessions (id, group_id, created_by, date, start_time, venue, location, note, status, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, NULL, ?, 'upcoming', ?)`
+  )
+    .bind(id, groupId, actor?.userId ?? null, sessionDate, startTime, venue, draft?.note ?? null, now)
+    .run();
+
+  const session: SessionRow = {
+    id,
+    date: sessionDate,
+    start_time: startTime,
+    venue,
+    location: null,
+    note: draft?.note ?? null,
+    status: "upcoming",
+    attendee_count: 0,
+  };
+
+  return {
+    ok: true,
+    reply: `✅ Đã tạo kèo mới cho ${groupName}:\n${formatSession(session)}\nAi đi thì nhắn "/ting thêm tôi vào buổi" nhé.`,
+  };
+}
+
 async function replyAddMembers(
   env: Env,
   groupId: string,
   groupName: string,
-  names: string[]
+  names: string[],
+  actor?: BotActor
 ): Promise<BotReply> {
   if (!names.length) {
     return { ok: false, reply: 'Bạn muốn thêm ai? Ví dụ: "thêm An vào buổi".' };
@@ -546,6 +825,9 @@ async function replyAddMembers(
 
   const session = await soonestUpcoming(env, groupId);
   if (!session) return { ok: true, reply: `${groupName}: chưa có buổi sắp tới nào để thêm người.` };
+
+  const selfMember =
+    names.includes(SELF_NAME_TOKEN) && actor?.userId ? await getOrCreateMemberForUser(env, groupId, actor.userId) : null;
 
   const members =
     (await env.DB.prepare("SELECT id, name FROM members WHERE group_id = ? AND is_active = 1")
@@ -563,7 +845,35 @@ async function replyAddMembers(
   const notFound: string[] = [];
   const toInsert: string[] = [];
 
+  const queueMember = (member: { id: string; name: string }) => {
+    if (attending.has(member.id)) {
+      already.push(member.name);
+      return;
+    }
+    toInsert.push(member.id);
+    added.push(member.name);
+    attending.add(member.id);
+  };
+
   for (const raw of names) {
+    if (raw === SELF_NAME_TOKEN) {
+      if (selfMember) {
+        queueMember(selfMember);
+        continue;
+      }
+      if (actor?.name) {
+        const actorName = normalizeName(actor.name);
+        let matches = members.filter((m) => normalizeName(m.name) === actorName);
+        if (matches.length === 0) matches = members.filter((m) => normalizeName(m.name).includes(actorName));
+        if (matches.length === 1) {
+          queueMember(matches[0]);
+          continue;
+        }
+      }
+      notFound.push("bạn");
+      continue;
+    }
+
     const q = normalizeName(raw);
     if (!q) continue;
     let matches = members.filter((m) => normalizeName(m.name) === q);
@@ -576,14 +886,7 @@ async function replyAddMembers(
       ambiguous.push(raw);
       continue;
     }
-    const member = matches[0];
-    if (attending.has(member.id)) {
-      already.push(member.name);
-      continue;
-    }
-    toInsert.push(member.id);
-    added.push(member.name);
-    attending.add(member.id);
+    queueMember(matches[0]);
   }
 
   if (toInsert.length) {
@@ -691,7 +994,7 @@ bot.post("/message", async (c) => {
   if (lower.startsWith("/disconnect")) return c.json(await handleDisconnect(c.env, threadId));
   if (lower === "/help" || lower.startsWith("/help ")) return c.json({ ok: true, reply: helpText() });
 
-  return c.json(await handleQuery(c.env, threadId, text));
+  return c.json(await handleQuery(c.env, threadId, text, { name: body.senderName?.trim() || null }));
 });
 
 export default bot;
