@@ -156,10 +156,24 @@ async function withinDailyNluCap(db: D1Database): Promise<boolean> {
 
 // --- Nhận diện ý định ---
 
+// Câu "thêm người vào buổi" — nhận diện bằng regex (đáng tin) để không phụ thuộc DeepSeek đoán intent.
+function isAddLike(t: string): boolean {
+  return /(^|\s|\/)(them|add)(\s|$)/.test(t) || /\b(cho|dua)\b.*\b(vao|tham gia)\b.*buoi/.test(t);
+}
+
+// Tách tên dự phòng khi DeepSeek không rút được (bỏ từ lệnh + phần "vào buổi ...").
+function extractNamesHeuristic(text: string): string[] {
+  let s = text.trim();
+  s = s.replace(/^\/?\s*(thêm|them|add|cho|đưa|dua)\s+/i, "");
+  s = s.replace(/\s+(v[àa]o|vô|vo)\b.*$/i, "");
+  return s
+    .split(/\s*,\s*|\s+(?:và|va|với|voi|and)\s+/i)
+    .map((x) => x.trim())
+    .filter((x) => x.length > 0);
+}
+
 function detectIntentByRegex(text: string): Intent | null {
   const t = removeDiacritics(text.toLowerCase()).trim();
-  // Câu "thêm người vào buổi" -> trả null để DeepSeek rút tên (đừng để regex "sắp tới" nuốt mất).
-  if (/(^|\s|\/)(them|add)(\s|$)/.test(t) || /\b(cho|dua)\b.*\b(vao|tham gia)\b.*buoi/.test(t)) return null;
   if (/^\/help\b/.test(t) || /\b(huong dan|cac lenh|menu|help)\b/.test(t)) return "help";
   if (/^\/thanhvien\b|thanh vien|ai trong nhom|danh sach (thanh vien|nguoi)/.test(t)) return "list_members";
   if (/co ai|co nhung ai|nhung ai|ai tham gia|ai danh|ai choi|ai di/.test(t)) return "list_attendees";
@@ -247,20 +261,34 @@ async function classifyWithAI(env: Env, text: string): Promise<ParsedIntent | nu
 }
 
 async function resolveIntent(env: Env, text: string): Promise<ParsedIntent> {
-  const byRegex = detectIntentByRegex(text);
-  if (byRegex) return { intent: byRegex, names: [] };
+  const t = removeDiacritics(text.toLowerCase()).trim();
+  const addLike = isAddLike(t);
 
-  const cleaned = text.replace(/^\/buoi\b/i, "").trim();
-  if (!cleaned) return { intent: "upcoming", names: [] }; // chỉ gõ "/buoi"
+  if (!addLike) {
+    const byRegex = detectIntentByRegex(text);
+    if (byRegex) return { intent: byRegex, names: [] };
 
-  if (!env.DEEPSEEK_API_KEY?.trim()) return { intent: "upcoming", names: [] }; // chưa cấu hình DeepSeek
-  if (!(await withinDailyNluCap(env.DB))) return { intent: "upcoming", names: [] }; // chạm trần/ngày
-  try {
-    return (await classifyWithAI(env, text)) ?? { intent: "upcoming", names: [] };
-  } catch (error) {
-    console.error("[bot-nlu]", error);
-    return { intent: "upcoming", names: [] };
+    const cleaned = text.replace(/^\/buoi\b/i, "").trim();
+    if (!cleaned) return { intent: "upcoming", names: [] }; // chỉ gõ "/buoi"
   }
+
+  // Gọi DeepSeek nếu có cấu hình & chưa chạm trần.
+  let ai: ParsedIntent | null = null;
+  if (env.DEEPSEEK_API_KEY?.trim() && (await withinDailyNluCap(env.DB))) {
+    try {
+      ai = await classifyWithAI(env, text);
+    } catch (error) {
+      console.error("[bot-nlu]", error);
+    }
+  }
+
+  if (addLike) {
+    // Luôn xử lý như "thêm". Ưu tiên tên DeepSeek rút được; không có thì tự tách tên.
+    const names = ai && ai.intent === "add_member" && ai.names.length ? ai.names : extractNamesHeuristic(text);
+    return { intent: "add_member", names };
+  }
+
+  return ai ?? { intent: "upcoming", names: [] };
 }
 
 // --- Truy vấn buổi chơi ---
