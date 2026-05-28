@@ -37,6 +37,7 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
 function Layout({ children }: { children: React.ReactNode }) {
   const location = useLocation();
   const isDashboard = location.pathname === "/";
+  const isWidePage = isDashboard || location.pathname.startsWith("/chat");
 
   return (
     <div className="min-h-screen bg-[#f7f7f5] min-[769px]:grid min-[769px]:grid-cols-[232px_1fr]">
@@ -44,7 +45,7 @@ function Layout({ children }: { children: React.ReactNode }) {
       <div className="min-h-screen min-w-0">
         <Topbar />
         <main className="min-h-screen px-3.5 py-[18px] pb-[110px] min-[769px]:px-7 min-[769px]:py-6 min-[769px]:pb-12">
-          <div className={isDashboard ? undefined : "mx-auto max-w-2xl"}>{children}</div>
+          <div className={isWidePage ? undefined : "mx-auto max-w-2xl"}>{children}</div>
         </main>
       </div>
       <BottomNav />
