@@ -206,3 +206,16 @@ export interface StatsResponse {
   memberStats: MemberStats[];
   monthlyStats: { month: string; session_count: number; total_cost: number }[];
 }
+
+export interface ChatMessage {
+  id: string;
+  groupId: string;
+  userId: string;
+  body: string;
+  createdAt: string;
+  user: {
+    name: string;
+    email: string;
+    avatarUrl?: string;
+  };
+}

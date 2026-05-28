@@ -15,6 +15,7 @@ import type {
   JoinLinkPreview,
   ReceiptParseResult,
   AiUsageStatus,
+  ChatMessage,
 } from "@/types";
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
@@ -101,6 +102,15 @@ export const api = {
   // Stats
   getStats: (groupId?: string) =>
     request<StatsResponse>(groupId ? `/api/stats?groupId=${encodeURIComponent(groupId)}` : "/api/stats"),
+
+  // Chat
+  getChatMessages: (groupId: string, limit = 80) =>
+    request<ChatMessage[]>(`/api/chat/${encodeURIComponent(groupId)}/messages?limit=${limit}`),
+  sendChatMessage: (groupId: string, body: string) =>
+    request<ChatMessage>(`/api/chat/${encodeURIComponent(groupId)}/messages`, {
+      method: "POST",
+      body: JSON.stringify({ body }),
+    }),
 
   // Groups
   getGroups: () => request<PlayGroup[]>("/api/groups"),

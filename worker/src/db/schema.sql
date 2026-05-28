@@ -169,6 +169,16 @@ CREATE TABLE IF NOT EXISTS ai_usage_daily (
   PRIMARY KEY (usage_date, feature)
 );
 
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id TEXT PRIMARY KEY,
+  group_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  body TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS bot_thread_links (
   thread_id TEXT PRIMARY KEY,
   group_id  TEXT NOT NULL UNIQUE,
@@ -193,5 +203,6 @@ CREATE INDEX IF NOT EXISTS idx_group_invites_group_id ON group_invites(group_id)
 CREATE INDEX IF NOT EXISTS idx_members_group_id ON members(group_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_group_id ON sessions(group_id);
 CREATE INDEX IF NOT EXISTS idx_ai_usage_daily_date ON ai_usage_daily(usage_date);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_group_created ON chat_messages(group_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_bot_link_codes_group ON bot_link_codes(group_id);
 CREATE INDEX IF NOT EXISTS idx_bot_link_codes_expires ON bot_link_codes(expires_at);

@@ -1,12 +1,12 @@
 import type { CSSProperties } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import {
-  BarChart2,
   Calendar,
   ChevronRight,
   CreditCard,
   Home,
   LogOut,
+  MessageCircle,
   Search,
   UserCircle,
   Users,
@@ -19,7 +19,7 @@ const navItems = [
   { to: "/sessions", icon: Calendar, label: "Buổi chơi" },
   { to: "/members", icon: Users, label: "Thành viên" },
   { to: "/debt", icon: CreditCard, label: "Công nợ" },
-  { to: "/stats", icon: BarChart2, label: "Thống kê" },
+  { to: "/chat", icon: MessageCircle, label: "Chat" },
   { to: "/profile", icon: UserCircle, label: "Hồ sơ" },
 ];
 

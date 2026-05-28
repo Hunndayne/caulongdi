@@ -7,7 +7,7 @@ import MembersPage from "@/pages/MembersPage";
 import SessionsPage from "@/pages/SessionsPage";
 import SessionDetailPage from "@/pages/SessionDetailPage";
 import DebtPage from "@/pages/DebtPage";
-import StatsPage from "@/pages/StatsPage";
+import ChatPage from "@/pages/ChatPage";
 import ProfilePage from "@/pages/ProfilePage";
 import PublicProfilePage from "@/pages/PublicProfilePage";
 import JoinPage from "@/pages/JoinPage";
@@ -66,7 +66,8 @@ export default function App() {
                 <Route path="sessions" element={<SessionsPage />} />
                 <Route path="sessions/:id" element={<SessionDetailPage />} />
                 <Route path="debt" element={<DebtPage />} />
-                <Route path="stats" element={<StatsPage />} />
+                <Route path="chat" element={<ChatPage />} />
+                <Route path="stats" element={<Navigate to="/chat" replace />} />
                 <Route path="profile" element={<ProfilePage />} />
                 <Route path="profiles/:id" element={<PublicProfilePage />} />
                 <Route path="join/:code" element={<JoinPage />} />
