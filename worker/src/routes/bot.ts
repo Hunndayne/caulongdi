@@ -36,6 +36,12 @@ type SessionDraft = {
 
 type ParsedIntent = { intent: Intent; names: string[]; session?: SessionDraft };
 
+type BotContextMessage = {
+  role: "user" | "assistant";
+  text: string;
+  createdAt?: string;
+};
+
 type SessionRow = {
   id: string;
   date: string;
@@ -56,6 +62,7 @@ type BotActor = {
 
 const SELF_NAME_TOKEN = "__ting_self__";
 const MEMBER_COLORS = ["#22c55e", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4"];
+const MAX_CONTEXT_MESSAGES_FOR_AI = 8;
 
 function bearerToken(header?: string | null) {
   const match = header?.match(/^Bearer\s+(.+)$/i);
@@ -140,6 +147,20 @@ function helpText() {
 }
 
 // --- Trần số lần gọi NLU/ngày (chống vòng lặp tốn tiền). Tái dùng bảng ai_usage_daily. ---
+
+function contextForPrompt(context?: BotContextMessage[]) {
+  const items = (context ?? []).slice(-MAX_CONTEXT_MESSAGES_FOR_AI);
+  if (!items.length) return "";
+
+  return items
+    .map((item) => {
+      const who = item.role === "assistant" ? "Ting AI" : "Người dùng";
+      const text = item.text.replace(/^\/ting\s*/i, "").replace(/\s+/g, " ").trim().slice(0, 500);
+      return `${who}: ${text}`;
+    })
+    .filter(Boolean)
+    .join("\n");
+}
 
 let aiUsageTableEnsured = false;
 
@@ -264,6 +285,60 @@ function parseCreateVenue(text: string): string | undefined {
   return venue || undefined;
 }
 
+function parseReferencedVenue(text: string): string | undefined {
+  const direct = parseCreateVenue(text);
+  if (direct) return direct;
+
+  const match = text.match(
+    /(?:buổi|buoi|kèo|keo)\s+(.+?)(?=\s+(?:ngày|ngay|hôm|hom|mai|thứ|thu|\d{1,2}[/-]|\d{1,2}\s*(?:h|giờ|gio|:)|lúc|luc|vào|vao)\b|$)/i
+  );
+  const venue = match ? cleanupVenue(match[1]) : "";
+  if (/^\d{1,2}[/-]/.test(venue) || /^(hôm|hom|ngày|ngay|mai|thứ|thu)\b/i.test(venue)) return undefined;
+  return venue || undefined;
+}
+
+function parseContextSessionReference(context?: BotContextMessage[]): SessionDraft {
+  if (!context?.length) return {};
+
+  for (let i = context.length - 1; i >= 0; i -= 1) {
+    const item = context[i];
+    if (item.role !== "assistant") continue;
+    const match = item.text.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})\s*[•\-]\s*(\d{1,2}:\d{2})\s*[•\-]\s*([^\n]+)/);
+    if (!match) continue;
+
+    const [, day, month, year, startTime, venueRaw] = match;
+    const venue = cleanupVenue(venueRaw);
+    return {
+      date: `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`,
+      startTime,
+      venue: venue || undefined,
+    };
+  }
+
+  return {};
+}
+
+function parseSessionReference(text: string, context?: BotContextMessage[]): SessionDraft {
+  const explicit: SessionDraft = {
+    date: parseCreateDate(text),
+    startTime: parseCreateTime(text),
+    venue: parseReferencedVenue(text),
+  };
+
+  const t = normalizeName(text);
+  const canUseContext =
+    /\b(buoi do|keo do|lich do|buoi nay|keo nay|lich nay|vua roi|truoc do)\b/.test(t) ||
+    (!explicit.date && !explicit.startTime && !explicit.venue);
+  if (!canUseContext) return explicit;
+
+  const fromContext = parseContextSessionReference(context);
+  return {
+    date: explicit.date ?? fromContext.date,
+    startTime: explicit.startTime ?? fromContext.startTime,
+    venue: explicit.venue ?? fromContext.venue,
+  };
+}
+
 function parseCreateSessionDraft(text: string): SessionDraft {
   return {
     date: parseCreateDate(text),
@@ -368,7 +443,12 @@ function normalizeIntent(value: unknown): Intent | null {
 }
 
 // Gọi DeepSeek (API tương thích OpenAI) để phân loại ý định + rút tên người (cho add_member).
-async function classifyWithAI(env: Env, text: string, actor?: BotActor): Promise<ParsedIntent | null> {
+async function classifyWithAI(
+  env: Env,
+  text: string,
+  actor?: BotActor,
+  context?: BotContextMessage[]
+): Promise<ParsedIntent | null> {
   const apiKey = env.DEEPSEEK_API_KEY?.trim();
   if (!apiKey) return null;
   const baseUrl = (env.DEEPSEEK_BASE_URL?.trim() || DEFAULT_DEEPSEEK_BASE_URL).replace(/\/+$/, "");
@@ -386,6 +466,8 @@ async function classifyWithAI(env: Env, text: string, actor?: BotActor): Promise
     'names CHỈ điền khi intent=add_member: danh sách tên người cần thêm, ví dụ ["An","Bình"]. Các intent khác để names rỗng [].',
   ].join(" ");
 
+  const contextBlock = contextForPrompt(context);
+
   const resp = await fetch(`${baseUrl}/chat/completions`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
@@ -393,7 +475,12 @@ async function classifyWithAI(env: Env, text: string, actor?: BotActor): Promise
       model,
       messages: [
         { role: "system", content: system },
-        { role: "user", content: `Người gửi: ${actor?.name || actor?.userId || "không rõ"}\nTin nhắn: ${text}` },
+        {
+          role: "user",
+          content: `${contextBlock ? `Ngữ cảnh gần đây:\n${contextBlock}\n\n` : ""}Người gửi: ${
+            actor?.name || actor?.userId || "không rõ"
+          }\nTin nhắn hiện tại: ${text}`,
+        },
       ],
       temperature: 0,
       max_tokens: 200,
@@ -434,7 +521,13 @@ function naturalChatFallback(groupName: string) {
   ].join("\n");
 }
 
-async function replyNaturalChat(env: Env, groupName: string, text: string, actor?: BotActor): Promise<BotReply> {
+async function replyNaturalChat(
+  env: Env,
+  groupName: string,
+  text: string,
+  actor?: BotActor,
+  context?: BotContextMessage[]
+): Promise<BotReply> {
   const apiKey = env.DEEPSEEK_API_KEY?.trim();
   if (!apiKey) return { ok: true, reply: naturalChatFallback(groupName) };
   if (!(await withinDailyNluCap(env.DB))) return { ok: true, reply: naturalChatFallback(groupName) };
@@ -448,6 +541,7 @@ async function replyNaturalChat(env: Env, groupName: string, text: string, actor
     "Nếu người dùng hỏi về lịch chơi, thành viên, ai tham gia, hoặc thêm người vào buổi thì nhắc họ có thể hỏi trực tiếp bằng /ting.",
     "Không tự bịa dữ liệu lịch, công nợ, thành viên nếu không được cung cấp trong tin nhắn.",
   ].join(" ");
+  const contextBlock = contextForPrompt(context);
 
   const resp = await fetch(`${baseUrl}/chat/completions`, {
     method: "POST",
@@ -456,7 +550,12 @@ async function replyNaturalChat(env: Env, groupName: string, text: string, actor
       model,
       messages: [
         { role: "system", content: system },
-        { role: "user", content: `Nhóm: ${groupName}\nNgười gửi: ${actor?.name || actor?.userId || "không rõ"}\nTin nhắn: ${text}` },
+        {
+          role: "user",
+          content: `${contextBlock ? `Ngữ cảnh gần đây:\n${contextBlock}\n\n` : ""}Nhóm: ${groupName}\nNgười gửi: ${
+            actor?.name || actor?.userId || "không rõ"
+          }\nTin nhắn hiện tại: ${text}`,
+        },
       ],
       temperature: 0.7,
       max_tokens: 450,
@@ -474,7 +573,7 @@ async function replyNaturalChat(env: Env, groupName: string, text: string, actor
   return { ok: true, reply: reply ? reply.slice(0, 1600) : naturalChatFallback(groupName) };
 }
 
-async function resolveIntent(env: Env, text: string, actor?: BotActor): Promise<ParsedIntent> {
+async function resolveIntent(env: Env, text: string, actor?: BotActor, context?: BotContextMessage[]): Promise<ParsedIntent> {
   const t = removeDiacritics(text.toLowerCase()).trim();
   const createLike = isCreateSessionLike(t);
   const addLike = isAddLike(t);
@@ -495,7 +594,7 @@ async function resolveIntent(env: Env, text: string, actor?: BotActor): Promise<
   let ai: ParsedIntent | null = null;
   if (env.DEEPSEEK_API_KEY?.trim() && (await withinDailyNluCap(env.DB))) {
     try {
-      ai = await classifyWithAI(env, text, actor);
+      ai = await classifyWithAI(env, text, actor, context);
     } catch (error) {
       console.error("[bot-nlu]", error);
     }
@@ -504,7 +603,7 @@ async function resolveIntent(env: Env, text: string, actor?: BotActor): Promise<
   if (addLike) {
     // Luôn xử lý như "thêm". Ưu tiên tên DeepSeek rút được; không có thì tự tách tên.
     const names = normalizeAddNames(text, ai?.intent === "add_member" ? ai.names : []);
-    return { intent: "add_member", names };
+    return { intent: "add_member", names, session: parseSessionReference(text, context) };
   }
 
   if (ai?.intent === "create_session") {
@@ -618,7 +717,45 @@ async function soonestUpcoming(env: Env, groupId: string): Promise<SessionRow | 
   return rows[0] ?? null;
 }
 
-async function handleQuery(env: Env, threadId: string, text: string, actor?: BotActor): Promise<BotReply> {
+async function findUpcomingSession(env: Env, groupId: string, selector?: SessionDraft): Promise<SessionRow | null> {
+  if (!selector?.date && !selector?.startTime && !selector?.venue) return soonestUpcoming(env, groupId);
+
+  const where = ["s.group_id = ?", "s.status = 'upcoming'"];
+  const binds: unknown[] = [groupId];
+  if (selector?.date) {
+    where.push("s.date = ?");
+    binds.push(selector.date);
+  }
+  if (selector?.startTime) {
+    where.push("s.start_time = ?");
+    binds.push(selector.startTime);
+  }
+  if (selector?.venue) {
+    where.push("lower(s.venue) LIKE ?");
+    binds.push(`%${selector.venue.toLowerCase()}%`);
+  }
+
+  const result = await env.DB.prepare(
+    `SELECT s.id, s.date, s.start_time, s.venue, s.location, s.note, s.status,
+      (SELECT COUNT(*) FROM session_members sm WHERE sm.session_id = s.id AND sm.attended = 1) AS attendee_count
+     FROM sessions s
+     WHERE ${where.join(" AND ")}
+     ORDER BY s.date ASC, s.start_time ASC
+     LIMIT 1`
+  )
+    .bind(...binds)
+    .first<SessionRow>();
+
+  return result ?? null;
+}
+
+async function handleQuery(
+  env: Env,
+  threadId: string,
+  text: string,
+  actor?: BotActor,
+  context?: BotContextMessage[]
+): Promise<BotReply> {
   const link = await env.DB.prepare("SELECT group_id FROM bot_thread_links WHERE thread_id = ?")
     .bind(threadId)
     .first<{ group_id: string }>();
@@ -638,7 +775,7 @@ async function handleQuery(env: Env, threadId: string, text: string, actor?: Bot
   const groupName = group?.name ?? "nhóm";
   const groupId = link.group_id;
 
-  const parsed = await resolveIntent(env, text, actor);
+  const parsed = await resolveIntent(env, text, actor, context);
 
   switch (parsed.intent) {
     case "help":
@@ -648,23 +785,29 @@ async function handleQuery(env: Env, threadId: string, text: string, actor?: Bot
     case "list_attendees":
       return replyAttendees(env, groupId, groupName);
     case "add_member":
-      return replyAddMembers(env, groupId, groupName, parsed.names, actor);
+      return replyAddMembers(env, groupId, groupName, parsed.names, actor, parsed.session);
     case "create_session":
       return replyCreateSession(env, groupId, groupName, parsed.session, actor);
     case "chat":
-      return replyNaturalChat(env, groupName, text, actor);
+      return replyNaturalChat(env, groupName, text, actor, context);
     default:
       return replySessions(env, groupId, groupName, parsed.intent);
   }
 }
 
-export async function handleGroupBotQuery(env: Env, groupId: string, text: string, actor?: BotActor): Promise<BotReply> {
+export async function handleGroupBotQuery(
+  env: Env,
+  groupId: string,
+  text: string,
+  actor?: BotActor,
+  context?: BotContextMessage[]
+): Promise<BotReply> {
   const group = await env.DB.prepare("SELECT name FROM groups WHERE id = ?")
     .bind(groupId)
     .first<{ name: string }>();
   const groupName = group?.name ?? "nhom";
 
-  const parsed = await resolveIntent(env, text, actor);
+  const parsed = await resolveIntent(env, text, actor, context);
 
   switch (parsed.intent) {
     case "help":
@@ -674,11 +817,11 @@ export async function handleGroupBotQuery(env: Env, groupId: string, text: strin
     case "list_attendees":
       return replyAttendees(env, groupId, groupName);
     case "add_member":
-      return replyAddMembers(env, groupId, groupName, parsed.names, actor);
+      return replyAddMembers(env, groupId, groupName, parsed.names, actor, parsed.session);
     case "create_session":
       return replyCreateSession(env, groupId, groupName, parsed.session, actor);
     case "chat":
-      return replyNaturalChat(env, groupName, text, actor);
+      return replyNaturalChat(env, groupName, text, actor, context);
     default:
       return replySessions(env, groupId, groupName, parsed.intent);
   }
@@ -817,14 +960,18 @@ async function replyAddMembers(
   groupId: string,
   groupName: string,
   names: string[],
-  actor?: BotActor
+  actor?: BotActor,
+  selector?: SessionDraft
 ): Promise<BotReply> {
   if (!names.length) {
     return { ok: false, reply: 'Bạn muốn thêm ai? Ví dụ: "thêm An vào buổi".' };
   }
 
-  const session = await soonestUpcoming(env, groupId);
-  if (!session) return { ok: true, reply: `${groupName}: chưa có buổi sắp tới nào để thêm người.` };
+  const session = await findUpcomingSession(env, groupId, selector);
+  if (!session) {
+    const hint = selector?.date || selector?.venue || selector?.startTime ? " phù hợp" : "";
+    return { ok: true, reply: `${groupName}: chưa có buổi sắp tới${hint} để thêm người.` };
+  }
 
   const selfMember =
     names.includes(SELF_NAME_TOKEN) && actor?.userId ? await getOrCreateMemberForUser(env, groupId, actor.userId) : null;

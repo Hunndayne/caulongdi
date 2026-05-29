@@ -11,6 +11,8 @@ const MAX_LIMIT = 120;
 const TING_BOT_USER_ID = "tingting-bot";
 const TING_BOT_EMAIL = "ting@tingting.local";
 const TING_BOT_NAME = "Ting AI";
+const TING_CONTEXT_WINDOW_MINUTES = 30;
+const TING_CONTEXT_LIMIT = 12;
 
 type ChatMessageRow = {
   id: string;
@@ -21,6 +23,12 @@ type ChatMessageRow = {
   user_name: string;
   user_email: string;
   user_avatar_url?: string | null;
+};
+
+type TingContextRow = {
+  user_id: string;
+  body: string;
+  created_at: string;
 };
 
 let chatTablesEnsured = false;
@@ -124,6 +132,29 @@ async function insertChatMessage(db: D1Database, groupId: string, userId: string
   return getChatMessage(db, id);
 }
 
+async function getTingConversationContext(db: D1Database, groupId: string, userId: string, before: string) {
+  const since = new Date(Date.parse(before) - TING_CONTEXT_WINDOW_MINUTES * 60 * 1000).toISOString();
+  const rows = await db
+    .prepare(
+      `SELECT user_id, body, created_at
+       FROM chat_messages
+       WHERE group_id = ?
+         AND created_at >= ?
+         AND created_at < ?
+         AND user_id IN (?, ?)
+       ORDER BY created_at DESC, id DESC
+       LIMIT ?`
+    )
+    .bind(groupId, since, before, userId, TING_BOT_USER_ID, TING_CONTEXT_LIMIT)
+    .all<TingContextRow>();
+
+  return (rows.results ?? []).reverse().map((row) => ({
+    role: row.user_id === TING_BOT_USER_ID ? "assistant" as const : "user" as const,
+    text: row.body,
+    createdAt: row.created_at,
+  }));
+}
+
 chat.get("/:groupId/messages", async (c) => {
   const groupId = c.req.param("groupId");
   const membership = await getMembership(c, groupId);
@@ -175,10 +206,11 @@ chat.post("/:groupId/messages", async (c) => {
       reply = 'Gõ sau /ting điều bạn muốn hỏi. Ví dụ: "/ting buổi tuần này" hoặc "/ting buổi sắp tới có ai".';
     } else {
       try {
+        const context = await getTingConversationContext(c.env.DB, groupId, c.get("userId"), now);
         const result = await handleGroupBotQuery(c.env, groupId, tingPrompt, {
           userId: c.get("userId"),
           name: sentMessage?.user.name,
-        });
+        }, context);
         reply = result.reply || "Mình chưa có câu trả lời cho câu này.";
       } catch (error) {
         console.error("[web-chat-ting]", error);
