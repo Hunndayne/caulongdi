@@ -8,10 +8,8 @@ import { ensureBotTables } from "../db/botTables";
 
 const bot = new Hono<{ Bindings: Env; Variables: { userId: string; userRole: string } }>();
 
-const NLU_FEATURE = "bot_nlu";
 const DEFAULT_DEEPSEEK_MODEL = "deepseek-chat";
 const DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com";
-const MAX_NLU_CALLS_PER_DAY = 1000; // trần an toàn chống vòng lặp gọi API tốn tiền
 const MAX_SESSIONS_IN_REPLY = 8;
 
 type Intent =
@@ -146,8 +144,6 @@ function helpText() {
   ].join("\n");
 }
 
-// --- Trần số lần gọi NLU/ngày (chống vòng lặp tốn tiền). Tái dùng bảng ai_usage_daily. ---
-
 function contextForPrompt(context?: BotContextMessage[]) {
   const items = (context ?? []).slice(-MAX_CONTEXT_MESSAGES_FOR_AI);
   if (!items.length) return "";
@@ -160,50 +156,6 @@ function contextForPrompt(context?: BotContextMessage[]) {
     })
     .filter(Boolean)
     .join("\n");
-}
-
-let aiUsageTableEnsured = false;
-
-async function ensureAiUsageTable(db: D1Database) {
-  if (aiUsageTableEnsured) return;
-  await db
-    .prepare(
-      `CREATE TABLE IF NOT EXISTS ai_usage_daily (
-        usage_date TEXT NOT NULL,
-        feature TEXT NOT NULL,
-        estimated_neurons INTEGER NOT NULL DEFAULT 0,
-        request_count INTEGER NOT NULL DEFAULT 0,
-        updated_at TEXT NOT NULL,
-        PRIMARY KEY (usage_date, feature)
-      )`
-    )
-    .run();
-  aiUsageTableEnsured = true;
-}
-
-async function withinDailyNluCap(db: D1Database): Promise<boolean> {
-  await ensureAiUsageTable(db);
-  const now = new Date().toISOString();
-  const usageDate = now.slice(0, 10); // UTC day
-
-  await db
-    .prepare(
-      `INSERT OR IGNORE INTO ai_usage_daily (usage_date, feature, estimated_neurons, request_count, updated_at)
-       VALUES (?, ?, 0, 0, ?)`
-    )
-    .bind(usageDate, NLU_FEATURE, now)
-    .run();
-
-  const result = await db
-    .prepare(
-      `UPDATE ai_usage_daily
-       SET request_count = request_count + 1, updated_at = ?
-       WHERE usage_date = ? AND feature = ? AND request_count < ?`
-    )
-    .bind(now, usageDate, NLU_FEATURE, MAX_NLU_CALLS_PER_DAY)
-    .run();
-
-  return Boolean(result.meta?.changes);
 }
 
 // --- Nhận diện ý định ---
@@ -401,24 +353,50 @@ function extractNamesHeuristic(text: string): string[] {
 function hasSessionContext(t: string): boolean {
   return (
     /^\/buoi\b/.test(t) ||
-    /\b(buoi|lich|choi|cau long|san|tap)\b/.test(t) ||
-    /\b(di danh|danh cau|danh o|di cau)\b/.test(t)
+    /\b(buoi|keo|lich|choi|cau long|san|tap)\b/.test(t) ||
+    /\b(di danh|danh cau|danh long|quanh cau|quanh long|danh o|di cau|di san|di long)\b/.test(t)
+  );
+}
+
+function asksForSchedule(t: string): boolean {
+  return (
+    /^\/buoi\b/.test(t) ||
+    /\b(lich|lich choi|lich danh|lich quanh|co lich|xem lich|hom nay|tuan nay|sap toi|sap dien ra|ke tiep|tiep theo|gan nhat)\b/.test(t) ||
+    /\b(khi nao|may gio|gio nao|thoi gian|dia diem|o dau|san nao|co keo|keo nao|co buoi|buoi nao)\b/.test(t)
+  );
+}
+
+function asksForAttendees(t: string): boolean {
+  return (
+    /\b(ai tham gia|ai danh|ai choi|ai di|co ai|co nhung ai|nhung ai)\b/.test(t) ||
+    /\b(thanh vien|nguoi tham gia|nguoi choi|danh sach nguoi|doi hinh)\b/.test(t)
+  );
+}
+
+function asksForGroupMembers(t: string): boolean {
+  return (
+    /^\/thanhvien\b/.test(t) ||
+    /\b(ai trong nhom|thanh vien nhom|danh sach thanh vien|danh sach nguoi)\b/.test(t) ||
+    /\bthanh vien\b/.test(t)
   );
 }
 
 function detectIntentByRegex(text: string): Intent | null {
   const t = removeDiacritics(text.toLowerCase()).trim();
   const sessionContext = hasSessionContext(t);
+  const scheduleQuestion = asksForSchedule(t);
   if (/^\/help\b/.test(t) || /\b(huong dan|cac lenh|menu)\b/.test(t)) return "help";
-  if (/^\/thanhvien\b|thanh vien|ai trong nhom|danh sach (thanh vien|nguoi)/.test(t)) return "list_members";
-  if (/\b(ai tham gia|ai danh|ai choi|ai di)\b/.test(t) || (sessionContext && /\b(co ai|co nhung ai|nhung ai)\b/.test(t))) {
+  if (sessionContext && asksForAttendees(t)) {
     return "list_attendees";
   }
+  if (asksForGroupMembers(t) && !scheduleQuestion) return "list_members";
   if (sessionContext && (/\bhom nay\b|\btoday\b/.test(t))) return "today";
   if (sessionContext && /tuan nay|trong tuan|this week/.test(t)) return "week";
   if (sessionContext && /ke tiep|tiep theo|buoi toi|gan nhat|\bnext\b/.test(t)) return "next";
   if (sessionContext && /gan day|lich su|da choi|truoc day|tat ca|\ball\b|\brecent\b/.test(t)) return "recent";
-  if (/^\/buoi\b/.test(t) || (sessionContext && /sap toi|sap dien ra|lich choi|upcoming/.test(t))) return "upcoming";
+  if (/^\/buoi\b/.test(t) || (sessionContext && (scheduleQuestion || /sap toi|sap dien ra|lich choi|upcoming/.test(t)))) {
+    return "upcoming";
+  }
   return null;
 }
 
@@ -457,6 +435,9 @@ async function classifyWithAI(
   const system = [
     `Nếu người dùng nói tôi/mình/tui/em/anh/chị để chỉ chính người gửi, trả names ["${SELF_NAME_TOKEN}"].`,
     "Nếu người dùng muốn tạo/set/lên kèo/buổi/lịch mới, intent là create_session.",
+    'Hiểu tiếng lóng cầu lông: "quánh", "đánh cầu", "đi cầu", "đi sân", "kèo" đều nói về buổi chơi.',
+    "Nếu người dùng hỏi ngắn kiểu lịch, lịch quánh, có lịch không, kèo nào, sân nào, mấy giờ thì intent là upcoming/next/today/week tuỳ mốc thời gian.",
+    "Nếu câu hỏi lịch/buổi/kèo có hỏi ai, thành viên, người tham gia thì intent là list_attendees; chỉ dùng list_members khi hỏi danh sách thành viên của nhóm nói chung.",
     "Only classify today/week/upcoming/next/recent/list_attendees when the user clearly asks about badminton sessions, schedule, court, or players; casual chat that happens to mention time words must be unknown.",
     "Bạn phân tích câu của người dùng về lịch chơi cầu lông của một nhóm và TRẢ VỀ JSON.",
     'Định dạng JSON: {"intent": "...", "names": ["..."]}.',
@@ -514,11 +495,23 @@ async function classifyWithAI(
   return { intent, names };
 }
 
-function naturalChatFallback(groupName: string) {
-  return [
-    `Mình đang ở đây với ${groupName} nè.`,
-    "Câu này hơi ngoài phần lịch chơi nên mình chưa trả lời sâu được lúc này. Hỏi mình kiểu tự nhiên tiếp đi, hoặc hỏi về buổi chơi/thành viên thì mình xử ngay.",
-  ].join("\n");
+function naturalChatFallback(groupName: string, text = "", actor?: BotActor) {
+  const t = normalizeName(text);
+  const name = actor?.name?.trim();
+
+  if (/^(hi|hello|hey|chao|alo|ting)\b/.test(t)) {
+    return `Chào ${name || "bạn"}! Mình đây. Bạn hỏi lịch, kèo sắp tới, ai tham gia, hoặc nhờ thêm người vào buổi là mình xử liền.`;
+  }
+
+  if (hasSessionContext(t) || asksForSchedule(t)) {
+    return `Mình hiểu bạn đang hỏi lịch của ${groupName}. Bạn nói rõ hơn một chút như "lịch sắp tới", "lịch tuần này" hoặc "buổi sắp tới có ai" là mình trả lời ngay.`;
+  }
+
+  if (/\b(cam on|thanks|thank you|ok|oke|duoc roi)\b/.test(t)) {
+    return "Ok nè, cần xem lịch hay thêm ai vào buổi thì gọi mình tiếp nhé.";
+  }
+
+  return `Mình đây. Hiện mình trả lời chắc nhất về lịch cầu lông của ${groupName}: buổi sắp tới, tuần này, ai tham gia, tạo kèo mới hoặc thêm người vào buổi.`;
 }
 
 async function replyNaturalChat(
@@ -529,8 +522,8 @@ async function replyNaturalChat(
   context?: BotContextMessage[]
 ): Promise<BotReply> {
   const apiKey = env.DEEPSEEK_API_KEY?.trim();
-  if (!apiKey) return { ok: true, reply: naturalChatFallback(groupName) };
-  if (!(await withinDailyNluCap(env.DB))) return { ok: true, reply: naturalChatFallback(groupName) };
+  const fallback = naturalChatFallback(groupName, text, actor);
+  if (!apiKey) return { ok: true, reply: fallback };
 
   const baseUrl = (env.DEEPSEEK_BASE_URL?.trim() || DEFAULT_DEEPSEEK_BASE_URL).replace(/\/+$/, "");
   const model = env.DEEPSEEK_MODEL?.trim() || DEFAULT_DEEPSEEK_MODEL;
@@ -538,7 +531,8 @@ async function replyNaturalChat(
     "Bạn là Ting AI trong group chat của một nhóm cầu lông trên TingTing.",
     "Trả lời tự nhiên, thân thiện, vui vừa phải, bằng tiếng Việt.",
     "Ưu tiên câu trả lời ngắn gọn 1-4 câu, hợp văn cảnh chat nhóm.",
-    "Nếu người dùng hỏi về lịch chơi, thành viên, ai tham gia, hoặc thêm người vào buổi thì nhắc họ có thể hỏi trực tiếp bằng /ting.",
+    "Tin nhắn này đã được chuyển đến bạn rồi; không bảo người dùng gõ lại /ting.",
+    "Nếu người dùng hỏi về lịch chơi, thành viên, ai tham gia, hoặc thêm người vào buổi nhưng bạn không có đủ dữ liệu, hãy hỏi lại ngắn gọn để làm rõ.",
     "Không tự bịa dữ liệu lịch, công nợ, thành viên nếu không được cung cấp trong tin nhắn.",
   ].join(" ");
   const contextBlock = contextForPrompt(context);
@@ -565,12 +559,28 @@ async function replyNaturalChat(
 
   if (!resp.ok) {
     console.error("[bot-chat] deepseek http", resp.status, await resp.text().catch(() => ""));
-    return { ok: true, reply: naturalChatFallback(groupName) };
+    return { ok: true, reply: fallback };
   }
 
   const data = (await resp.json()) as { choices?: Array<{ message?: { content?: string } }> };
   const reply = data?.choices?.[0]?.message?.content?.trim();
-  return { ok: true, reply: reply ? reply.slice(0, 1600) : naturalChatFallback(groupName) };
+  return { ok: true, reply: reply ? reply.slice(0, 1600) : fallback };
+}
+
+function enrichAiIntent(ai: ParsedIntent, text: string, context?: BotContextMessage[]): ParsedIntent {
+  if (ai.intent === "create_session") {
+    return { intent: "create_session", names: [], session: parseCreateSessionDraft(text) };
+  }
+
+  if (ai.intent === "add_member") {
+    return { intent: "add_member", names: normalizeAddNames(text, ai.names), session: parseSessionReference(text, context) };
+  }
+
+  if (ai.intent === "list_attendees") {
+    return { ...ai, session: parseSessionReference(text, context) };
+  }
+
+  return ai;
 }
 
 async function resolveIntent(env: Env, text: string, actor?: BotActor, context?: BotContextMessage[]): Promise<ParsedIntent> {
@@ -582,17 +592,8 @@ async function resolveIntent(env: Env, text: string, actor?: BotActor, context?:
     return { intent: "create_session", names: [], session: parseCreateSessionDraft(text) };
   }
 
-  if (!addLike) {
-    const byRegex = detectIntentByRegex(text);
-    if (byRegex) return { intent: byRegex, names: [] };
-
-    const cleaned = text.replace(/^\/buoi\b/i, "").trim();
-    if (!cleaned) return { intent: "upcoming", names: [] }; // chỉ gõ "/buoi"
-  }
-
-  // Gọi DeepSeek nếu có cấu hình & chưa chạm trần.
   let ai: ParsedIntent | null = null;
-  if (env.DEEPSEEK_API_KEY?.trim() && (await withinDailyNluCap(env.DB))) {
+  if (env.DEEPSEEK_API_KEY?.trim()) {
     try {
       ai = await classifyWithAI(env, text, actor, context);
     } catch (error) {
@@ -606,11 +607,23 @@ async function resolveIntent(env: Env, text: string, actor?: BotActor, context?:
     return { intent: "add_member", names, session: parseSessionReference(text, context) };
   }
 
-  if (ai?.intent === "create_session") {
-    return { intent: "create_session", names: [], session: parseCreateSessionDraft(text) };
+  if (ai && ai.intent !== "chat") {
+    return enrichAiIntent(ai, text, context);
   }
 
-  return ai ?? { intent: "chat", names: [] };
+  const byRegex = detectIntentByRegex(text);
+  if (byRegex) {
+    return {
+      intent: byRegex,
+      names: [],
+      session: byRegex === "list_attendees" ? parseSessionReference(text, context) : undefined,
+    };
+  }
+
+  const cleaned = text.replace(/^\/buoi\b/i, "").trim();
+  if (!cleaned) return { intent: "upcoming", names: [] }; // chỉ gõ "/buoi"
+
+  return ai ? enrichAiIntent(ai, text, context) : { intent: "chat", names: [] };
 }
 
 // --- Truy vấn buổi chơi ---
@@ -717,8 +730,12 @@ async function soonestUpcoming(env: Env, groupId: string): Promise<SessionRow | 
   return rows[0] ?? null;
 }
 
+function hasSessionSelector(selector?: SessionDraft): boolean {
+  return Boolean(selector?.date || selector?.startTime || selector?.venue);
+}
+
 async function findUpcomingSession(env: Env, groupId: string, selector?: SessionDraft): Promise<SessionRow | null> {
-  if (!selector?.date && !selector?.startTime && !selector?.venue) return soonestUpcoming(env, groupId);
+  if (!hasSessionSelector(selector)) return soonestUpcoming(env, groupId);
 
   const where = ["s.group_id = ?", "s.status = 'upcoming'"];
   const binds: unknown[] = [groupId];
@@ -741,6 +758,38 @@ async function findUpcomingSession(env: Env, groupId: string, selector?: Session
      FROM sessions s
      WHERE ${where.join(" AND ")}
      ORDER BY s.date ASC, s.start_time ASC
+     LIMIT 1`
+  )
+    .bind(...binds)
+    .first<SessionRow>();
+
+  return result ?? null;
+}
+
+async function findSessionForAttendees(env: Env, groupId: string, selector?: SessionDraft): Promise<SessionRow | null> {
+  if (!hasSessionSelector(selector)) return soonestUpcoming(env, groupId);
+
+  const where = ["s.group_id = ?"];
+  const binds: unknown[] = [groupId];
+  if (selector?.date) {
+    where.push("s.date = ?");
+    binds.push(selector.date);
+  }
+  if (selector?.startTime) {
+    where.push("s.start_time = ?");
+    binds.push(selector.startTime);
+  }
+  if (selector?.venue) {
+    where.push("lower(s.venue) LIKE ?");
+    binds.push(`%${selector.venue.toLowerCase()}%`);
+  }
+
+  const result = await env.DB.prepare(
+    `SELECT s.id, s.date, s.start_time, s.venue, s.location, s.note, s.status,
+      (SELECT COUNT(*) FROM session_members sm WHERE sm.session_id = s.id AND sm.attended = 1) AS attendee_count
+     FROM sessions s
+     WHERE ${where.join(" AND ")}
+     ORDER BY CASE WHEN s.status = 'upcoming' THEN 0 ELSE 1 END, s.date ASC, s.start_time ASC
      LIMIT 1`
   )
     .bind(...binds)
@@ -783,7 +832,7 @@ async function handleQuery(
     case "list_members":
       return replyMembers(env, groupId, groupName);
     case "list_attendees":
-      return replyAttendees(env, groupId, groupName);
+      return replyAttendees(env, groupId, groupName, parsed.session);
     case "add_member":
       return replyAddMembers(env, groupId, groupName, parsed.names, actor, parsed.session);
     case "create_session":
@@ -815,7 +864,7 @@ export async function handleGroupBotQuery(
     case "list_members":
       return replyMembers(env, groupId, groupName);
     case "list_attendees":
-      return replyAttendees(env, groupId, groupName);
+      return replyAttendees(env, groupId, groupName, parsed.session);
     case "add_member":
       return replyAddMembers(env, groupId, groupName, parsed.names, actor, parsed.session);
     case "create_session":
@@ -870,9 +919,17 @@ async function replyMembers(env: Env, groupId: string, groupName: string): Promi
   return { ok: true, reply: `👥 Thành viên nhóm ${groupName} (${members.length}):\n${list}` };
 }
 
-async function replyAttendees(env: Env, groupId: string, groupName: string): Promise<BotReply> {
-  const session = await soonestUpcoming(env, groupId);
-  if (!session) return { ok: true, reply: `${groupName}: chưa có buổi sắp tới nào.` };
+async function replyAttendees(
+  env: Env,
+  groupId: string,
+  groupName: string,
+  selector?: SessionDraft
+): Promise<BotReply> {
+  const session = await findSessionForAttendees(env, groupId, selector);
+  if (!session) {
+    const suffix = hasSessionSelector(selector) ? "phù hợp" : "sắp tới";
+    return { ok: true, reply: `${groupName}: chưa có buổi ${suffix} nào.` };
+  }
 
   const result = await env.DB
     .prepare(
@@ -884,10 +941,12 @@ async function replyAttendees(env: Env, groupId: string, groupName: string): Pro
     .bind(session.id)
     .all<{ name: string }>();
   const names = result.results ?? [];
-  const header = `🏸 ${formatDate(session.date)} • ${session.start_time} • ${session.venue}`;
-  if (!names.length) return { ok: true, reply: `${header}\nChưa có ai tham gia.` };
+  const lines = [`🏸 ${formatDate(session.date)} • ${session.start_time} • ${session.venue}`];
+  if (session.location) lines.push(`📍 ${session.location}`);
+  if (session.note) lines.push(`📝 ${session.note}`);
+  if (!names.length) return { ok: true, reply: `${lines.join("\n")}\nChưa có ai tham gia.` };
   const list = names.map((n) => `• ${n.name}`).join("\n");
-  return { ok: true, reply: `${header}\n👥 ${names.length} người tham gia:\n${list}` };
+  return { ok: true, reply: `${lines.join("\n")}\n👥 ${names.length} người tham gia:\n${list}` };
 }
 
 async function replyCreateSession(
