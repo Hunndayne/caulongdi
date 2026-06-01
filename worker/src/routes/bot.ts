@@ -23,6 +23,7 @@ type Intent =
   | "list_attendees"
   | "add_member"
   | "create_session"
+  | "costs"
   | "chat";
 
 type SessionDraft = {
@@ -130,6 +131,14 @@ function formatSession(s: SessionRow) {
   return lines.join("\n");
 }
 
+function formatMoney(amount: number) {
+  return new Intl.NumberFormat("vi-VN", {
+    style: "currency",
+    currency: "VND",
+    maximumFractionDigits: 0,
+  }).format(Math.round(Number(amount) || 0));
+}
+
 function helpText() {
   return [
     "🤖 TingTing bot — các lệnh:",
@@ -139,6 +148,7 @@ function helpText() {
     '• "thành viên" — danh sách thành viên nhóm',
     '• "buổi sắp tới có ai" — ai tham gia buổi sắp tới',
     '• "thêm <tên> vào buổi" — thêm người vào buổi sắp tới',
+    '• "chi phí buổi vừa rồi" / "ai nợ ai" — xem tổng tiền và công nợ của buổi',
     "• /connect <mã> — liên kết nhóm chat với nhóm TingTing (lấy mã trên web)",
     "• /disconnect — huỷ liên kết",
   ].join("\n");
@@ -176,6 +186,7 @@ function isCreateSessionLike(t: string): boolean {
 function parseCreateDate(text: string): string | undefined {
   const t = removeDiacritics(text.toLowerCase());
   if (/\bhom nay\b|\btoday\b/.test(t)) return vnToday();
+  if (/\bhom qua\b|\byesterday\b/.test(t)) return vnDateAfter(-1);
   if (/\bngay mai\b|\bmai\b|\btomorrow\b/.test(t)) return vnDateAfter(1);
   if (/\bngay kia\b|\bngay mot\b|\bmot\b/.test(t) && !/\bmot\s+buoi\b/.test(t)) return vnDateAfter(2);
 
@@ -381,11 +392,20 @@ function asksForGroupMembers(t: string): boolean {
   );
 }
 
+function asksForCosts(t: string): boolean {
+  return (
+    /\b(chi phi|tong tien|tien buoi|tien san|tien nuoc|tien cau|tien bong|bill|hoa don|cost|payment)\b/.test(t) ||
+    /\b(chia tien|thanh toan|cong no|ai no ai|ai tra ai|can chuyen|chuyen tien)\b/.test(t) ||
+    /\b(het bao nhieu|het nhieu|bao nhieu tien|moi nguoi bao nhieu|dong bao nhieu|tra bao nhieu)\b/.test(t)
+  );
+}
+
 function detectIntentByRegex(text: string): Intent | null {
   const t = removeDiacritics(text.toLowerCase()).trim();
   const sessionContext = hasSessionContext(t);
   const scheduleQuestion = asksForSchedule(t);
   if (/^\/help\b/.test(t) || /\b(huong dan|cac lenh|menu)\b/.test(t)) return "help";
+  if (asksForCosts(t)) return "costs";
   if (sessionContext && asksForAttendees(t)) {
     return "list_attendees";
   }
@@ -412,6 +432,7 @@ function normalizeIntent(value: unknown): Intent | null {
     "list_attendees",
     "add_member",
     "create_session",
+    "costs",
     "help",
     "chat",
   ];
@@ -438,12 +459,13 @@ async function classifyWithAI(
     'Hiểu tiếng lóng cầu lông: "quánh", "đánh cầu", "đi cầu", "đi sân", "kèo" đều nói về buổi chơi.',
     "Nếu người dùng hỏi ngắn kiểu lịch, lịch quánh, có lịch không, kèo nào, sân nào, mấy giờ thì intent là upcoming/next/today/week tuỳ mốc thời gian.",
     "Nếu câu hỏi lịch/buổi/kèo có hỏi ai, thành viên, người tham gia thì intent là list_attendees; chỉ dùng list_members khi hỏi danh sách thành viên của nhóm nói chung.",
+    "Nếu người dùng hỏi chi phí, tổng tiền, bill, hóa đơn, tiền sân/nước/cầu, công nợ, ai nợ ai, ai trả ai, chia tiền, mỗi người bao nhiêu thì intent là costs.",
     "Only classify today/week/upcoming/next/recent/list_attendees when the user clearly asks about badminton sessions, schedule, court, or players; casual chat that happens to mention time words must be unknown.",
     "Bạn phân tích câu của người dùng về lịch chơi cầu lông của một nhóm và TRẢ VỀ JSON.",
     'Định dạng JSON: {"intent": "...", "names": ["..."]}.',
-    "intent là MỘT trong: next, upcoming, today, week, recent, list_members, list_attendees, add_member, create_session, help, unknown.",
+    "intent là MỘT trong: next, upcoming, today, week, recent, list_members, list_attendees, add_member, create_session, costs, help, unknown.",
     "Ý nghĩa: next=buổi sắp tới gần nhất; upcoming=danh sách buổi sắp tới; today=hôm nay; week=tuần này; recent=các buổi gần đây/lịch sử;",
-    "list_members=liệt kê thành viên nhóm; list_attendees=ai tham gia buổi; add_member=thêm người vào buổi; create_session=tạo buổi/kèo mới; help=hướng dẫn; unknown=không liên quan.",
+    "list_members=liệt kê thành viên nhóm; list_attendees=ai tham gia buổi; add_member=thêm người vào buổi; create_session=tạo buổi/kèo mới; costs=xem chi phí/công nợ buổi; help=hướng dẫn; unknown=không liên quan.",
     'names CHỈ điền khi intent=add_member: danh sách tên người cần thêm, ví dụ ["An","Bình"]. Các intent khác để names rỗng [].',
   ].join(" ");
 
@@ -500,18 +522,18 @@ function naturalChatFallback(groupName: string, text = "", actor?: BotActor) {
   const name = actor?.name?.trim();
 
   if (/^(hi|hello|hey|chao|alo|ting)\b/.test(t)) {
-    return `Chào ${name || "bạn"}! Mình đây. Bạn hỏi lịch, kèo sắp tới, ai tham gia, hoặc nhờ thêm người vào buổi là mình xử liền.`;
+    return `Chào ${name || "bạn"}! Mình đây. Bạn hỏi lịch, kèo sắp tới, ai tham gia, chi phí/công nợ, hoặc nhờ thêm người vào buổi là mình xử liền.`;
   }
 
-  if (hasSessionContext(t) || asksForSchedule(t)) {
-    return `Mình hiểu bạn đang hỏi lịch của ${groupName}. Bạn nói rõ hơn một chút như "lịch sắp tới", "lịch tuần này" hoặc "buổi sắp tới có ai" là mình trả lời ngay.`;
+  if (hasSessionContext(t) || asksForSchedule(t) || asksForCosts(t)) {
+    return `Mình hiểu bạn đang hỏi về buổi của ${groupName}. Bạn nói rõ hơn một chút như "lịch sắp tới", "buổi sắp tới có ai" hoặc "chi phí buổi vừa rồi" là mình trả lời ngay.`;
   }
 
   if (/\b(cam on|thanks|thank you|ok|oke|duoc roi)\b/.test(t)) {
     return "Ok nè, cần xem lịch hay thêm ai vào buổi thì gọi mình tiếp nhé.";
   }
 
-  return `Mình đây. Hiện mình trả lời chắc nhất về lịch cầu lông của ${groupName}: buổi sắp tới, tuần này, ai tham gia, tạo kèo mới hoặc thêm người vào buổi.`;
+  return `Mình đây. Hiện mình trả lời chắc nhất về lịch cầu lông của ${groupName}: buổi sắp tới, tuần này, ai tham gia, chi phí/công nợ, tạo kèo mới hoặc thêm người vào buổi.`;
 }
 
 async function replyNaturalChat(
@@ -532,7 +554,7 @@ async function replyNaturalChat(
     "Trả lời tự nhiên, thân thiện, vui vừa phải, bằng tiếng Việt.",
     "Ưu tiên câu trả lời ngắn gọn 1-4 câu, hợp văn cảnh chat nhóm.",
     "Tin nhắn này đã được chuyển đến bạn rồi; không bảo người dùng gõ lại /ting.",
-    "Nếu người dùng hỏi về lịch chơi, thành viên, ai tham gia, hoặc thêm người vào buổi nhưng bạn không có đủ dữ liệu, hãy hỏi lại ngắn gọn để làm rõ.",
+    "Nếu người dùng hỏi về lịch chơi, thành viên, ai tham gia, chi phí/công nợ, hoặc thêm người vào buổi nhưng bạn không có đủ dữ liệu, hãy hỏi lại ngắn gọn để làm rõ.",
     "Không tự bịa dữ liệu lịch, công nợ, thành viên nếu không được cung cấp trong tin nhắn.",
   ].join(" ");
   const contextBlock = contextForPrompt(context);
@@ -580,6 +602,10 @@ function enrichAiIntent(ai: ParsedIntent, text: string, context?: BotContextMess
     return { ...ai, session: parseSessionReference(text, context) };
   }
 
+  if (ai.intent === "costs") {
+    return { ...ai, session: parseSessionReference(text, context) };
+  }
+
   return ai;
 }
 
@@ -616,7 +642,7 @@ async function resolveIntent(env: Env, text: string, actor?: BotActor, context?:
     return {
       intent: byRegex,
       names: [],
-      session: byRegex === "list_attendees" ? parseSessionReference(text, context) : undefined,
+      session: byRegex === "list_attendees" || byRegex === "costs" ? parseSessionReference(text, context) : undefined,
     };
   }
 
@@ -635,6 +661,28 @@ type QueryOpts = {
   onlyUpcoming?: boolean;
   recent?: boolean;
   limit?: number;
+};
+
+type CostSummaryRow = {
+  id: string;
+  label: string;
+  amount: number;
+  quantity?: number | null;
+  type?: string | null;
+  payer_id?: string | null;
+  payer_name?: string | null;
+  consumer_id?: string | null;
+  consumer_ids?: string | null;
+  consumer_pending?: number | null;
+};
+
+type PaymentSummaryRow = {
+  id: string;
+  debtor_name?: string | null;
+  recipient_name?: string | null;
+  amount_owed: number;
+  paid?: number | null;
+  payer_marked_paid?: number | null;
 };
 
 async function querySessions(env: Env, groupId: string, opts: QueryOpts): Promise<SessionRow[]> {
@@ -734,6 +782,35 @@ function hasSessionSelector(selector?: SessionDraft): boolean {
   return Boolean(selector?.date || selector?.startTime || selector?.venue);
 }
 
+function wantsUpcomingSession(text: string): boolean {
+  const t = normalizeName(text);
+  return /\b(sap toi|sap dien ra|ke tiep|tiep theo|buoi toi|gan nhat|next|upcoming)\b/.test(t);
+}
+
+function normalizeConsumerIds(value: string | null | undefined, fallback?: string | null) {
+  let rawIds: string[] = [];
+  const trimmed = value?.trim();
+  if (trimmed) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      rawIds = Array.isArray(parsed) ? parsed : [trimmed];
+    } catch {
+      rawIds = trimmed.split(/[,;\n]+/);
+    }
+  }
+  if (rawIds.length === 0 && fallback) rawIds = [fallback];
+
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  for (const item of rawIds) {
+    const id = String(item ?? "").trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  return ids;
+}
+
 async function findUpcomingSession(env: Env, groupId: string, selector?: SessionDraft): Promise<SessionRow | null> {
   if (!hasSessionSelector(selector)) return soonestUpcoming(env, groupId);
 
@@ -761,6 +838,65 @@ async function findUpcomingSession(env: Env, groupId: string, selector?: Session
      LIMIT 1`
   )
     .bind(...binds)
+    .first<SessionRow>();
+
+  return result ?? null;
+}
+
+async function findSessionForCosts(
+  env: Env,
+  groupId: string,
+  text: string,
+  selector?: SessionDraft
+): Promise<SessionRow | null> {
+  if (wantsUpcomingSession(text) && !hasSessionSelector(selector)) return soonestUpcoming(env, groupId);
+
+  if (hasSessionSelector(selector)) {
+    const where = ["s.group_id = ?"];
+    const binds: unknown[] = [groupId];
+    if (selector?.date) {
+      where.push("s.date = ?");
+      binds.push(selector.date);
+    }
+    if (selector?.startTime) {
+      where.push("s.start_time = ?");
+      binds.push(selector.startTime);
+    }
+    if (selector?.venue) {
+      where.push("lower(s.venue) LIKE ?");
+      binds.push(`%${selector.venue.toLowerCase()}%`);
+    }
+
+    const result = await env.DB.prepare(
+      `SELECT s.id, s.date, s.start_time, s.venue, s.location, s.note, s.status,
+        (SELECT COUNT(*) FROM session_members sm WHERE sm.session_id = s.id AND sm.attended = 1) AS attendee_count
+       FROM sessions s
+       WHERE ${where.join(" AND ")}
+       ORDER BY CASE WHEN s.status = 'upcoming' THEN 0 ELSE 1 END, s.date DESC, s.start_time DESC
+       LIMIT 1`
+    )
+      .bind(...binds)
+      .first<SessionRow>();
+
+    return result ?? null;
+  }
+
+  const result = await env.DB.prepare(
+    `SELECT s.id, s.date, s.start_time, s.venue, s.location, s.note, s.status,
+      (SELECT COUNT(*) FROM session_members sm WHERE sm.session_id = s.id AND sm.attended = 1) AS attendee_count
+     FROM sessions s
+     WHERE s.group_id = ?
+     ORDER BY
+       CASE
+         WHEN EXISTS (SELECT 1 FROM costs c WHERE c.session_id = s.id)
+           OR EXISTS (SELECT 1 FROM payments p WHERE p.session_id = s.id)
+         THEN 0 ELSE 1
+       END,
+       s.date DESC,
+       s.start_time DESC
+     LIMIT 1`
+  )
+    .bind(groupId)
     .first<SessionRow>();
 
   return result ?? null;
@@ -837,6 +973,8 @@ async function handleQuery(
       return replyAddMembers(env, groupId, groupName, parsed.names, actor, parsed.session);
     case "create_session":
       return replyCreateSession(env, groupId, groupName, parsed.session, actor);
+    case "costs":
+      return replyCosts(env, groupId, groupName, text, parsed.session);
     case "chat":
       return replyNaturalChat(env, groupName, text, actor, context);
     default:
@@ -869,6 +1007,8 @@ export async function handleGroupBotQuery(
       return replyAddMembers(env, groupId, groupName, parsed.names, actor, parsed.session);
     case "create_session":
       return replyCreateSession(env, groupId, groupName, parsed.session, actor);
+    case "costs":
+      return replyCosts(env, groupId, groupName, text, parsed.session);
     case "chat":
       return replyNaturalChat(env, groupName, text, actor, context);
     default:
@@ -947,6 +1087,101 @@ async function replyAttendees(
   if (!names.length) return { ok: true, reply: `${lines.join("\n")}\nChưa có ai tham gia.` };
   const list = names.map((n) => `• ${n.name}`).join("\n");
   return { ok: true, reply: `${lines.join("\n")}\n👥 ${names.length} người tham gia:\n${list}` };
+}
+
+function formatCostScope(cost: CostSummaryRow, memberNames: Map<string, string>) {
+  if (cost.consumer_pending) return "chờ chọn người dùng";
+  const consumerIds = normalizeConsumerIds(cost.consumer_ids, cost.consumer_id);
+  if (!consumerIds.length) return "chia đều";
+  const names = consumerIds.map((id) => memberNames.get(id) || "người dùng").join(", ");
+  return `dùng: ${names}`;
+}
+
+function formatCostLine(cost: CostSummaryRow, memberNames: Map<string, string>) {
+  const label = cost.label?.trim() || "Chi phí";
+  const qty = Number(cost.quantity ?? 1);
+  const quantity = Number.isFinite(qty) && qty > 1 ? ` x${qty}` : "";
+  const payer = cost.payer_name?.trim() || (cost.payer_id ? memberNames.get(cost.payer_id) : "") || "người nhận chung/quỹ";
+  return `• ${label}${quantity}: ${formatMoney(cost.amount)} (${payer} trả; ${formatCostScope(cost, memberNames)})`;
+}
+
+function formatPaymentStatus(payment: PaymentSummaryRow) {
+  if (payment.paid) return "đã nhận";
+  if (payment.payer_marked_paid) return "đã báo chuyển";
+  return "chưa trả";
+}
+
+async function replyCosts(
+  env: Env,
+  groupId: string,
+  groupName: string,
+  text: string,
+  selector?: SessionDraft
+): Promise<BotReply> {
+  const session = await findSessionForCosts(env, groupId, text, selector);
+  if (!session) return { ok: true, reply: `${groupName}: chưa tìm thấy buổi để xem chi phí.` };
+
+  const [costRows, paymentRows, memberRows] = await Promise.all([
+    env.DB.prepare(
+      `SELECT c.id, c.label, c.amount, c.quantity, c.type, c.payer_id, c.consumer_id, c.consumer_ids, c.consumer_pending,
+        payer.name AS payer_name
+       FROM costs c
+       LEFT JOIN members payer ON payer.id = c.payer_id
+       WHERE c.session_id = ?
+       ORDER BY c.rowid ASC`
+    )
+      .bind(session.id)
+      .all<CostSummaryRow>(),
+    env.DB.prepare(
+      `SELECT p.id, p.amount_owed, p.paid, p.payer_marked_paid,
+        debtor.name AS debtor_name,
+        recipient.name AS recipient_name
+       FROM payments p
+       JOIN members debtor ON debtor.id = p.member_id
+       LEFT JOIN members recipient ON recipient.id = p.recipient_member_id
+       WHERE p.session_id = ? AND p.amount_owed > 0
+       ORDER BY p.paid ASC, debtor.name COLLATE NOCASE, recipient.name COLLATE NOCASE`
+    )
+      .bind(session.id)
+      .all<PaymentSummaryRow>(),
+    env.DB.prepare("SELECT id, name FROM members WHERE group_id = ?")
+      .bind(groupId)
+      .all<{ id: string; name: string }>(),
+  ]);
+
+  const costs = costRows.results ?? [];
+  const payments = paymentRows.results ?? [];
+  const memberNames = new Map((memberRows.results ?? []).map((m) => [m.id, m.name]));
+  const total = costs.reduce((sum, item) => sum + Math.round(Number(item.amount) || 0), 0);
+  const pendingTotal = costs
+    .filter((item) => item.consumer_pending)
+    .reduce((sum, item) => sum + Math.round(Number(item.amount) || 0), 0);
+
+  const lines = [`💸 Chi phí buổi ${formatDate(session.date)} • ${session.start_time} • ${session.venue}`];
+  lines.push(`Tổng đã nhập: ${formatMoney(total)}`);
+  if (pendingTotal > 0) lines.push(`Đang chờ gán người dùng: ${formatMoney(pendingTotal)}`);
+
+  if (!costs.length) {
+    lines.push("Chưa có khoản chi nào được nhập.");
+  } else {
+    const visibleCosts = costs.slice(0, 8).map((cost) => formatCostLine(cost, memberNames));
+    lines.push("", "Các khoản:", ...visibleCosts);
+    if (costs.length > visibleCosts.length) lines.push(`• ... còn ${costs.length - visibleCosts.length} khoản nữa`);
+  }
+
+  if (payments.length) {
+    const visiblePayments = payments.slice(0, 10).map((payment) => {
+      const debtor = payment.debtor_name?.trim() || "người trả";
+      const recipient = payment.recipient_name?.trim() || "người nhận";
+      return `• ${debtor} → ${recipient}: ${formatMoney(payment.amount_owed)} (${formatPaymentStatus(payment)})`;
+    });
+    lines.push("", "Cần chuyển:", ...visiblePayments);
+    if (payments.length > visiblePayments.length) lines.push(`• ... còn ${payments.length - visiblePayments.length} dòng nữa`);
+  } else if (costs.length) {
+    lines.push("", "Chưa thấy dòng công nợ cần chuyển. Nếu vừa sửa chi phí, bấm tính lại chia tiền trên web để cập nhật payments.");
+  }
+
+  return { ok: true, reply: lines.join("\n") };
 }
 
 async function replyCreateSession(
