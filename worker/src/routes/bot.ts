@@ -869,6 +869,7 @@ type QueryOpts = {
   from?: string;
   to?: string;
   onlyUpcoming?: boolean;
+  excludeCompleted?: boolean;
   recent?: boolean;
   limit?: number;
 };
@@ -912,6 +913,9 @@ async function querySessions(env: Env, groupId: string, opts: QueryOpts): Promis
   }
   if (opts.onlyUpcoming) {
     where.push("s.status = 'upcoming'");
+  }
+  if (opts.excludeCompleted) {
+    where.push("s.status != 'completed'");
   }
 
   const order = opts.recent
@@ -1019,6 +1023,68 @@ function normalizeConsumerIds(value: string | null | undefined, fallback?: strin
     ids.push(id);
   }
   return ids;
+}
+
+// --- Chống nhầm buổi trùng tên: selector khớp >1 buổi thì hỏi lại thay vì tự chọn ---
+
+type SessionResolution = { session: SessionRow | null; choices?: SessionRow[] };
+
+async function matchSessionsBySelector(
+  env: Env,
+  groupId: string,
+  selector: SessionDraft,
+  upcomingOnly: boolean,
+  limit = 4
+): Promise<SessionRow[]> {
+  const where = ["s.group_id = ?"];
+  const binds: unknown[] = [groupId];
+  if (upcomingOnly) where.push("s.status = 'upcoming'");
+  if (selector.date) {
+    where.push("s.date = ?");
+    binds.push(selector.date);
+  }
+  if (selector.startTime) {
+    where.push("s.start_time = ?");
+    binds.push(selector.startTime);
+  }
+  if (selector.venue) {
+    where.push("lower(s.venue) LIKE ?");
+    binds.push(`%${selector.venue.toLowerCase()}%`);
+  }
+
+  const result = await env.DB.prepare(
+    `SELECT s.id, s.date, s.start_time, s.venue, s.location, s.note, s.status,
+      (SELECT COUNT(*) FROM session_members sm WHERE sm.session_id = s.id AND sm.attended = 1) AS attendee_count
+     FROM sessions s
+     WHERE ${where.join(" AND ")}
+     ORDER BY CASE WHEN s.status = 'upcoming' THEN 0 ELSE 1 END, s.date ASC, s.start_time ASC
+     LIMIT ${limit}`
+  )
+    .bind(...binds)
+    .all<SessionRow>();
+  return result.results ?? [];
+}
+
+async function resolveSessionForAction(
+  env: Env,
+  groupId: string,
+  selector: SessionDraft | undefined,
+  upcomingOnly: boolean
+): Promise<SessionResolution> {
+  if (!hasSessionSelector(selector)) {
+    return { session: await soonestUpcoming(env, groupId) };
+  }
+  const rows = await matchSessionsBySelector(env, groupId, selector!, upcomingOnly);
+  if (rows.length > 1) return { session: null, choices: rows };
+  return { session: rows[0] ?? null };
+}
+
+function ambiguousSessionsReply(choices: SessionRow[]): BotReply {
+  const list = choices.map((s) => `• ${formatDate(s.date)} • ${s.start_time} • ${s.venue}`).join("\n");
+  return {
+    ok: false,
+    reply: `Có ${choices.length} buổi khớp với mô tả — bạn ghi rõ thêm ngày/giờ giúp mình:\n${list}`,
+  };
 }
 
 async function findUpcomingSession(env: Env, groupId: string, selector?: SessionDraft): Promise<SessionRow | null> {
@@ -1269,8 +1335,9 @@ async function replySessions(env: Env, groupId: string, groupName: string, inten
     rows = await querySessions(env, groupId, { from: week.from, to: week.to });
     header = `📅 Buổi tuần này của ${groupName}`;
   } else if (intent === "recent") {
-    rows = await querySessions(env, groupId, { recent: true });
-    header = `📅 Các buổi gần đây của ${groupName}`;
+    // Chỉ buổi còn "sống": chưa hoàn thành và trong vòng 15 ngày đổ lại.
+    rows = await querySessions(env, groupId, { recent: true, from: vnDateAfter(-15), excludeCompleted: true });
+    header = `📅 Các buổi gần đây của ${groupName} (15 ngày, chưa xong)`;
   } else if (intent === "next") {
     // "Sắp tới" theo status (giống badge trên web), không lọc theo ngày.
     rows = await querySessions(env, groupId, { onlyUpcoming: true, limit: 1 });
@@ -1518,7 +1585,14 @@ async function replyAddCost(
     return { ok: false, reply: 'Mình chưa rõ số tiền. Ví dụ: "tiền sân 240k" hoặc "3 ống cầu 270k Nam trả".' };
   }
 
-  const session = await findSessionForAddCost(env, groupId, selector);
+  let session: SessionRow | null;
+  if (hasSessionSelector(selector)) {
+    const resolution = await resolveSessionForAction(env, groupId, selector, false);
+    if (resolution.choices) return ambiguousSessionsReply(resolution.choices);
+    session = resolution.session;
+  } else {
+    session = await findSessionForAddCost(env, groupId);
+  }
   if (!session) return { ok: true, reply: `${groupName}: chưa có buổi nào để ghi chi phí.` };
 
   const members =
@@ -1768,9 +1842,10 @@ async function replyAddMembers(
     return { ok: false, reply: 'Bạn muốn thêm ai? Ví dụ: "thêm An vào buổi".' };
   }
 
-  const session = await findUpcomingSession(env, groupId, selector);
+  const { session, choices } = await resolveSessionForAction(env, groupId, selector, true);
+  if (choices) return ambiguousSessionsReply(choices);
   if (!session) {
-    const hint = selector?.date || selector?.venue || selector?.startTime ? " phù hợp" : "";
+    const hint = hasSessionSelector(selector) ? " phù hợp" : "";
     return { ok: true, reply: `${groupName}: chưa có buổi sắp tới${hint} để thêm người.` };
   }
 
@@ -1792,7 +1867,8 @@ async function replyRemoveMembers(
     return { ok: false, reply: 'Bạn muốn rút ai khỏi buổi? Ví dụ: "bớt tôi ra" hoặc "Nam không đi nữa".' };
   }
 
-  const session = await findUpcomingSession(env, groupId, selector);
+  const { session, choices } = await resolveSessionForAction(env, groupId, selector, true);
+  if (choices) return ambiguousSessionsReply(choices);
   if (!session) {
     const hint = hasSessionSelector(selector) ? " phù hợp" : "";
     return { ok: true, reply: `${groupName}: chưa có buổi sắp tới${hint} để rút người.` };
@@ -1935,7 +2011,8 @@ async function replyUpdateSession(
     return { ok: false, reply: 'Bạn muốn đổi gì? Ví dụ: "dời kèo mai sang 19h" hoặc "đổi sân sang Q7".' };
   }
 
-  const session = await findUpcomingSession(env, groupId, selector);
+  const { session, choices } = await resolveSessionForAction(env, groupId, selector, true);
+  if (choices) return ambiguousSessionsReply(choices);
   if (!session) {
     return { ok: true, reply: `${groupName}: chưa có buổi sắp tới phù hợp để sửa.` };
   }
@@ -1993,7 +2070,8 @@ async function replyCancelSession(
   // Câu xác nhận ngắn không chứa thông tin buổi — lấy lại từ chính câu hỏi của bot trong context.
   const effectiveSelector = confirmed ? parseContextSessionReference(context) : selector;
 
-  const session = await findUpcomingSession(env, groupId, effectiveSelector);
+  const { session, choices } = await resolveSessionForAction(env, groupId, effectiveSelector, true);
+  if (choices) return ambiguousSessionsReply(choices);
   if (!session) {
     return { ok: true, reply: `${groupName}: không thấy buổi sắp tới phù hợp để hủy.` };
   }
