@@ -9,6 +9,7 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Settings,
   ShieldCheck,
   Trash2,
   UserCircle,
@@ -38,6 +39,7 @@ export default function MembersPage() {
     error: groupError,
     fetch: fetchGroups,
     createGroup,
+    updateGroup,
     deleteGroup,
     setActiveGroup,
   } = useGroupsStore();
@@ -64,6 +66,10 @@ export default function MembersPage() {
   const [botLinkExpiresAt, setBotLinkExpiresAt] = useState<string | null>(null);
   const [botLinkLoading, setBotLinkLoading] = useState(false);
   const [botLinkCopied, setBotLinkCopied] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [editName, setEditName] = useState("");
+  const [editDescription, setEditDescription] = useState("");
+  const [savingGroup, setSavingGroup] = useState(false);
   const [deletingGroup, setDeletingGroup] = useState(false);
 
   const currentUserId = (session?.user as { id?: string } | undefined)?.id;
@@ -275,10 +281,34 @@ export default function MembersPage() {
       setSearch("");
       setSearchResults([]);
       setInviteLinkCode(null);
+      setSettingsOpen(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Không xóa được nhóm");
     } finally {
       setDeletingGroup(false);
+    }
+  };
+
+  const openSettings = () => {
+    setEditName(activeGroup?.name ?? "");
+    setEditDescription(activeGroup?.description ?? "");
+    setSettingsOpen(true);
+  };
+
+  const handleSaveGroupInfo = async () => {
+    if (!activeGroup || !editName.trim()) return;
+    setSavingGroup(true);
+    setError(null);
+    try {
+      await updateGroup(activeGroup.id, {
+        name: editName.trim(),
+        description: editDescription.trim() || undefined,
+      });
+      setSettingsOpen(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Không lưu được thông tin nhóm");
+    } finally {
+      setSavingGroup(false);
     }
   };
 
@@ -302,16 +332,15 @@ export default function MembersPage() {
             <div className="text-sm text-gray-500">Chỉ thành viên trong nhóm mới xem được nhau.</div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            {canDeleteGroup && (
-              <Button variant="destructive" size="sm" onClick={handleDeleteGroup} disabled={deletingGroup}>
-                <Trash2 size={15} className="mr-1.5" />
-                {deletingGroup ? "Đang xóa..." : "Xóa nhóm"}
-              </Button>
-            )}
             <Button variant="outline" size="sm" onClick={() => setCreateDialogOpen(true)}>
               <Plus size={16} className="mr-1.5" />
               Tạo nhóm
             </Button>
+            {activeGroup && (canManageGroup || canDeleteGroup) && (
+              <Button variant="outline" size="icon" onClick={openSettings} aria-label="Cài đặt nhóm">
+                <Settings size={16} />
+              </Button>
+            )}
           </div>
         </div>
 
@@ -555,70 +584,6 @@ export default function MembersPage() {
         </section>
       )}
 
-      {activeGroup && canManageGroup && (
-        <section className="rounded-xl border border-gray-100 bg-white p-4 shadow-sm space-y-3">
-          <div className="flex items-center gap-2">
-            <Bot size={18} className="text-green-600" />
-            <h2 className="font-semibold text-gray-900">Kết nối Messenger</h2>
-          </div>
-          <p className="text-sm text-gray-500">
-            Liên kết nhóm với group chat Messenger có bot TingTing: tạo mã rồi gõ{" "}
-            <code className="rounded bg-gray-100 px-1 py-0.5 text-xs text-gray-700">/connect &lt;mã&gt;</code>{" "}
-            trong group chat.
-          </p>
-          {botLinkCode ? (
-            <div className="space-y-2">
-              <div className="flex gap-2">
-                <div className="flex-1 min-w-0 select-all rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-center font-mono text-2xl tracking-[0.3em] text-gray-900">
-                  {botLinkCode}
-                </div>
-                <Button
-                  size="sm"
-                  variant={botLinkCopied ? "default" : "outline"}
-                  onClick={() => {
-                    navigator.clipboard.writeText(`/connect ${botLinkCode}`);
-                    setBotLinkCopied(true);
-                    setTimeout(() => setBotLinkCopied(false), 2000);
-                  }}
-                >
-                  {botLinkCopied ? (
-                    <><Check size={14} className="mr-1" />Đã copy</>
-                  ) : (
-                    <><Copy size={14} className="mr-1" />Copy lệnh</>
-                  )}
-                </Button>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-gray-400">
-                  Mã dùng 1 lần
-                  {botLinkExpiresAt &&
-                    `, hết hạn lúc ${new Date(botLinkExpiresAt).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })}`}
-                </span>
-                <button
-                  className="flex items-center gap-1 text-xs text-green-600 hover:text-green-700"
-                  onClick={handleCreateBotLinkCode}
-                  disabled={botLinkLoading}
-                >
-                  <RefreshCw size={11} />
-                  Tạo mã mới
-                </button>
-              </div>
-            </div>
-          ) : (
-            <Button
-              variant="outline"
-              size="sm"
-              className="w-full"
-              disabled={botLinkLoading}
-              onClick={handleCreateBotLinkCode}
-            >
-              <Bot size={15} className="mr-1.5" />
-              {botLinkLoading ? "Đang tạo..." : "Tạo mã liên kết"}
-            </Button>
-          )}
-        </section>
-      )}
-
       <section className="space-y-3">
         <div className="flex items-center gap-2">
           <Users size={18} className="text-green-600" />
@@ -684,6 +649,104 @@ export default function MembersPage() {
           </div>
         )}
       </section>
+
+      <Dialog open={settingsOpen} onClose={() => setSettingsOpen(false)} title={`Cài đặt nhóm${activeGroup ? ` «${activeGroup.name}»` : ""}`}>
+        <div className="space-y-5">
+          {canManageGroup && (
+            <div className="space-y-3">
+              <div className="text-sm font-semibold text-gray-900">Thông tin nhóm</div>
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">Tên nhóm *</label>
+                <Input value={editName} onChange={(event) => setEditName(event.target.value)} />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">Mô tả</label>
+                <Input value={editDescription} onChange={(event) => setEditDescription(event.target.value)} />
+              </div>
+              <Button size="sm" onClick={handleSaveGroupInfo} disabled={savingGroup || !editName.trim()}>
+                {savingGroup ? "Đang lưu..." : "Lưu thay đổi"}
+              </Button>
+            </div>
+          )}
+
+          {canManageGroup && (
+            <div className="space-y-2 border-t border-gray-100 pt-4">
+              <div className="flex items-center gap-2 text-sm font-semibold text-gray-900">
+                <Bot size={16} className="text-green-600" />
+                Kết nối Messenger
+              </div>
+              <p className="text-xs text-gray-500">
+                Liên kết nhóm với group chat Messenger có bot TingTing: tạo mã rồi gõ{" "}
+                <code className="rounded bg-gray-100 px-1 py-0.5 text-gray-700">/connect &lt;mã&gt;</code>{" "}
+                trong group chat.
+              </p>
+              {botLinkCode ? (
+                <div className="space-y-2">
+                  <div className="flex gap-2">
+                    <div className="flex-1 min-w-0 select-all rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-center font-mono text-2xl tracking-[0.3em] text-gray-900">
+                      {botLinkCode}
+                    </div>
+                    <Button
+                      size="sm"
+                      variant={botLinkCopied ? "default" : "outline"}
+                      onClick={() => {
+                        navigator.clipboard.writeText(`/connect ${botLinkCode}`);
+                        setBotLinkCopied(true);
+                        setTimeout(() => setBotLinkCopied(false), 2000);
+                      }}
+                    >
+                      {botLinkCopied ? (
+                        <><Check size={14} className="mr-1" />Đã copy</>
+                      ) : (
+                        <><Copy size={14} className="mr-1" />Copy lệnh</>
+                      )}
+                    </Button>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-gray-400">
+                      Mã dùng 1 lần
+                      {botLinkExpiresAt &&
+                        `, hết hạn lúc ${new Date(botLinkExpiresAt).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })}`}
+                    </span>
+                    <button
+                      className="flex items-center gap-1 text-xs text-green-600 hover:text-green-700"
+                      onClick={handleCreateBotLinkCode}
+                      disabled={botLinkLoading}
+                    >
+                      <RefreshCw size={11} />
+                      Tạo mã mới
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="w-full"
+                  disabled={botLinkLoading}
+                  onClick={handleCreateBotLinkCode}
+                >
+                  <Bot size={15} className="mr-1.5" />
+                  {botLinkLoading ? "Đang tạo..." : "Tạo mã liên kết"}
+                </Button>
+              )}
+            </div>
+          )}
+
+          {canDeleteGroup && (
+            <div className="space-y-2 border-t border-gray-100 pt-4">
+              <div className="text-sm font-semibold text-red-600">Vùng nguy hiểm</div>
+              <p className="text-xs text-gray-500">
+                Xóa nhóm sẽ xóa toàn bộ buổi chơi, thành viên, chi phí và lời mời. Không hoàn tác được.
+              </p>
+              <Button variant="destructive" size="sm" onClick={handleDeleteGroup} disabled={deletingGroup}>
+                <Trash2 size={15} className="mr-1.5" />
+                {deletingGroup ? "Đang xóa..." : "Xóa nhóm"}
+              </Button>
+            </div>
+          )}
+        </div>
+      </Dialog>
 
       <Dialog open={createDialogOpen} onClose={() => setCreateDialogOpen(false)} title="Tạo nhóm mới">
         <div className="space-y-4">

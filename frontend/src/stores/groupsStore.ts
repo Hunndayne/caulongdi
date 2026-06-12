@@ -12,6 +12,7 @@ interface GroupsState {
   error?: string;
   fetch: () => Promise<void>;
   createGroup: (data: { name: string; description?: string }) => Promise<PlayGroup>;
+  updateGroup: (id: string, data: { name: string; description?: string }) => Promise<PlayGroup>;
   deleteGroup: (id: string) => Promise<void>;
   setActiveGroup: (id?: string) => void;
 }
@@ -58,6 +59,15 @@ export const useGroupsStore = create<GroupsState>((set, get) => ({
     set((state) => ({
       groups: [group, ...state.groups.filter((item) => item.id !== group.id)],
       activeGroupId: group.id,
+      error: undefined,
+    }));
+    return group;
+  },
+
+  updateGroup: async (id, data) => {
+    const group = await api.updateGroup(id, data);
+    set((state) => ({
+      groups: state.groups.map((item) => (item.id === id ? { ...item, ...group } : item)),
       error: undefined,
     }));
     return group;

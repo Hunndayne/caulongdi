@@ -432,6 +432,44 @@ groups.post("/", async (c) => {
   }
 });
 
+groups.put("/:id", async (c) => {
+  const { id } = c.req.param();
+  const body = await c.req.json<{ name?: string; description?: string }>().catch(() => null);
+  const name = body?.name?.trim().slice(0, 80);
+  const description = body?.description?.trim().slice(0, 240) || null;
+  if (!name) return c.json({ error: "name required" }, 400);
+
+  try {
+    const membership = await getMembership(c, id);
+    if (membership !== "admin") return c.json({ error: "Forbidden" }, 403);
+
+    const result = await c.env.DB.prepare(
+      "UPDATE groups SET name = ?, description = ?, updated_at = ? WHERE id = ?"
+    )
+      .bind(name, description, new Date().toISOString(), id)
+      .run();
+    if (!result.meta?.changes) return c.json({ error: "Group not found" }, 404);
+
+    const row = await c.env.DB.prepare(`
+      SELECT g.*,
+        gm.role,
+        (SELECT COUNT(*) FROM group_members gmc WHERE gmc.group_id = g.id) as member_count
+      FROM groups g
+      JOIN group_members gm ON gm.group_id = g.id AND gm.user_id = ?
+      WHERE g.id = ?
+    `)
+      .bind(c.get("userId"), id)
+      .first<GroupRow>();
+
+    return c.json(toGroup(row!));
+  } catch (error) {
+    if (isMissingGroupSchema(error)) {
+      return c.json({ error: "Run group database migration first" }, 400);
+    }
+    throw error;
+  }
+});
+
 groups.delete("/:id", async (c) => {
   const { id } = c.req.param();
 

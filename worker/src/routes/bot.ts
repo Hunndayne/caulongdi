@@ -57,6 +57,8 @@ export type BotReply = { ok: boolean; reply: string };
 type BotActor = {
   userId?: string;
   name?: string | null;
+  // members.id đã ghép qua /alias — ưu tiên khi resolve "tôi/mình" từ Messenger.
+  memberId?: string;
 };
 
 const SELF_NAME_TOKEN = "__ting_self__";
@@ -149,6 +151,7 @@ function helpText() {
     '• "buổi sắp tới có ai" — ai tham gia buổi sắp tới',
     '• "thêm <tên> vào buổi" — thêm người vào buổi sắp tới',
     '• "chi phí buổi vừa rồi" / "ai nợ ai" — xem tổng tiền và công nợ của buổi',
+    '• /alias <tên trên web> — ghép tên Messenger của bạn với thành viên web (để "thêm tôi" đúng người; /alias xoa để bỏ)',
     "• /connect <mã> — liên kết nhóm chat với nhóm TingTing (lấy mã trên web)",
     "• /disconnect — huỷ liên kết",
   ].join("\n");
@@ -960,6 +963,12 @@ async function handleQuery(
   const groupName = group?.name ?? "nhóm";
   const groupId = link.group_id;
 
+  // Alias /alias của thread: resolve "tôi" và tên Messenger về đúng thành viên web.
+  const aliases = await loadThreadAliases(env, threadId);
+  if (actor?.name && !actor.memberId) {
+    actor = { ...actor, memberId: aliases.get(normalizeName(actor.name)) };
+  }
+
   const parsed = await resolveIntent(env, text, actor, context);
 
   switch (parsed.intent) {
@@ -970,7 +979,7 @@ async function handleQuery(
     case "list_attendees":
       return replyAttendees(env, groupId, groupName, parsed.session);
     case "add_member":
-      return replyAddMembers(env, groupId, groupName, parsed.names, actor, parsed.session);
+      return replyAddMembers(env, groupId, groupName, parsed.names, actor, parsed.session, aliases);
     case "create_session":
       return replyCreateSession(env, groupId, groupName, parsed.session, actor);
     case "costs":
@@ -1255,7 +1264,8 @@ async function replyAddMembers(
   groupName: string,
   names: string[],
   actor?: BotActor,
-  selector?: SessionDraft
+  selector?: SessionDraft,
+  aliases?: Map<string, string>
 ): Promise<BotReply> {
   if (!names.length) {
     return { ok: false, reply: 'Bạn muốn thêm ai? Ví dụ: "thêm An vào buổi".' };
@@ -1302,6 +1312,14 @@ async function replyAddMembers(
         queueMember(selfMember);
         continue;
       }
+      // Người gửi đã /alias — đáng tin hơn match theo tên hiển thị.
+      if (actor?.memberId) {
+        const aliased = members.find((m) => m.id === actor.memberId);
+        if (aliased) {
+          queueMember(aliased);
+          continue;
+        }
+      }
       if (actor?.name) {
         const actorName = normalizeName(actor.name);
         let matches = members.filter((m) => normalizeName(m.name) === actorName);
@@ -1319,6 +1337,11 @@ async function replyAddMembers(
     if (!q) continue;
     let matches = members.filter((m) => normalizeName(m.name) === q);
     if (matches.length === 0) matches = members.filter((m) => normalizeName(m.name).includes(q));
+    if (matches.length === 0 && aliases?.has(q)) {
+      // Tên gọi theo Messenger ("thêm Hunn") — tra alias của thread.
+      const aliased = members.find((m) => m.id === aliases.get(q));
+      if (aliased) matches = [aliased];
+    }
     if (matches.length === 0) {
       notFound.push(raw);
       continue;
@@ -1345,8 +1368,95 @@ async function replyAddMembers(
   if (added.length) lines.push(`✅ Đã thêm: ${added.join(", ")}`);
   if (already.length) lines.push(`ℹ️ Đã có sẵn: ${already.join(", ")}`);
   if (ambiguous.length) lines.push(`⚠️ Trùng tên, ghi rõ hơn: ${ambiguous.join(", ")}`);
-  if (notFound.length) lines.push(`❓ Không tìm thấy: ${notFound.join(", ")} (gõ "thành viên" để xem danh sách)`);
+  if (notFound.length) {
+    lines.push(`❓ Không tìm thấy: ${notFound.join(", ")} (gõ "thành viên" xem danh sách, hoặc /alias <tên web> để ghép tên Messenger)`);
+  }
   return { ok: true, reply: lines.join("\n") };
+}
+
+// --- Alias: ghép tên Messenger ↔ thành viên web ---
+
+async function loadThreadAliases(env: Env, threadId: string): Promise<Map<string, string>> {
+  const rows =
+    (await env.DB.prepare("SELECT sender_norm, member_id FROM bot_sender_aliases WHERE thread_id = ?")
+      .bind(threadId)
+      .all<{ sender_norm: string; member_id: string }>()).results ?? [];
+  return new Map(rows.map((r) => [r.sender_norm, r.member_id]));
+}
+
+async function handleAlias(env: Env, threadId: string, senderName: string | null, text: string): Promise<BotReply> {
+  const link = await env.DB.prepare("SELECT group_id FROM bot_thread_links WHERE thread_id = ?")
+    .bind(threadId)
+    .first<{ group_id: string }>();
+  if (!link) {
+    return { ok: false, reply: "Nhóm chat này chưa liên kết với nhóm nào trên TingTing. Gõ /connect <mã> trước đã nhé." };
+  }
+  if (!senderName) {
+    return { ok: false, reply: "Mình không đọc được tên người gửi của tin này, bạn gửi lại lệnh giúp mình nhé." };
+  }
+
+  const arg = text.replace(/^\/alias/i, "").trim();
+  const senderNorm = normalizeName(senderName);
+
+  if (!arg) {
+    const row = await env.DB.prepare(
+      `SELECT m.name FROM bot_sender_aliases a
+       JOIN members m ON m.id = a.member_id
+       WHERE a.thread_id = ? AND a.sender_norm = ?`
+    )
+      .bind(threadId, senderNorm)
+      .first<{ name: string }>();
+    if (!row) {
+      return {
+        ok: true,
+        reply: `"${senderName}" chưa ghép với thành viên nào trên web.\nGõ /alias <tên trên web> để ghép, ví dụ: /alias Mặt Trời Nhỏ.`,
+      };
+    }
+    return { ok: true, reply: `"${senderName}" đang ghép với «${row.name}». Gõ /alias xoa để bỏ ghép.` };
+  }
+
+  if (/^(xoa|huy|bo|off|remove|delete)$/.test(normalizeName(arg))) {
+    const result = await env.DB.prepare("DELETE FROM bot_sender_aliases WHERE thread_id = ? AND sender_norm = ?")
+      .bind(threadId, senderNorm)
+      .run();
+    return {
+      ok: true,
+      reply: result.meta?.changes ? `Đã bỏ ghép alias của "${senderName}".` : `"${senderName}" chưa có alias nào để xoá.`,
+    };
+  }
+
+  const members =
+    (await env.DB.prepare("SELECT id, name FROM members WHERE group_id = ? AND is_active = 1")
+      .bind(link.group_id)
+      .all<{ id: string; name: string }>()).results ?? [];
+  const q = normalizeName(arg);
+  let matches = members.filter((m) => normalizeName(m.name) === q);
+  if (!matches.length) matches = members.filter((m) => normalizeName(m.name).includes(q));
+  if (!matches.length) {
+    return { ok: false, reply: `Không tìm thấy thành viên "${arg}" trên web. Gõ "thành viên" để xem danh sách tên.` };
+  }
+  if (matches.length > 1) {
+    return {
+      ok: false,
+      reply: `Có ${matches.length} thành viên khớp "${arg}": ${matches.map((m) => m.name).join(", ")}. Bạn ghi rõ hơn nhé.`,
+    };
+  }
+
+  await env.DB.prepare(
+    `INSERT INTO bot_sender_aliases (thread_id, sender_norm, sender_name, member_id, created_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(thread_id, sender_norm) DO UPDATE SET
+       sender_name = excluded.sender_name,
+       member_id = excluded.member_id,
+       created_at = excluded.created_at`
+  )
+    .bind(threadId, senderNorm, senderName, matches[0].id, new Date().toISOString())
+    .run();
+
+  return {
+    ok: true,
+    reply: `✅ Đã ghép "${senderName}" (Messenger) ↔ «${matches[0].name}» (web).\nGiờ "thêm tôi vào buổi" sẽ vào đúng người.`,
+  };
 }
 
 // --- Liên kết / huỷ liên kết ---
@@ -1433,6 +1543,9 @@ bot.post("/message", async (c) => {
   const lower = text.toLowerCase();
   if (lower.startsWith("/connect")) return c.json(await handleConnect(c.env, threadId, text));
   if (lower.startsWith("/disconnect")) return c.json(await handleDisconnect(c.env, threadId));
+  if (lower.startsWith("/alias")) {
+    return c.json(await handleAlias(c.env, threadId, body.senderName?.trim() || null, text));
+  }
   if (lower === "/help" || lower.startsWith("/help ")) return c.json({ ok: true, reply: helpText() });
 
   return c.json(await handleQuery(c.env, threadId, text, { name: body.senderName?.trim() || null }));
