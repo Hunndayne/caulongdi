@@ -26,6 +26,9 @@ _BROWSER_ARGS = [
 # Ô soạn tin nhắn của messenger.
 _TEXTBOX_SELECTOR = 'div[role="textbox"][contenteditable="true"]'
 
+# Nút đóng các dialog/popup FB hay đè lên trang (chặn click vào ô soạn tin).
+_CLOSE_BUTTON_SELECTOR = '[role="dialog"] [aria-label="Đóng"], [role="dialog"] [aria-label="Close"]'
+
 # Trích các message cuối cùng: [{sender, text, label}].
 # DOM messenger (kiểm chứng 2026-06): tin nhắn nằm trong [role="log"],
 # mỗi tin là div[role="article"]; bên trong có phần tử mang aria-label dạng
@@ -76,7 +79,21 @@ class MessengerClient:
         await self.page.goto(config.THREAD_URL, wait_until="domcontentloaded", timeout=60_000)
         self._check_logged_in()
         await self.page.wait_for_selector(_TEXTBOX_SELECTOR, timeout=30_000)
+        await self._dismiss_overlays()
         log.info("Đã mở thread %s", config.THREAD_ID)
+
+    async def _dismiss_overlays(self) -> None:
+        """Đóng popup/dialog FB đè lên trang — best effort, không có cũng không sao."""
+        for _ in range(3):
+            btn = self.page.locator(_CLOSE_BUTTON_SELECTOR).first
+            try:
+                if not await btn.is_visible():
+                    break
+                await btn.click(timeout=2_000)
+                log.info("Đã đóng một dialog/popup FB")
+                await asyncio.sleep(0.3)
+            except Exception:  # noqa: BLE001 — dialog có thể tự biến mất giữa chừng
+                break
 
     async def _block_heavy_resources(self, route, request) -> None:
         if request.resource_type in _BLOCKED_RESOURCE_TYPES:
@@ -96,8 +113,13 @@ class MessengerClient:
 
     async def send(self, text: str) -> None:
         """Gõ reply vào ô soạn tin. Xuống dòng bằng Shift+Enter, gửi bằng Enter."""
+        await self._dismiss_overlays()
         box = self.page.locator(_TEXTBOX_SELECTOR).last
-        await box.click()
+        try:
+            await box.click(timeout=5_000)
+        except Exception:  # noqa: BLE001 — overlay chặn click: focus thẳng bằng JS
+            log.warning("Click textbox bị chặn, fallback focus bằng JS")
+            await box.evaluate("el => el.focus()")
         lines = text.split("\n")
         for i, line in enumerate(lines):
             if i > 0:

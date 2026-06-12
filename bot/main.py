@@ -93,6 +93,9 @@ async def _process_new_messages(client: MessengerClient, prev_keys: list[str]) -
 
     for m in new_messages:
         text = m["text"]
+        # Tin của chính bot (UI tiếng Việt hiện "Bạn") — bỏ qua để không tự reply vòng lặp
+        if (m.get("sender") or "").strip().lower() in ("bạn", "you"):
+            continue
         if not _should_forward(text):
             log.info("Bỏ qua (không phải lệnh/@bot) từ %s: %r", m.get("sender") or "?", text[:80])
             continue
