@@ -13,7 +13,8 @@
       "PowerShell(Get-Content \"C:\\\\Users\\\\Hunn\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\D--code-caulongdi\\\\e5277afb-70c7-49b1-b44b-0284d6e9d847\\\\tasks\\\\b02xalgj2.output\" -Raw; \"----\"; \\(Get-Item \"C:\\\\Users\\\\Hunn\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\D--code-caulongdi\\\\e5277afb-70c7-49b1-b44b-0284d6e9d847\\\\tasks\\\\b02xalgj2.output\"\\).Length)",
       "Bash(git add *)",
       "Bash(git commit *)",
-      "Bash(git check-ignore *)"
+      "Bash(git check-ignore *)",
+      "Bash(py --version)"
     ]
   }
 }
