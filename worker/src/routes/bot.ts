@@ -29,6 +29,7 @@ type Intent =
   | "cancel_session"
   | "costs"
   | "add_cost"
+  | "mark_paid"
   | "stats"
   | "chat";
 
@@ -500,6 +501,7 @@ function normalizeIntent(value: unknown): Intent | null {
     "cancel_session",
     "costs",
     "add_cost",
+    "mark_paid",
     "stats",
     "help",
     "chat",
@@ -561,12 +563,13 @@ async function classifyWithAI(
     "Nếu câu hỏi lịch/buổi/kèo có hỏi ai, thành viên, người tham gia thì intent là list_attendees; chỉ dùng list_members khi hỏi danh sách thành viên của nhóm nói chung.",
     "Nếu người dùng HỎI chi phí, tổng tiền, bill, hóa đơn, công nợ, ai nợ ai, ai trả ai, chia tiền, mỗi người bao nhiêu thì intent là costs.",
     'Nếu người dùng BÁO/GHI một khoản chi vừa tiêu (có số tiền, vd "tiền sân 240k", "3 ống cầu 270k Nam trả", "nước hết 60k") thì intent là add_cost — phân biệt với costs là câu hỏi.',
+    'Nếu người dùng muốn ĐÁNH DẤU/XÁC NHẬN đã trả tiền/đã chuyển khoản công nợ ("tôi trả Nam rồi", "đánh dấu đã trả", "Nam chuyển cho tôi rồi") thì intent là mark_paid.',
     "Only classify today/week/upcoming/next/recent/list_attendees when the user clearly asks about badminton sessions, schedule, court, or players; casual chat that happens to mention time words must be unknown.",
     "Bạn phân tích câu của người dùng về lịch chơi cầu lông của một nhóm và TRẢ VỀ JSON.",
     'Định dạng JSON: {"intent": "...", "names": ["..."], "session": {"date": "YYYY-MM-DD", "startTime": "HH:MM", "venue": "..."}, "changes": {"date": "...", "startTime": "...", "venue": "..."}, "cost": {"label": "...", "amount": 0, "quantity": 1, "payerName": "..."}}.',
     "intent là MỘT trong: next, upcoming, today, week, recent, list_members, list_attendees, add_member, remove_member, create_session, update_session, cancel_session, costs, add_cost, stats, help, unknown.",
     "Ý nghĩa: next=buổi sắp tới gần nhất; upcoming=danh sách buổi sắp tới; today=hôm nay; week=tuần này; recent=các buổi gần đây/lịch sử;",
-    "list_members=liệt kê thành viên nhóm; list_attendees=ai tham gia buổi; add_member=thêm người vào buổi; create_session=tạo buổi/kèo mới; costs=xem chi phí/công nợ buổi; add_cost=ghi một khoản chi mới; help=hướng dẫn; unknown=không liên quan.",
+    "list_members=liệt kê thành viên nhóm; list_attendees=ai tham gia buổi; add_member=thêm người vào buổi; create_session=tạo buổi/kèo mới; costs=xem chi phí/công nợ buổi; add_cost=ghi một khoản chi mới; mark_paid=xác nhận đã trả nợ; help=hướng dẫn; unknown=không liên quan.",
     `cost CHỈ điền khi intent=add_cost: label là tên khoản (vd "tiền sân", "ống cầu"), amount là số VND tuyệt đối (240k → 240000, 1tr2 → 1200000), quantity mặc định 1, payerName là người trả nếu có nhắc ("${SELF_NAME_TOKEN}" nếu người gửi tự trả).`,
     'names điền khi intent=add_member/remove_member (người cần thêm/rút) hoặc create_session (người tham gia nhắc trong câu, vd "gồm có tôi và An"), ví dụ ["An","Bình"]. Các intent khác để names rỗng [].',
     "changes CHỈ điền khi intent=update_session.",
@@ -690,6 +693,7 @@ async function replyNaturalChat(
     "Tin nhắn này đã được chuyển đến bạn rồi; không bảo người dùng gõ lại /ting.",
     "Nếu người dùng hỏi về lịch chơi, thành viên, ai tham gia, chi phí/công nợ, hoặc thêm người vào buổi nhưng bạn không có đủ dữ liệu, hãy hỏi lại ngắn gọn để làm rõ.",
     "Không tự bịa dữ liệu lịch, công nợ, thành viên nếu không được cung cấp trong tin nhắn.",
+    "TUYỆT ĐỐI KHÔNG nói rằng bạn ĐÃ thực hiện/cập nhật/ghi nhận/đánh dấu bất kỳ hành động nào — bạn không có khả năng thao tác dữ liệu; nếu người dùng yêu cầu một thao tác, hãy nói bạn chưa hỗ trợ và hướng dẫn làm trên web TingTing.",
   ].join(" ");
   const contextBlock = contextForPrompt(context);
 
@@ -746,7 +750,7 @@ function enrichAiIntent(ai: ParsedIntent, text: string, context?: BotContextMess
     };
   }
 
-  if (ai.intent === "list_attendees" || ai.intent === "costs") {
+  if (ai.intent === "list_attendees" || ai.intent === "costs" || ai.intent === "mark_paid") {
     return { ...ai, session: mergeSession(ai.session, parseSessionReference(text, context)) };
   }
 
@@ -807,6 +811,13 @@ async function resolveIntent(env: Env, text: string, actor?: BotActor, context?:
     // AI bảo "chat" nhưng câu khớp mẫu lệnh rất rõ → vá lại bằng regex hẹp.
     if (isCancelConfirmation(text, context)) {
       return { intent: "cancel_session", names: [] };
+    }
+    // "đánh dấu đã trả", "tôi chuyển rồi" (không kèm số tiền = không phải ghi chi phí)
+    if (
+      /\b(danh dau|xac nhan)\b.*\b(tra|thanh toan|chuyen)\b/.test(t) ||
+      (/\b(da tra|tra het|tra du|da chuyen( khoan)?|chuyen roi)\b/.test(t) && parseMoneyVn(text) === undefined)
+    ) {
+      return { intent: "mark_paid", names: [], session: parseSessionReference(text, context) };
     }
     if (isStrongAddLike(t)) {
       return { intent: "add_member", names: normalizeAddNames(text), session: parseSessionReference(text, context) };
@@ -1190,6 +1201,8 @@ async function handleQuery(
       return replyCosts(env, groupId, groupName, text, parsed.session);
     case "add_cost":
       return replyAddCost(env, groupId, groupName, text, actor, parsed.cost, parsed.session, aliases);
+    case "mark_paid":
+      return replyMarkPaid(env, groupId, groupName, text, parsed.session);
     case "chat":
       return replyNaturalChat(env, groupName, text, actor, context);
     default:
@@ -1234,6 +1247,8 @@ export async function handleGroupBotQuery(
       return replyCosts(env, groupId, groupName, text, parsed.session);
     case "add_cost":
       return replyAddCost(env, groupId, groupName, text, actor, parsed.cost, parsed.session);
+    case "mark_paid":
+      return replyMarkPaid(env, groupId, groupName, text, parsed.session);
     case "chat":
       return replyNaturalChat(env, groupName, text, actor, context);
     default:
@@ -1407,6 +1422,31 @@ async function replyCosts(
   }
 
   return { ok: true, reply: lines.join("\n") };
+}
+
+// Xác nhận "đã trả tiền" là thao tác nhạy cảm (đúng người, đúng khoản, đúng chiều nợ)
+// — bot KHÔNG tự làm, chỉ đưa link đến trang buổi trên web.
+async function replyMarkPaid(
+  env: Env,
+  groupId: string,
+  groupName: string,
+  text: string,
+  selector?: SessionDraft
+): Promise<BotReply> {
+  const session = await findSessionForCosts(env, groupId, text, selector);
+  if (!session) {
+    return { ok: true, reply: `${groupName}: chưa tìm thấy buổi nào có công nợ để xác nhận.` };
+  }
+  const base = (env.FRONTEND_URL || "https://caulong.hunn.io.vn").replace(/\/+$/, "");
+  return {
+    ok: true,
+    reply: [
+      `🔒 Xác nhận "đã trả" cần làm trên web để chắc đúng người, đúng khoản:`,
+      `🏸 ${formatDate(session.date)} • ${session.start_time} • ${session.venue}`,
+      `👉 ${base}/sessions/${session.id}`,
+      'Xem nhanh công nợ tại đây thì gõ "ai nợ ai".',
+    ].join("\n"),
+  };
 }
 
 // Buổi mặc định để ghi chi phí: hôm nay → gần nhất đã qua → sắp tới gần nhất.
