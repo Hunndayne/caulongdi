@@ -69,6 +69,24 @@ def _clean_mention(text: str) -> str:
     return stripped
 
 
+_CONTEXT_MESSAGES = 8
+
+
+def _build_context(messages: list[dict], current: dict) -> list[dict]:
+    """Các tin liền trước tin hiện tại, làm ngữ cảnh cho Worker ("buổi đó", "kèo vừa rồi"...)."""
+    try:
+        idx = messages.index(current)
+    except ValueError:
+        idx = len(messages)
+    return [
+        {
+            "role": "assistant" if (x.get("sender") or "").strip().lower() in ("bạn", "you") else "user",
+            "text": x["text"],
+        }
+        for x in messages[max(0, idx - _CONTEXT_MESSAGES) : idx]
+    ]
+
+
 def _msg_key(m: dict) -> str:
     # label thường chứa tên + giờ gửi → hai tin trùng nội dung vẫn khác khoá.
     return f"{m.get('sender') or ''}|{m.get('text') or ''}|{m.get('label') or ''}"
@@ -102,7 +120,8 @@ async def _process_new_messages(client: MessengerClient, prev_keys: list[str]) -
         sender = m.get("sender")
         log.info("Forward từ %s: %r", sender or "?", text[:120])
         state["messages_forwarded"] += 1
-        reply = await ask_worker(_clean_mention(text), sender)
+        context = _build_context(messages, m)
+        reply = await ask_worker(_clean_mention(text), sender, context)
         if reply:
             async with _send_lock:
                 await client.send(reply)

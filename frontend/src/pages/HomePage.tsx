@@ -438,7 +438,7 @@ export default function HomePage() {
       </div>
 
       <div className="grid gap-[18px] min-[1101px]:grid-cols-[1.6fr_1fr]">
-        <section className="rounded-[14px] border border-[#e8e7e2] bg-white p-3.5 min-[769px]:p-[18px]">
+        <section className="min-w-0 rounded-[14px] border border-[#e8e7e2] bg-white p-3.5 min-[769px]:p-[18px]">
           <div className="mb-3.5 flex flex-wrap items-start justify-between gap-3">
             <div className="flex items-center gap-3">
               <div className="min-w-11 overflow-hidden rounded-[9px] border border-[#e8e7e2] bg-white text-center">
@@ -637,7 +637,7 @@ export default function HomePage() {
           </div>
         </section>
 
-        <div className="flex flex-col gap-[18px]">
+        <div className="flex min-w-0 flex-col gap-[18px]">
           <section>
             <div className="mb-3 flex items-center justify-between px-1">
               <div className="flex items-center gap-2 text-sm font-semibold text-[#18181b]">

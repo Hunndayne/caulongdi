@@ -260,6 +260,10 @@ function parseReferencedVenue(text: string): string | undefined {
   );
   const venue = match ? cleanupVenue(match[1]) : "";
   if (/^\d{1,2}[/-]/.test(venue) || /^(hôm|hom|ngày|ngay|mai|thứ|thu)\b/i.test(venue)) return undefined;
+  // "buổi đó/này/kia..." là đại từ chỉ buổi (resolve qua context), không phải tên sân.
+  if (/^(do|nay|kia|day|nao|cu|truoc|vua roi|gan nhat|sap toi|ke tiep|tiep theo)$/.test(normalizeName(venue))) {
+    return undefined;
+  }
   return venue || undefined;
 }
 
@@ -362,6 +366,24 @@ function normalizeAddNames(text: string, aiNames: string[] = []): string[] {
 
 function extractNamesHeuristic(text: string): string[] {
   return normalizeAddNames(text);
+}
+
+function cleanupNameList(values: string[]): string[] {
+  return values.flatMap(splitNameCandidates).map(cleanupAddNameCandidate).filter((x): x is string => Boolean(x));
+}
+
+// "tạo kèo ... gồm có tôi và A ở thủ đức" — rút người tham gia đi kèm câu tạo buổi.
+function parseCreateParticipants(text: string): string[] {
+  const stopAhead = "(?=\\s+(?:ở|o|tại|tai|sân|san|lúc|luc|vào|vao|ngày|ngay|hôm|hom|thứ|thu)\\b|$)";
+  const match =
+    text.match(new RegExp(`(?:gồm|gom)\\s*(?:có|co)?\\s+(.+?)${stopAhead}`, "i")) ||
+    text.match(new RegExp(`(?:cùng với|cung voi|cùng|cung|kèm|kem)\\s+(.+?)${stopAhead}`, "i")) ||
+    text.match(new RegExp(`(?:^|[\\s,.;:!?])(?:có|co)\\s+(.+?)${stopAhead}`, "i"));
+  if (!match) return [];
+  // Bỏ mảnh nghi vấn lọt vào ("có ai đi không") — không phải tên người.
+  return cleanupNameList([match[1]]).filter(
+    (name) => name === SELF_NAME_TOKEN || !/(^|\s)(ai|khong|ko|gi|nao|dau)(\s|$)/.test(normalizeName(name))
+  );
 }
 
 function hasSessionContext(t: string): boolean {
@@ -469,7 +491,7 @@ async function classifyWithAI(
     "intent là MỘT trong: next, upcoming, today, week, recent, list_members, list_attendees, add_member, create_session, costs, help, unknown.",
     "Ý nghĩa: next=buổi sắp tới gần nhất; upcoming=danh sách buổi sắp tới; today=hôm nay; week=tuần này; recent=các buổi gần đây/lịch sử;",
     "list_members=liệt kê thành viên nhóm; list_attendees=ai tham gia buổi; add_member=thêm người vào buổi; create_session=tạo buổi/kèo mới; costs=xem chi phí/công nợ buổi; help=hướng dẫn; unknown=không liên quan.",
-    'names CHỈ điền khi intent=add_member: danh sách tên người cần thêm, ví dụ ["An","Bình"]. Các intent khác để names rỗng [].',
+    'names điền khi intent=add_member (người cần thêm) hoặc create_session (người tham gia nhắc trong câu, vd "gồm có tôi và An"), ví dụ ["An","Bình"]. Các intent khác để names rỗng [].',
   ].join(" ");
 
   const contextBlock = contextForPrompt(context);
@@ -594,7 +616,8 @@ async function replyNaturalChat(
 
 function enrichAiIntent(ai: ParsedIntent, text: string, context?: BotContextMessage[]): ParsedIntent {
   if (ai.intent === "create_session") {
-    return { intent: "create_session", names: [], session: parseCreateSessionDraft(text) };
+    const names = [...new Set([...cleanupNameList(ai.names), ...parseCreateParticipants(text)])];
+    return { intent: "create_session", names, session: parseCreateSessionDraft(text) };
   }
 
   if (ai.intent === "add_member") {
@@ -618,7 +641,7 @@ async function resolveIntent(env: Env, text: string, actor?: BotActor, context?:
   const addLike = isAddLike(t);
 
   if (createLike) {
-    return { intent: "create_session", names: [], session: parseCreateSessionDraft(text) };
+    return { intent: "create_session", names: parseCreateParticipants(text), session: parseCreateSessionDraft(text) };
   }
 
   let ai: ParsedIntent | null = null;
@@ -981,7 +1004,7 @@ async function handleQuery(
     case "add_member":
       return replyAddMembers(env, groupId, groupName, parsed.names, actor, parsed.session, aliases);
     case "create_session":
-      return replyCreateSession(env, groupId, groupName, parsed.session, actor);
+      return replyCreateSession(env, groupId, groupName, parsed.session, actor, parsed.names, aliases);
     case "costs":
       return replyCosts(env, groupId, groupName, text, parsed.session);
     case "chat":
@@ -1015,7 +1038,7 @@ export async function handleGroupBotQuery(
     case "add_member":
       return replyAddMembers(env, groupId, groupName, parsed.names, actor, parsed.session);
     case "create_session":
-      return replyCreateSession(env, groupId, groupName, parsed.session, actor);
+      return replyCreateSession(env, groupId, groupName, parsed.session, actor, parsed.names);
     case "costs":
       return replyCosts(env, groupId, groupName, text, parsed.session);
     case "chat":
@@ -1198,7 +1221,9 @@ async function replyCreateSession(
   groupId: string,
   groupName: string,
   draft?: SessionDraft,
-  actor?: BotActor
+  actor?: BotActor,
+  names: string[] = [],
+  aliases?: Map<string, string>
 ): Promise<BotReply> {
   const missing: string[] = [];
   if (!draft?.date) missing.push("ngày");
@@ -1229,6 +1254,10 @@ async function replyCreateSession(
     .first<SessionRow>();
 
   if (existing) {
+    if (names.length) {
+      const outcome = await addNamesToSession(env, groupId, existing.id, names, actor, aliases);
+      return { ok: true, reply: `Kèo này đã có rồi nè:\n${formatSession(existing)}${formatAddOutcome(outcome)}` };
+    }
     return { ok: true, reply: `Kèo này đã có rồi nè:\n${formatSession(existing)}` };
   }
 
@@ -1252,31 +1281,41 @@ async function replyCreateSession(
     attendee_count: 0,
   };
 
+  // "tạo kèo ... gồm có tôi và A" — thêm luôn người được nhắc trong câu.
+  let outcomeText = "";
+  if (names.length) {
+    const outcome = await addNamesToSession(env, groupId, id, names, actor, aliases);
+    session.attendee_count = outcome.added.length;
+    outcomeText = formatAddOutcome(outcome);
+  }
+
   return {
     ok: true,
-    reply: `✅ Đã tạo kèo mới cho ${groupName}:\n${formatSession(session)}\nAi đi thì nhắn "/ting thêm tôi vào buổi" nhé.`,
+    reply: `✅ Đã tạo kèo mới cho ${groupName}:\n${formatSession(session)}${outcomeText}\nAi đi thì nhắn "thêm tôi vào buổi" nhé.`,
   };
 }
 
-async function replyAddMembers(
+type AddOutcome = { added: string[]; already: string[]; ambiguous: string[]; notFound: string[] };
+
+function formatAddOutcome(outcome: AddOutcome): string {
+  const lines: string[] = [];
+  if (outcome.added.length) lines.push(`✅ Đã thêm: ${outcome.added.join(", ")}`);
+  if (outcome.already.length) lines.push(`ℹ️ Đã có sẵn: ${outcome.already.join(", ")}`);
+  if (outcome.ambiguous.length) lines.push(`⚠️ Trùng tên, ghi rõ hơn: ${outcome.ambiguous.join(", ")}`);
+  if (outcome.notFound.length) {
+    lines.push(`❓ Không tìm thấy: ${outcome.notFound.join(", ")} (gõ "thành viên" xem danh sách, hoặc /alias <tên web> để ghép tên Messenger)`);
+  }
+  return lines.length ? `\n${lines.join("\n")}` : "";
+}
+
+async function addNamesToSession(
   env: Env,
   groupId: string,
-  groupName: string,
+  sessionId: string,
   names: string[],
   actor?: BotActor,
-  selector?: SessionDraft,
   aliases?: Map<string, string>
-): Promise<BotReply> {
-  if (!names.length) {
-    return { ok: false, reply: 'Bạn muốn thêm ai? Ví dụ: "thêm An vào buổi".' };
-  }
-
-  const session = await findUpcomingSession(env, groupId, selector);
-  if (!session) {
-    const hint = selector?.date || selector?.venue || selector?.startTime ? " phù hợp" : "";
-    return { ok: true, reply: `${groupName}: chưa có buổi sắp tới${hint} để thêm người.` };
-  }
-
+): Promise<AddOutcome> {
   const selfMember =
     names.includes(SELF_NAME_TOKEN) && actor?.userId ? await getOrCreateMemberForUser(env, groupId, actor.userId) : null;
 
@@ -1286,7 +1325,7 @@ async function replyAddMembers(
       .all<{ id: string; name: string }>()).results ?? [];
   const attendingRows =
     (await env.DB.prepare("SELECT member_id FROM session_members WHERE session_id = ? AND attended = 1")
-      .bind(session.id)
+      .bind(sessionId)
       .all<{ member_id: string }>()).results ?? [];
   const attending = new Set(attendingRows.map((r) => r.member_id));
 
@@ -1356,22 +1395,38 @@ async function replyAddMembers(
   if (toInsert.length) {
     const stmts = toInsert.map((memberId) =>
       env.DB.prepare("INSERT OR IGNORE INTO session_members (session_id, member_id, attended) VALUES (?, ?, 1)")
-        .bind(session.id, memberId)
+        .bind(sessionId, memberId)
     );
     // Xoá payment chưa trả để tính lại chia tiền (giống flow join/điểm danh của app).
-    stmts.push(env.DB.prepare("DELETE FROM payments WHERE session_id = ? AND paid = 0").bind(session.id));
+    stmts.push(env.DB.prepare("DELETE FROM payments WHERE session_id = ? AND paid = 0").bind(sessionId));
     await env.DB.batch(stmts);
   }
 
-  const header = `🏸 ${formatDate(session.date)} • ${session.start_time} • ${session.venue}`;
-  const lines = [header];
-  if (added.length) lines.push(`✅ Đã thêm: ${added.join(", ")}`);
-  if (already.length) lines.push(`ℹ️ Đã có sẵn: ${already.join(", ")}`);
-  if (ambiguous.length) lines.push(`⚠️ Trùng tên, ghi rõ hơn: ${ambiguous.join(", ")}`);
-  if (notFound.length) {
-    lines.push(`❓ Không tìm thấy: ${notFound.join(", ")} (gõ "thành viên" xem danh sách, hoặc /alias <tên web> để ghép tên Messenger)`);
+  return { added, already, ambiguous, notFound };
+}
+
+async function replyAddMembers(
+  env: Env,
+  groupId: string,
+  groupName: string,
+  names: string[],
+  actor?: BotActor,
+  selector?: SessionDraft,
+  aliases?: Map<string, string>
+): Promise<BotReply> {
+  if (!names.length) {
+    return { ok: false, reply: 'Bạn muốn thêm ai? Ví dụ: "thêm An vào buổi".' };
   }
-  return { ok: true, reply: lines.join("\n") };
+
+  const session = await findUpcomingSession(env, groupId, selector);
+  if (!session) {
+    const hint = selector?.date || selector?.venue || selector?.startTime ? " phù hợp" : "";
+    return { ok: true, reply: `${groupName}: chưa có buổi sắp tới${hint} để thêm người.` };
+  }
+
+  const outcome = await addNamesToSession(env, groupId, session.id, names, actor, aliases);
+  const header = `🏸 ${formatDate(session.date)} • ${session.start_time} • ${session.venue}`;
+  return { ok: true, reply: `${header}${formatAddOutcome(outcome)}` };
 }
 
 // --- Alias: ghép tên Messenger ↔ thành viên web ---
@@ -1529,7 +1584,12 @@ bot.use("*", async (c, next) => {
 
 bot.post("/message", async (c) => {
   const body = await c.req
-    .json<{ threadId?: string; senderName?: string; text?: string }>()
+    .json<{
+      threadId?: string;
+      senderName?: string;
+      text?: string;
+      context?: Array<{ role?: string; text?: string }>;
+    }>()
     .catch(() => null);
   if (!body) return c.json({ error: "Invalid JSON body" }, 400);
 
@@ -1537,6 +1597,15 @@ bot.post("/message", async (c) => {
   const text = (body.text ?? "").trim();
   if (!threadId) return c.json({ error: "threadId required" }, 400);
   if (!text) return c.json({ ok: true, reply: "" });
+
+  // Bot Python gửi kèm các tin gần nhất trong chat — để hiểu "buổi đó", "kèo vừa rồi"...
+  const context: BotContextMessage[] = (Array.isArray(body.context) ? body.context : [])
+    .filter((m) => m && typeof m.text === "string" && m.text.trim())
+    .slice(-MAX_CONTEXT_MESSAGES_FOR_AI)
+    .map((m) => ({
+      role: m.role === "assistant" ? "assistant" : "user",
+      text: String(m.text).trim().slice(0, 500),
+    }));
 
   await ensureBotTables(c.env.DB);
 
@@ -1548,7 +1617,15 @@ bot.post("/message", async (c) => {
   }
   if (lower === "/help" || lower.startsWith("/help ")) return c.json({ ok: true, reply: helpText() });
 
-  return c.json(await handleQuery(c.env, threadId, text, { name: body.senderName?.trim() || null }));
+  return c.json(
+    await handleQuery(
+      c.env,
+      threadId,
+      text,
+      { name: body.senderName?.trim() || null },
+      context.length ? context : undefined
+    )
+  );
 });
 
 export default bot;
