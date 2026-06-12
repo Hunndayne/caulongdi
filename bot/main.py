@@ -121,25 +121,35 @@ async def _process_new_messages(
     """So sánh đuôi danh sách tin với lần đọc trước, xử lý phần mới, trả về keys hiện tại."""
     messages = await client.read_messages(thread_id)
     keys = [_msg_key(m) for m in messages]
+
+    # MỎ NEO AN TOÀN: tin gần nhất của chính bot là ranh giới "đã xử lý" —
+    # không bao giờ đọc/trả lời lệnh nằm trước nó, kể cả khi mất mốc prev_keys
+    # (restart, DOM vẽ lại). Chống trả lời lại hàng loạt lệnh cũ.
+    last_own_idx = max((i for i, m in enumerate(messages) if _is_own_message(m)), default=-1)
+
     if not prev_keys:
         # Baseline — không reply lịch sử. Riêng thread rover mới phát hiện: xử lý
-        # lệnh "/" cuối cùng để "/connect" gõ trước khi rover kịp ghé vẫn được trả lời.
-        if process_baseline_command and messages:
-            last = messages[-1]
-            if not _is_own_message(last) and last["text"].strip().startswith("/"):
-                await _forward_and_reply(client, thread_id, messages, last)
-                keys = [_msg_key(x) for x in await client.read_messages(thread_id)]
+        # lệnh "/" cuối cùng SAU tin cuối của bot (để "/connect" gõ trước khi rover
+        # kịp ghé vẫn được trả lời, nhưng lệnh đã trả lời rồi thì không lặp lại).
+        if process_baseline_command:
+            unanswered = messages[last_own_idx + 1 :]
+            if unanswered:
+                last = unanswered[-1]
+                if not _is_own_message(last) and last["text"].strip().startswith("/"):
+                    await _forward_and_reply(client, thread_id, messages, last)
+                    keys = [_msg_key(x) for x in await client.read_messages(thread_id)]
         return keys
 
     # Tìm tin cuối của lần trước trong danh sách hiện tại; phần sau nó là tin mới.
     last_prev = prev_keys[-1]
     try:
         idx = len(keys) - 1 - keys[::-1].index(last_prev)
-        new_messages = messages[idx + 1 :]
+        new_messages = messages[max(idx, last_own_idx) + 1 :]
     except ValueError:
-        # Không thấy mốc cũ (DOM bị cuộn/vẽ lại) — fallback: tin chưa từng thấy gần đây.
+        # Không thấy mốc cũ (DOM bị cuộn/vẽ lại) — fallback: tin chưa từng thấy,
+        # nhưng CHỈ tính từ sau tin cuối của bot trở đi.
         prev_set = set(prev_keys)
-        new_messages = [m for m in messages if _msg_key(m) not in prev_set]
+        new_messages = [m for m in messages[last_own_idx + 1 :] if _msg_key(m) not in prev_set]
 
     for m in new_messages:
         text = m["text"]
