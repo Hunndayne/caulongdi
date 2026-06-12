@@ -33,6 +33,16 @@ RESTART_HOURS = float(os.getenv("RESTART_HOURS", "8"))
 API_HOST = os.getenv("API_HOST", "127.0.0.1")
 API_PORT = int(os.getenv("API_PORT", "8090"))
 
+# Rover: tab tuần tra tự phát hiện group chat ngoài THREAD_IDS qua sidebar.
+# Mỗi ROVER_INTERVAL_SECONDS ghé một thread (round-robin) — RAM cố định 1 tab phụ.
+ROVER_ENABLED = os.getenv("ROVER_ENABLED", "true").strip().lower() != "false"
+ROVER_INTERVAL_SECONDS = float(os.getenv("ROVER_INTERVAL_SECONDS", "15"))
+ROVER_MAX_THREADS = int(os.getenv("ROVER_MAX_THREADS", "10"))
+
+# Giờ ngủ hằng ngày (giờ máy chủ, dạng "HH:MM-HH:MM") — bot tắt browser hẳn để
+# hành vi giống người thật, giảm nghi ngờ từ Facebook. Để rỗng nếu muốn chạy 24/7.
+QUIET_HOURS = os.getenv("QUIET_HOURS", "02:00-04:00").strip()
+
 def thread_url(thread_id: str) -> str:
     return f"https://www.messenger.com/t/{thread_id}"
 

@@ -29,6 +29,21 @@ _TEXTBOX_SELECTOR = 'div[role="textbox"][contenteditable="true"]'
 # Nút đóng các dialog/popup FB hay đè lên trang (chặn click vào ô soạn tin).
 _CLOSE_BUTTON_SELECTOR = '[role="dialog"] [aria-label="Đóng"], [role="dialog"] [aria-label="Close"]'
 
+# Danh sách thread trong sidebar (mọi trang messenger đều có) — theo thứ tự hiển thị.
+_SIDEBAR_JS = """
+() => {
+  const ids = [];
+  const seen = new Set();
+  for (const a of document.querySelectorAll('a[href^="/t/"]')) {
+    const m = (a.getAttribute('href') || '').match(/\\/t\\/(\\d+)/);
+    if (!m || seen.has(m[1])) continue;
+    seen.add(m[1]);
+    ids.push(m[1]);
+  }
+  return ids;
+}
+"""
+
 # Trích các message cuối cùng: [{sender, text, label}].
 # DOM messenger (kiểm chứng 2026-06): tin nhắn nằm trong [role="log"],
 # mỗi tin là div[role="article"]; bên trong có phần tử mang aria-label dạng
@@ -62,13 +77,16 @@ class LoginRequired(Exception):
 
 
 class MessengerClient:
-    """Một browser, mỗi thread trong config.THREAD_IDS một tab."""
+    """Một browser: mỗi thread trong config.THREAD_IDS một tab cố định,
+    cộng một tab "rover" tuần tra các group chat khác phát hiện qua sidebar."""
 
     def __init__(self) -> None:
         self._playwright = None
         self._browser: Browser | None = None
         self._context: BrowserContext | None = None
         self.pages: dict[str, Page] = {}
+        self._rover: Page | None = None
+        self._rover_at: str | None = None
 
     async def start(self) -> None:
         self._playwright = await async_playwright().start()
@@ -85,12 +103,42 @@ class MessengerClient:
             await self._dismiss_overlays(page)
             self.pages[thread_id] = page
             log.info("Đã mở thread %s", thread_id)
+        if config.ROVER_ENABLED:
+            # Tab rover đậu blank — chỉ tốn RAM khi thực sự ghé thread nào đó.
+            self._rover = await self._context.new_page()
+            log.info("Rover sẵn sàng (tuần tra mỗi %.0fs)", config.ROVER_INTERVAL_SECONDS)
 
-    def _page(self, thread_id: str) -> Page:
-        page = self.pages.get(thread_id)
+    def has_dedicated(self, thread_id: str) -> bool:
+        return thread_id in self.pages
+
+    async def list_sidebar_threads(self) -> list[str]:
+        """ID các thread trong sidebar (thứ tự hiển thị) — đọc từ tab cố định đầu tiên."""
+        page = next(iter(self.pages.values()), None)
         if page is None:
-            raise KeyError(f"Thread {thread_id} không nằm trong THREAD_IDS")
-        return page
+            return []
+        try:
+            ids = await page.evaluate(_SIDEBAR_JS)
+            return ids if isinstance(ids, list) else []
+        except Exception:  # noqa: BLE001 — sidebar lỗi thì coi như không thấy gì, vòng sau thử lại
+            log.warning("Không đọc được sidebar", exc_info=True)
+            return []
+
+    async def _ensure_rover(self, thread_id: str) -> Page:
+        if self._rover is None:
+            raise RuntimeError(f"Thread {thread_id} không có tab cố định và rover đang tắt")
+        if self._rover_at != thread_id:
+            await self._rover.goto(config.thread_url(thread_id), wait_until="domcontentloaded", timeout=60_000)
+            self._check_logged_in(self._rover)
+            await self._rover.wait_for_selector(_TEXTBOX_SELECTOR, timeout=30_000)
+            await self._dismiss_overlays(self._rover)
+            self._rover_at = thread_id
+        return self._rover
+
+    async def _page_for(self, thread_id: str) -> Page:
+        page = self.pages.get(thread_id)
+        if page is not None:
+            return page
+        return await self._ensure_rover(thread_id)
 
     async def _dismiss_overlays(self, page: Page) -> None:
         """Đóng popup/dialog FB đè lên trang — best effort, không có cũng không sao."""
@@ -117,14 +165,16 @@ class MessengerClient:
             raise LoginRequired(f"Bị chuyển tới {url} — cookie hết hạn, chạy lại save_login.py")
 
     async def read_messages(self, thread_id: str) -> list[dict]:
-        """Trả về tối đa 30 tin cuối của thread: [{sender, text, label}]."""
-        page = self._page(thread_id)
+        """Trả về tối đa 30 tin cuối của thread: [{sender, text, label}].
+
+        Thread không có tab cố định → rover tự điều hướng đến (mất vài giây)."""
+        page = await self._page_for(thread_id)
         self._check_logged_in(page)
         return await page.evaluate(_EXTRACT_JS)
 
     async def send(self, text: str, thread_id: str | None = None) -> None:
         """Gõ reply vào ô soạn tin của thread. Xuống dòng Shift+Enter, gửi Enter."""
-        page = self._page(thread_id or config.THREAD_ID)
+        page = await self._page_for(thread_id or config.THREAD_ID)
         await self._dismiss_overlays(page)
         box = page.locator(_TEXTBOX_SELECTOR).last
         try:
@@ -157,3 +207,5 @@ class MessengerClient:
                 pass
         self._playwright = self._browser = self._context = None
         self.pages = {}
+        self._rover = None
+        self._rover_at = None

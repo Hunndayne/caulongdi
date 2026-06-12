@@ -15,6 +15,7 @@ import logging
 import time
 import unicodedata
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
@@ -22,7 +23,7 @@ from pydantic import BaseModel
 
 import config
 from messenger import LoginRequired, MessengerClient
-from worker_client import ack_outbox, ask_worker, fetch_outbox
+from worker_client import ack_outbox, ask_worker, fetch_outbox_all
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("bot")
@@ -92,12 +93,43 @@ def _msg_key(m: dict) -> str:
     return f"{m.get('sender') or ''}|{m.get('text') or ''}|{m.get('label') or ''}"
 
 
-async def _process_new_messages(client: MessengerClient, thread_id: str, prev_keys: list[str]) -> list[str]:
+def _is_own_message(m: dict) -> bool:
+    return (m.get("sender") or "").strip().lower() in ("bạn", "you")
+
+
+async def _forward_and_reply(client: MessengerClient, thread_id: str, messages: list[dict], m: dict) -> bool:
+    """Forward một tin lên Worker và gửi reply (nếu có). Trả về True nếu đã reply."""
+    sender = m.get("sender")
+    log.info("[%s] Forward từ %s: %r", thread_id, sender or "?", m["text"][:120])
+    state["messages_forwarded"] += 1
+    context = _build_context(messages, m)
+    reply = await ask_worker(_clean_mention(m["text"]), sender, context, thread_id)
+    if reply:
+        async with _send_lock:
+            await client.send(reply, thread_id)
+        state["replies_sent"] += 1
+        return True
+    return False
+
+
+async def _process_new_messages(
+    client: MessengerClient,
+    thread_id: str,
+    prev_keys: list[str],
+    process_baseline_command: bool = False,
+) -> list[str]:
     """So sánh đuôi danh sách tin với lần đọc trước, xử lý phần mới, trả về keys hiện tại."""
     messages = await client.read_messages(thread_id)
     keys = [_msg_key(m) for m in messages]
     if not prev_keys:
-        return keys  # baseline — không reply lịch sử
+        # Baseline — không reply lịch sử. Riêng thread rover mới phát hiện: xử lý
+        # lệnh "/" cuối cùng để "/connect" gõ trước khi rover kịp ghé vẫn được trả lời.
+        if process_baseline_command and messages:
+            last = messages[-1]
+            if not _is_own_message(last) and last["text"].strip().startswith("/"):
+                await _forward_and_reply(client, thread_id, messages, last)
+                keys = [_msg_key(x) for x in await client.read_messages(thread_id)]
+        return keys
 
     # Tìm tin cuối của lần trước trong danh sách hiện tại; phần sau nó là tin mới.
     last_prev = prev_keys[-1]
@@ -112,20 +144,12 @@ async def _process_new_messages(client: MessengerClient, thread_id: str, prev_ke
     for m in new_messages:
         text = m["text"]
         # Tin của chính bot (UI tiếng Việt hiện "Bạn") — bỏ qua để không tự reply vòng lặp
-        if (m.get("sender") or "").strip().lower() in ("bạn", "you"):
+        if _is_own_message(m):
             continue
         if not _should_forward(text):
             log.info("Bỏ qua (không phải lệnh/@bot) từ %s: %r", m.get("sender") or "?", text[:80])
             continue
-        sender = m.get("sender")
-        log.info("[%s] Forward từ %s: %r", thread_id, sender or "?", text[:120])
-        state["messages_forwarded"] += 1
-        context = _build_context(messages, m)
-        reply = await ask_worker(_clean_mention(text), sender, context, thread_id)
-        if reply:
-            async with _send_lock:
-                await client.send(reply, thread_id)
-            state["replies_sent"] += 1
+        if await _forward_and_reply(client, thread_id, messages, m):
             # Reply của chính mình sẽ xuất hiện ở lần đọc sau — không lọt filter
             # vì không bắt đầu bằng "/" và không @nhắc bot.
             keys = [_msg_key(x) for x in await client.read_messages(thread_id)]
@@ -133,23 +157,87 @@ async def _process_new_messages(client: MessengerClient, thread_id: str, prev_ke
 
 
 async def _drain_outbox(client: MessengerClient) -> None:
-    """Gửi các tin Worker chủ động xếp hàng (nhắc kèo, báo kèo mới...) rồi ACK từng tin."""
-    for thread_id in config.THREAD_IDS:
-        for item in await fetch_outbox(thread_id):
-            try:
-                async with _send_lock:
-                    await client.send(item["text"], thread_id)
-            except Exception:  # noqa: BLE001 — gửi hỏng thì giữ lại tin trong outbox, thử vòng sau
-                log.exception("[%s] Gửi tin outbox %s thất bại, sẽ thử lại", thread_id, item["id"])
-                break
-            await ack_outbox([item["id"]])
-            state["replies_sent"] += 1
-            log.info("[%s] Đã gửi tin outbox %s", thread_id, item["id"])
+    """Gửi các tin Worker chủ động xếp hàng (mọi thread đã liên kết, kể cả thread rover)."""
+    for item in await fetch_outbox_all():
+        thread_id = item.get("thread_id") or ""
+        if not thread_id or (not client.has_dedicated(thread_id) and not config.ROVER_ENABLED):
+            continue  # không có đường gửi — giữ lại trong outbox
+        try:
+            async with _send_lock:
+                await client.send(item["text"], thread_id)
+        except Exception:  # noqa: BLE001 — gửi hỏng thì giữ lại tin trong outbox, thử vòng sau
+            log.exception("[%s] Gửi tin outbox %s thất bại, sẽ thử lại", thread_id, item["id"])
+            continue
+        await ack_outbox([item["id"]])
+        state["replies_sent"] += 1
+        log.info("[%s] Đã gửi tin outbox %s", thread_id, item["id"])
+
+
+async def _rover_tick(client: MessengerClient, rover_keys: dict[str, list[str]], rover_queue: list[str]) -> None:
+    """Ghé một group chat ngoài THREAD_IDS (round-robin theo sidebar) bằng tab rover."""
+    if not rover_queue:
+        sidebar = await client.list_sidebar_threads()
+        others = [t for t in sidebar if not client.has_dedicated(t)][: config.ROVER_MAX_THREADS]
+        # Quên các thread đã rời sidebar (bị kick/ẩn) để khỏi giữ keys vô hạn.
+        for stale in [t for t in rover_keys if t not in others]:
+            rover_keys.pop(stale, None)
+        rover_queue.extend(others)
+        if not rover_queue:
+            return
+    thread_id = rover_queue.pop(0)
+    first_visit = thread_id not in rover_keys
+    if first_visit:
+        log.info("[rover] Phát hiện thread mới trong sidebar: %s", thread_id)
+    try:
+        rover_keys[thread_id] = await _process_new_messages(
+            client, thread_id, rover_keys.get(thread_id, []), process_baseline_command=first_visit
+        )
+    except LoginRequired:
+        raise
+    except Exception:  # noqa: BLE001 — bị kick/lỗi điều hướng: bỏ vòng này, lần sau sidebar quyết định lại
+        log.exception("[rover] Lỗi khi ghé thread %s", thread_id)
+
+
+def _quiet_until() -> float | None:
+    """Nếu đang trong giờ ngủ (QUIET_HOURS, giờ máy chủ) → timestamp lúc thức dậy; ngược lại None."""
+    if not config.QUIET_HOURS:
+        return None
+    try:
+        start_raw, end_raw = config.QUIET_HOURS.split("-")
+        sh, sm = int(start_raw[:2]), int(start_raw[3:5])
+        eh, em = int(end_raw[:2]), int(end_raw[3:5])
+    except (ValueError, IndexError):
+        log.warning("QUIET_HOURS không hợp lệ: %r — bỏ qua", config.QUIET_HOURS)
+        return None
+
+    now = datetime.now()
+    start = now.replace(hour=sh, minute=sm, second=0, microsecond=0)
+    end = now.replace(hour=eh, minute=em, second=0, microsecond=0)
+    if start <= end:  # cửa sổ trong cùng một ngày (vd 02:00-04:00)
+        if start <= now < end:
+            return end.timestamp()
+        return None
+    # cửa sổ vắt qua nửa đêm (vd 23:00-04:00)
+    if now >= start:
+        return (end + timedelta(days=1)).timestamp()
+    if now < end:
+        return end.timestamp()
+    return None
 
 
 async def watcher() -> None:
     global _client
     while True:
+        # Giờ ngủ hằng ngày: browser tắt hẳn, hành vi giống người thật.
+        wake_at = _quiet_until()
+        if wake_at:
+            if state["status"] != "sleeping":
+                log.info("Giờ ngủ (%s) — bot offline đến %s", config.QUIET_HOURS,
+                         datetime.fromtimestamp(wake_at).strftime("%H:%M"))
+            state["status"] = "sleeping"
+            await asyncio.sleep(min(max(wake_at - time.time(), 5), 300))
+            continue
+
         client = MessengerClient()
         try:
             await client.start()
@@ -159,15 +247,25 @@ async def watcher() -> None:
             state["last_error"] = None
             restart_at = time.time() + config.RESTART_HOURS * 3600
             prev_keys_by_thread: dict[str, list[str]] = {tid: [] for tid in config.THREAD_IDS}
+            rover_keys: dict[str, list[str]] = {}
+            rover_queue: list[str] = []
+            next_rover_at = time.time() + config.ROVER_INTERVAL_SECONDS
             while time.time() < restart_at:
+                if _quiet_until():
+                    log.info("Đến giờ ngủ (%s) — đóng browser", config.QUIET_HOURS)
+                    break
                 for thread_id in config.THREAD_IDS:
                     prev_keys_by_thread[thread_id] = await _process_new_messages(
                         client, thread_id, prev_keys_by_thread[thread_id]
                     )
+                if config.ROVER_ENABLED and time.time() >= next_rover_at:
+                    await _rover_tick(client, rover_keys, rover_queue)
+                    next_rover_at = time.time() + config.ROVER_INTERVAL_SECONDS
                 await _drain_outbox(client)
                 state["last_poll_at"] = time.time()
                 await asyncio.sleep(config.POLL_SECONDS)
-            log.info("Restart browser định kỳ (%.0f giờ)", config.RESTART_HOURS)
+            else:
+                log.info("Restart browser định kỳ (%.0f giờ)", config.RESTART_HOURS)
         except LoginRequired as exc:
             # Không tự thoát: giữ process sống để /healthz báo trạng thái.
             state["status"] = "login_required"
@@ -230,8 +328,8 @@ async def send_manual(body: SendBody):
     if _client is None or state["status"] != "running":
         raise HTTPException(503, f"Bot chưa sẵn sàng (status={state['status']})")
     thread_id = body.threadId or config.THREAD_ID
-    if thread_id not in config.THREAD_IDS:
-        raise HTTPException(400, f"threadId {thread_id} không nằm trong THREAD_IDS")
+    if not _client.has_dedicated(thread_id) and not config.ROVER_ENABLED:
+        raise HTTPException(400, f"threadId {thread_id} không có tab cố định và rover đang tắt")
     async with _send_lock:
         await _client.send(body.text, thread_id)
     return {"ok": True}

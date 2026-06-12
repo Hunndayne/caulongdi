@@ -2139,6 +2139,15 @@ bot.use("*", async (c, next) => {
 });
 
 // Outbox: bot Python poll tin Worker muốn chủ động gửi (nhắc kèo, báo kèo mới...).
+// /outbox/all: mọi thread (cho bot chế độ rover tự phát hiện chat); /outbox?threadId=: một thread.
+bot.get("/outbox/all", async (c) => {
+  await ensureBotTables(c.env.DB);
+  const rows = await c.env.DB.prepare(
+    "SELECT id, thread_id, text FROM bot_outbox WHERE sent_at IS NULL ORDER BY created_at ASC LIMIT 20"
+  ).all<{ id: string; thread_id: string; text: string }>();
+  return c.json({ messages: rows.results ?? [] });
+});
+
 bot.get("/outbox", async (c) => {
   const threadId = c.req.query("threadId")?.trim();
   if (!threadId) return c.json({ error: "threadId required" }, 400);

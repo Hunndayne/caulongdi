@@ -60,6 +60,24 @@ async def fetch_outbox(thread_id: str | None = None) -> list[dict]:
     return [m for m in messages if isinstance(m, dict) and m.get("id") and m.get("text")] if isinstance(messages, list) else []
 
 
+async def fetch_outbox_all() -> list[dict]:
+    """Kéo tin chờ gửi của MỌI thread (chế độ rover). Trả [{id, thread_id, text}], lỗi → []."""
+    url = f"{config.WORKER_URL}/api/bot/outbox/all"
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(url, headers=_HEADERS)
+    except httpx.HTTPError as exc:
+        log.warning("Không kéo được outbox/all: %s", exc)
+        return []
+    if resp.status_code != 200:
+        log.warning("Outbox/all trả %s: %s", resp.status_code, resp.text[:200])
+        return []
+    messages = (resp.json() or {}).get("messages")
+    if not isinstance(messages, list):
+        return []
+    return [m for m in messages if isinstance(m, dict) and m.get("id") and m.get("text") and m.get("thread_id")]
+
+
 async def ack_outbox(ids: list[str]) -> None:
     """Báo Worker các tin outbox đã gửi xong (best effort)."""
     if not ids:
