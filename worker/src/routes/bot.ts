@@ -830,7 +830,10 @@ async function resolveIntent(env: Env, text: string, actor?: BotActor, context?:
       return {
         intent: byRegex,
         names: [],
-        session: byRegex === "list_attendees" || byRegex === "costs" ? parseSessionReference(text, context) : undefined,
+        session:
+          byRegex === "list_attendees" || byRegex === "costs"
+            ? parseSessionReference(text, context)
+            : { date: parseCreateDate(text) }, // "buổi ngày mai" — chỉ lấy ngày nói rõ trong câu
       };
     }
     return { intent: "chat", names: [] };
@@ -852,7 +855,10 @@ async function resolveIntent(env: Env, text: string, actor?: BotActor, context?:
     return {
       intent: byRegex,
       names: [],
-      session: byRegex === "list_attendees" || byRegex === "costs" ? parseSessionReference(text, context) : undefined,
+      session:
+        byRegex === "list_attendees" || byRegex === "costs"
+          ? parseSessionReference(text, context)
+          : { date: parseCreateDate(text) },
     };
   }
 
@@ -868,6 +874,7 @@ type QueryOpts = {
   date?: string;
   from?: string;
   to?: string;
+  venue?: string;
   onlyUpcoming?: boolean;
   excludeCompleted?: boolean;
   recent?: boolean;
@@ -910,6 +917,10 @@ async function querySessions(env: Env, groupId: string, opts: QueryOpts): Promis
   if (opts.to) {
     where.push("s.date <= ?");
     binds.push(opts.to);
+  }
+  if (opts.venue) {
+    where.push("lower(s.venue) LIKE ?");
+    binds.push(`%${opts.venue.toLowerCase()}%`);
   }
   if (opts.onlyUpcoming) {
     where.push("s.status = 'upcoming'");
@@ -1272,7 +1283,7 @@ async function handleQuery(
     case "chat":
       return replyNaturalChat(env, groupName, text, actor, context);
     default:
-      return replySessions(env, groupId, groupName, parsed.intent);
+      return replySessions(env, groupId, groupName, parsed.intent, parsed.session);
   }
 }
 
@@ -1318,14 +1329,35 @@ export async function handleGroupBotQuery(
     case "chat":
       return replyNaturalChat(env, groupName, text, actor, context);
     default:
-      return replySessions(env, groupId, groupName, parsed.intent);
+      return replySessions(env, groupId, groupName, parsed.intent, parsed.session);
   }
 }
 
-async function replySessions(env: Env, groupId: string, groupName: string, intent: Intent): Promise<BotReply> {
+async function replySessions(
+  env: Env,
+  groupId: string,
+  groupName: string,
+  intent: Intent,
+  selector?: SessionDraft
+): Promise<BotReply> {
   const today = vnToday();
   let rows: SessionRow[];
   let header: string;
+
+  // "/buổi ngày mai", "/buổi ở thủ đức" — có bộ lọc cụ thể thì ưu tiên nó.
+  if (selector?.date || selector?.venue) {
+    rows = await querySessions(env, groupId, {
+      date: selector.date,
+      venue: selector.venue,
+      excludeCompleted: true,
+    });
+    const parts: string[] = [];
+    if (selector.date) parts.push(`ngày ${formatDate(selector.date)}`);
+    if (selector.venue) parts.push(`tại ${selector.venue}`);
+    header = `📅 Buổi ${parts.join(" ")} của ${groupName}`;
+    if (rows.length === 0) return { ok: true, reply: `${header}\nKhông có buổi nào.` };
+    return { ok: true, reply: `${header}\n\n${rows.map(formatSession).join("\n\n")}` };
+  }
 
   if (intent === "today") {
     rows = await querySessions(env, groupId, { date: today });
@@ -1339,11 +1371,11 @@ async function replySessions(env: Env, groupId: string, groupName: string, inten
     rows = await querySessions(env, groupId, { recent: true, from: vnDateAfter(-15), excludeCompleted: true });
     header = `📅 Các buổi gần đây của ${groupName} (15 ngày, chưa xong)`;
   } else if (intent === "next") {
-    // "Sắp tới" theo status (giống badge trên web), không lọc theo ngày.
-    rows = await querySessions(env, groupId, { onlyUpcoming: true, limit: 1 });
+    // Lọc cả date >= hôm nay: buổi quá hạn chưa hoàn thành không phải "kế tiếp".
+    rows = await querySessions(env, groupId, { onlyUpcoming: true, from: today, limit: 1 });
     header = `📅 Buổi kế tiếp của ${groupName}`;
   } else {
-    rows = await querySessions(env, groupId, { onlyUpcoming: true });
+    rows = await querySessions(env, groupId, { onlyUpcoming: true, from: today });
     header = `📅 Buổi sắp tới của ${groupName}`;
   }
 
