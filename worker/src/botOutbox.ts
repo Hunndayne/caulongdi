@@ -6,7 +6,9 @@
 import { Env } from "./types";
 import { ensureBotTables } from "./db/botTables";
 
-const REMIND_AHEAD_HOURS = 3;
+// Cron chạy mỗi 10' (wrangler.toml); cửa sổ 40' + dedupe ⇒ tin nhắc đến tay
+// khoảng 30–40 phút trước giờ chơi.
+const REMIND_AHEAD_MINUTES = 40;
 const OUTBOX_RETENTION_DAYS = 7;
 
 function vnNowDate() {
@@ -51,7 +53,7 @@ type ReminderRow = {
   attendee_names: string | null;
 };
 
-/** Cron: nhắc các kèo sắp diễn ra trong REMIND_AHEAD_HOURS tới (dedupe theo session). */
+/** Cron: nhắc các kèo sắp diễn ra trong REMIND_AHEAD_MINUTES tới (dedupe theo session). */
 export async function enqueueSessionReminders(env: Env): Promise<number> {
   await ensureBotTables(env.DB);
 
@@ -62,7 +64,7 @@ export async function enqueueSessionReminders(env: Env): Promise<number> {
   const now = vnNowDate();
   const today = now.toISOString().slice(0, 10);
   const nowHM = now.toISOString().slice(11, 16);
-  const aheadHM = new Date(now.getTime() + REMIND_AHEAD_HOURS * 60 * 60 * 1000).toISOString().slice(11, 16);
+  const aheadHM = new Date(now.getTime() + REMIND_AHEAD_MINUTES * 60 * 1000).toISOString().slice(11, 16);
   // Cửa sổ vắt qua nửa đêm thì cắt ở cuối ngày — kèo sáng mai sẽ tới lượt ở cron sáng.
   const endHM = aheadHM < nowHM ? "23:59" : aheadHM;
 
@@ -80,7 +82,7 @@ export async function enqueueSessionReminders(env: Env): Promise<number> {
 
   let queued = 0;
   for (const s of rows.results ?? []) {
-    const lines = [`⏰ Nhắc kèo hôm nay (${formatDateVn(s.date)}): ${s.start_time} tại ${s.venue}`];
+    const lines = [`⏰ Sắp tới giờ chơi: ${s.start_time} hôm nay tại ${s.venue}`];
     if (s.location) lines.push(`📍 ${s.location}`);
     lines.push(
       s.attendee_count > 0

@@ -43,6 +43,10 @@ ROVER_MAX_THREADS = int(os.getenv("ROVER_MAX_THREADS", "10"))
 # hành vi giống người thật, giảm nghi ngờ từ Facebook. Để rỗng nếu muốn chạy 24/7.
 QUIET_HOURS = os.getenv("QUIET_HOURS", "02:00-04:00").strip()
 
+# Nhịp kéo outbox từ Worker (giây) — tách khỏi POLL_SECONDS để tiết kiệm quota
+# Workers free (100k req/ngày): 60s ≈ 1.440 req/ngày thay vì 21.600 nếu theo nhịp 4s.
+OUTBOX_POLL_SECONDS = float(os.getenv("OUTBOX_POLL_SECONDS", "60"))
+
 def thread_url(thread_id: str) -> str:
     return f"https://www.messenger.com/t/{thread_id}"
 

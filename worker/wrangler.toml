@@ -14,8 +14,9 @@ run_worker_first = ["/api/*", "/sessions/*"]
 binding = "AI"
 
 # Cron nhắc kèo sắp diễn ra (ghi vào bot_outbox, bot Messenger tự kéo về gửi)
+# 10'/lần + cửa sổ 40' trong botOutbox.ts ⇒ nhắc ~30-40' trước giờ chơi
 [triggers]
-crons = ["*/30 * * * *"]
+crons = ["*/10 * * * *"]
 
 [[d1_databases]]
 binding = "DB"

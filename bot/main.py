@@ -168,6 +168,7 @@ async def _process_new_messages(
 
 async def _drain_outbox(client: MessengerClient) -> None:
     """Gửi các tin Worker chủ động xếp hàng (mọi thread đã liên kết, kể cả thread rover)."""
+    sent_ids: list[str] = []
     for item in await fetch_outbox_all():
         thread_id = item.get("thread_id") or ""
         if not thread_id or (not client.has_dedicated(thread_id) and not config.ROVER_ENABLED):
@@ -178,9 +179,11 @@ async def _drain_outbox(client: MessengerClient) -> None:
         except Exception:  # noqa: BLE001 — gửi hỏng thì giữ lại tin trong outbox, thử vòng sau
             log.exception("[%s] Gửi tin outbox %s thất bại, sẽ thử lại", thread_id, item["id"])
             continue
-        await ack_outbox([item["id"]])
+        sent_ids.append(item["id"])
         state["replies_sent"] += 1
         log.info("[%s] Đã gửi tin outbox %s", thread_id, item["id"])
+    # ACK gộp một lần — tiết kiệm request Worker
+    await ack_outbox(sent_ids)
 
 
 async def _rover_tick(client: MessengerClient, rover_keys: dict[str, list[str]], rover_queue: list[str]) -> None:
@@ -260,6 +263,7 @@ async def watcher() -> None:
             rover_keys: dict[str, list[str]] = {}
             rover_queue: list[str] = []
             next_rover_at = time.time() + config.ROVER_INTERVAL_SECONDS
+            next_outbox_at = time.time() + config.OUTBOX_POLL_SECONDS
             while time.time() < restart_at:
                 if _quiet_until():
                     log.info("Đến giờ ngủ (%s) — đóng browser", config.QUIET_HOURS)
@@ -271,7 +275,10 @@ async def watcher() -> None:
                 if config.ROVER_ENABLED and time.time() >= next_rover_at:
                     await _rover_tick(client, rover_keys, rover_queue)
                     next_rover_at = time.time() + config.ROVER_INTERVAL_SECONDS
-                await _drain_outbox(client)
+                # Outbox nhịp riêng (mặc định 60s) — tiết kiệm quota Worker free
+                if time.time() >= next_outbox_at:
+                    await _drain_outbox(client)
+                    next_outbox_at = time.time() + config.OUTBOX_POLL_SECONDS
                 state["last_poll_at"] = time.time()
                 await asyncio.sleep(config.POLL_SECONDS)
             else:
