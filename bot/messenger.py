@@ -26,24 +26,29 @@ _BROWSER_ARGS = [
 # Ô soạn tin nhắn của messenger.
 _TEXTBOX_SELECTOR = 'div[role="textbox"][contenteditable="true"]'
 
-# Trích các message row cuối cùng: [{sender, text, label}].
-# - row: div[role="row"] trong khung chat.
-# - text: ghép các div[dir="auto"] (bong bóng tin nhắn).
-# - sender: heading h4/h5 (messenger hiện tên ở tin đầu của một cụm) — best effort,
-#   có thể null với các tin liền cụm.
-# - label: aria-label của row (thường chứa tên người gửi + giờ gửi) — dùng làm
-#   thành phần khoá dedupe để hai tin trùng nội dung không bị coi là một.
+# Trích các message cuối cùng: [{sender, text, label}].
+# DOM messenger (kiểm chứng 2026-06): tin nhắn nằm trong [role="log"],
+# mỗi tin là div[role="article"]; bên trong có phần tử mang aria-label dạng
+# "Tin nhắn do <tên> gửi lúc <giờ>: <nội dung>" (UI tiếng Việt) — parse được
+# cả sender + text, và label (có giờ gửi) làm khoá dedupe.
+# Fallback khi không match (UI đổi ngôn ngữ/sự kiện hệ thống): lấy innerText
+# hiển thị, lọc bỏ dòng boilerplate cho screen-reader.
 _EXTRACT_JS = """
 () => {
-  const rows = Array.from(document.querySelectorAll('div[role="row"]'));
+  const root = document.querySelector('[role="log"]') || document;
+  const rows = Array.from(root.querySelectorAll('div[role="article"]'));
   return rows.slice(-30).map((row) => {
-    const texts = Array.from(row.querySelectorAll('div[dir="auto"]'))
-      .map((el) => (el.innerText || '').trim())
-      .filter(Boolean);
+    const labelEl = row.querySelector('[aria-label*="Tin nhắn do"]');
+    const label = labelEl ? (labelEl.getAttribute('aria-label') || '') : '';
+    const m = label.match(/Tin nhắn do (.+?) gửi lúc (.+?): ([\\s\\S]*)/);
+    if (m) return { sender: m[1].trim(), text: m[3].trim(), label };
+    const lines = (row.innerText || '')
+      .split('\\n')
+      .map((s) => s.trim())
+      .filter((s) => s && !/Tin nhắn do|sent a message|message sent/i.test(s));
     const heading = row.querySelector('h4, h5');
     const sender = heading ? (heading.innerText || '').trim() : null;
-    const label = row.getAttribute('aria-label') || '';
-    return { sender, text: texts.join('\\n'), label };
+    return { sender, text: lines.join('\\n'), label: label || lines.join('|').slice(0, 120) };
   }).filter((m) => m.text);
 }
 """
