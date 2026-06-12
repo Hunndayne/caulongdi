@@ -1929,11 +1929,13 @@ async function replyUpdateSession(
   };
 }
 
-const CANCEL_CONFIRM_HINT = 'Trả lời "đồng ý hủy" để xác nhận';
+// Bot Messenger chỉ forward tin bắt đầu bằng "/" (hoặc nhắc tên) — nên hướng dẫn
+// kèm "/" và khi so khớp phải bỏ "/" + tên bot ở đầu câu.
+const CANCEL_CONFIRM_HINT = 'Trả lời "/đồng ý hủy" để xác nhận';
 
 function isCancelConfirmation(text: string, context?: BotContextMessage[]): boolean {
-  const t = normalizeName(text);
-  const saidYes = /^(dong y( huy)?|ok huy|xac nhan( huy)?|chac chan( huy)?|huy di)$/.test(t);
+  const t = normalizeName(text.replace(/^[/\s]+/, ""));
+  const saidYes = /^(dong y( huy)?( keo)?|ok(e|ay)?( huy)?|xac nhan( huy)?|chac chan( huy)?|huy di)$/.test(t);
   if (!saidYes) return false;
   const lastAssistant = [...(context ?? [])].reverse().find((m) => m.role === "assistant");
   return Boolean(lastAssistant?.text.includes("đồng ý hủy"));
