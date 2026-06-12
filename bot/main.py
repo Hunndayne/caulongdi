@@ -94,6 +94,7 @@ async def _process_new_messages(client: MessengerClient, prev_keys: list[str]) -
     for m in new_messages:
         text = m["text"]
         if not _should_forward(text):
+            log.info("Bỏ qua (không phải lệnh/@bot) từ %s: %r", m.get("sender") or "?", text[:80])
             continue
         sender = m.get("sender")
         log.info("Forward từ %s: %r", sender or "?", text[:120])
@@ -167,6 +168,14 @@ app = FastAPI(lifespan=lifespan)
 @app.get("/healthz")
 async def healthz():
     return state
+
+
+@app.get("/debug/messages")
+async def debug_messages():
+    """Trả về raw output của _EXTRACT_JS — xem bot 'nhìn thấy' gì trong DOM (chỉ để debug)."""
+    if _client is None or state["status"] != "running":
+        raise HTTPException(503, f"Bot chưa sẵn sàng (status={state['status']})")
+    return await _client.read_messages()
 
 
 class SendBody(BaseModel):
