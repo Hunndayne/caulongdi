@@ -521,11 +521,12 @@ export default function SessionDetailPage() {
       return;
     }
 
-    const nextIds = isLeaving
-      ? [...checkedInIds].filter((idValue) => idValue !== memberId)
-      : [...checkedInIds, memberId];
     try {
-      await api.setSessionMembers(s.id, nextIds);
+      if (isLeaving) {
+        await api.removeSessionMember(s.id, memberId);
+      } else {
+        await api.addSessionMember(s.id, memberId);
+      }
       await refresh(s.id);
     } catch (error: any) {
       alert(error.message);

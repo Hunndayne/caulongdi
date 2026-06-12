@@ -19,7 +19,9 @@
       "PowerShell(Set-Location *)",
       "PowerShell($js = \\(Invoke-WebRequest -Uri \"https://caulong.hunn.io.vn/assets/index-Bq-rnEJJ.js\" -UseBasicParsing\\).Content; \"bundle length: $\\($js.Length\\)\"; \"marquee in JS: $\\($js.Contains\\('session-title-marquee'\\)\\)\"; $html = \\(Invoke-WebRequest -Uri \"https://caulong.hunn.io.vn/\" -UseBasicParsing\\).Content; $css = [regex]::Match\\($html, 'href=\"\\(/assets/[^\"]+\\\\.css\\)\"'\\).Groups[1].Value; \"css: $css\"; if \\($css\\) { $cssContent = \\(Invoke-WebRequest -Uri \"https://caulong.hunn.io.vn$css\" -UseBasicParsing\\).Content; \"marquee in CSS: $\\($cssContent.Contains\\('session-title-marquee'\\)\\)\" })",
       "PowerShell(New-Item *)",
-      "PowerShell(Set-Location D:\\\\code\\\\caulongdi\\\\worker; npx tsc --noEmit; echo \"WORKER_TS=$?\")"
+      "PowerShell(Set-Location D:\\\\code\\\\caulongdi\\\\worker; npx tsc --noEmit; echo \"WORKER_TS=$?\")",
+      "PowerShell(pnpm *)",
+      "PowerShell(& D:\\\\code\\\\caulongdi\\\\bot\\\\.venv\\\\Scripts\\\\python.exe -m py_compile D:\\\\code\\\\caulongdi\\\\bot\\\\main.py D:\\\\code\\\\caulongdi\\\\bot\\\\worker_client.py D:\\\\code\\\\caulongdi\\\\bot\\\\messenger.py D:\\\\code\\\\caulongdi\\\\bot\\\\config.py; echo \"PY=$?\")"
     ]
   }
 }

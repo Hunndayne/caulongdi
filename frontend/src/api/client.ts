@@ -72,11 +72,10 @@ export const api = {
     request<{ success: boolean }>(`/api/sessions/${id}/managers/${memberId}`, { method: "DELETE" }),
 
   // Session members & costs
-  setSessionMembers: (id: string, memberIds: string[]) =>
-    request<{ success: boolean }>(`/api/sessions/${id}/members`, {
-      method: "POST",
-      body: JSON.stringify({ memberIds }),
-    }),
+  addSessionMember: (id: string, memberId: string) =>
+    request<{ success: boolean }>(`/api/sessions/${id}/members/${memberId}`, { method: "PUT" }),
+  removeSessionMember: (id: string, memberId: string) =>
+    request<{ success: boolean }>(`/api/sessions/${id}/members/${memberId}`, { method: "DELETE" }),
   addCost: (sessionId: string, data: Partial<Cost>) =>
     request<Cost>(`/api/sessions/${sessionId}/costs`, {
       method: "POST",

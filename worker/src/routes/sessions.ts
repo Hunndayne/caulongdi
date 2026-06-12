@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { sendNewSessionNotification, sendPaymentDueNotification } from "../email";
+import { enqueueNewSessionAnnounce } from "../botOutbox";
 import { Env } from "../types";
 import { nanoid } from "../utils";
 
@@ -1506,6 +1507,21 @@ sessions.post("/", async (c) => {
   const row = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first();
 
   if (notifyGroupId) {
+    // Báo lên group chat Messenger nếu nhóm đã liên kết bot (bỏ qua êm nếu chưa).
+    queueTask(
+      c,
+      enqueueNewSessionAnnounce(c.env, notifyGroupId, {
+        id,
+        date: body.date,
+        startTime,
+        venue,
+        location: body.location ?? null,
+      }),
+      "bot-new-session"
+    );
+  }
+
+  if (notifyGroupId) {
     const notificationRows = await c.env.DB.prepare(`
       SELECT
         g.name AS group_name,
@@ -1860,6 +1876,46 @@ sessions.post("/:id/members", async (c) => {
   return c.json({ success: true });
 });
 
+sessions.put("/:id/members/:memberId", async (c) => {
+  const { id, memberId } = c.req.param();
+  const session = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first<SessionRow>();
+  if (!session) return c.json({ error: "Not found" }, 404);
+  if (!(await canManageSession(c, session))) return c.json({ error: "Forbidden" }, 403);
+
+  const member = await c.env.DB.prepare("SELECT id FROM members WHERE id = ?")
+    .bind(memberId)
+    .first<{ id: string }>();
+  if (!member) return c.json({ error: "Member not found" }, 404);
+
+  await c.env.DB.batch([
+    c.env.DB.prepare("INSERT OR IGNORE INTO session_members (session_id, member_id, attended) VALUES (?, ?, 1)")
+      .bind(id, memberId),
+    c.env.DB.prepare("UPDATE session_members SET attended = 1 WHERE session_id = ? AND member_id = ?")
+      .bind(id, memberId),
+  ]);
+  await c.env.DB.prepare("DELETE FROM payments WHERE session_id = ? AND paid = 0").bind(id).run();
+
+  return c.json({ success: true });
+});
+
+sessions.delete("/:id/members/:memberId", async (c) => {
+  const { id, memberId } = c.req.param();
+  const session = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first<SessionRow>();
+  if (!session) return c.json({ error: "Not found" }, 404);
+  if (!(await canManageSession(c, session))) return c.json({ error: "Forbidden" }, 403);
+
+  if (await sessionHasCalculatedPayments(c, id) && !(await canOverrideAttendanceLock(c, session))) {
+    return c.json({ error: "Đã tính tiền, chỉ admin mới được bỏ điểm danh buổi này" }, 409);
+  }
+
+  await c.env.DB.prepare("DELETE FROM session_members WHERE session_id = ? AND member_id = ?")
+    .bind(id, memberId)
+    .run();
+  await c.env.DB.prepare("DELETE FROM payments WHERE session_id = ? AND paid = 0").bind(id).run();
+
+  return c.json({ success: true });
+});
+
 sessions.get("/:id/receipt/usage", async (c) => {
   const { id } = c.req.param();
   const session = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first<SessionRow>();
@@ -2129,30 +2185,30 @@ sessions.delete("/:id/costs/:costId", async (c) => {
   return c.json({ success: true });
 });
 
-sessions.post("/:id/recalculate", async (c) => {
-  const { id } = c.req.param();
-  const session = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first<SessionRow>();
-  if (!session) return c.json({ error: "Not found" }, 404);
-  if (!(await canManageSession(c, session))) return c.json({ error: "Forbidden" }, 403);
+// Lõi chia tiền — dùng chung cho route /recalculate và bot Messenger (add_cost).
+// Trả về message lỗi (tiếng Anh/Việt như route cũ) hoặc null nếu thành công.
+export async function recalcSessionPayments(env: Env, sessionId: string): Promise<string | null> {
+  const session = await env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(sessionId).first<SessionRow>();
+  if (!session) return "Not found";
 
-  const attendees = await c.env.DB.prepare(
+  const attendees = await env.DB.prepare(
     "SELECT member_id FROM session_members WHERE session_id = ? AND attended = 1"
-  ).bind(id).all<{ member_id: string }>();
+  ).bind(sessionId).all<{ member_id: string }>();
   const eligibleMembers = session.group_id
-    ? await c.env.DB.prepare("SELECT id FROM members WHERE group_id = ?")
+    ? await env.DB.prepare("SELECT id FROM members WHERE group_id = ?")
       .bind(session.group_id)
       .all<{ id: string }>()
-    : await c.env.DB.prepare("SELECT id FROM members")
+    : await env.DB.prepare("SELECT id FROM members")
       .all<{ id: string }>();
 
   const count = attendees.results.length;
-  if (count === 0) return c.json({ error: "No attendees" }, 400);
+  if (count === 0) return "No attendees";
 
   const attendeeIds = attendees.results.map((item) => item.member_id);
   const eligibleMemberSet = new Set(eligibleMembers.results.map((item) => item.id));
-  const costs = await c.env.DB.prepare(
+  const costs = await env.DB.prepare(
     "SELECT id, amount, payer_id, consumer_id, consumer_ids, consumer_pending FROM costs WHERE session_id = ?"
-  ).bind(id).all<CostRow>();
+  ).bind(sessionId).all<CostRow>();
 
   const payableCosts = costs.results.filter((cost) => !cost.consumer_pending);
   const sharedCosts = payableCosts.filter((cost) => getCostConsumerIds(cost).length === 0);
@@ -2161,11 +2217,11 @@ sessions.post("/:id/recalculate", async (c) => {
   const forceCommonRecipient = Boolean((session as any).force_payment_recipient);
 
   if (fallbackRecipientId && !eligibleMemberSet.has(fallbackRecipientId)) {
-    return c.json({ error: "Payment recipient must be an existing member" }, 400);
+    return "Payment recipient must be an existing member";
   }
 
   if (forceCommonRecipient && !fallbackRecipientId) {
-    return c.json({ error: "Cần chọn người nhận chung trước khi bật chế độ này" }, 400);
+    return "Cần chọn người nhận chung trước khi bật chế độ này";
   }
 
   const paymentMap = new Map<string, number>();
@@ -2178,10 +2234,10 @@ sessions.post("/:id/recalculate", async (c) => {
   for (const cost of sharedCosts) {
     const recipientId = forceCommonRecipient ? fallbackRecipientId : (cost.payer_id ?? fallbackRecipientId);
     if (!recipientId) {
-      return c.json({ error: "Shared costs need a payer or a common payment recipient" }, 400);
+      return "Shared costs need a payer or a common payment recipient";
     }
     if (!eligibleMemberSet.has(recipientId)) {
-      return c.json({ error: "Payment recipient must be an existing member" }, 400);
+      return "Payment recipient must be an existing member";
     }
 
     const shares = splitAmountEvenly(cost.amount, count);
@@ -2196,10 +2252,10 @@ sessions.post("/:id/recalculate", async (c) => {
     const recipientId = forceCommonRecipient ? fallbackRecipientId : (cost.payer_id ?? fallbackRecipientId);
     const consumerIds = getCostConsumerIds(cost);
     if (!recipientId || consumerIds.length === 0) {
-      return c.json({ error: "Direct costs need a consumer and either a payer or a common payment recipient" }, 400);
+      return "Direct costs need a consumer and either a payer or a common payment recipient";
     }
     if (!eligibleMemberSet.has(recipientId) || consumerIds.some((consumerId) => !eligibleMemberSet.has(consumerId))) {
-      return c.json({ error: "Payer and consumer must both be existing members" }, 400);
+      return "Payer and consumer must both be existing members";
     }
     const shares = splitAmountEvenly(cost.amount, consumerIds.length);
     for (let index = 0; index < consumerIds.length; index += 1) {
@@ -2241,15 +2297,15 @@ sessions.post("/:id/recalculate", async (c) => {
     }
   }
 
-  const confirmedRows = await c.env.DB.prepare(
+  const confirmedRows = await env.DB.prepare(
     "SELECT member_id, recipient_member_id, SUM(amount_owed) as confirmed_total FROM payments WHERE session_id = ? AND paid = 1 GROUP BY member_id, recipient_member_id"
-  ).bind(id).all<{ member_id: string; recipient_member_id: string; confirmed_total: number }>();
+  ).bind(sessionId).all<{ member_id: string; recipient_member_id: string; confirmed_total: number }>();
   const confirmedMap = new Map<string, number>();
   for (const row of confirmedRows.results) {
     confirmedMap.set(`${row.member_id}:${row.recipient_member_id}`, row.confirmed_total);
   }
 
-  await c.env.DB.prepare("DELETE FROM payments WHERE session_id = ? AND paid = 0").bind(id).run();
+  await env.DB.prepare("DELETE FROM payments WHERE session_id = ? AND paid = 0").bind(sessionId).run();
 
   const stmts: D1PreparedStatement[] = [];
   for (const [key, calculatedAmount] of paymentMap.entries()) {
@@ -2257,13 +2313,24 @@ sessions.post("/:id/recalculate", async (c) => {
     const remaining = calculatedAmount - confirmedAmount;
     if (remaining > 0) {
       const [memberId, recipientMemberId] = key.split(":");
-      stmts.push(c.env.DB.prepare(`
+      stmts.push(env.DB.prepare(`
         INSERT INTO payments (id, session_id, member_id, recipient_member_id, amount_owed, paid)
         VALUES (?, ?, ?, ?, ?, 0)
-      `).bind(nanoid(), id, memberId, recipientMemberId, remaining));
+      `).bind(nanoid(), sessionId, memberId, recipientMemberId, remaining));
     }
   }
-  if (stmts.length > 0) await c.env.DB.batch(stmts);
+  if (stmts.length > 0) await env.DB.batch(stmts);
+  return null;
+}
+
+sessions.post("/:id/recalculate", async (c) => {
+  const { id } = c.req.param();
+  const session = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first<SessionRow>();
+  if (!session) return c.json({ error: "Not found" }, 404);
+  if (!(await canManageSession(c, session))) return c.json({ error: "Forbidden" }, 403);
+
+  const recalcError = await recalcSessionPayments(c.env, id);
+  if (recalcError) return c.json({ error: recalcError }, 400);
 
   const payments = await c.env.DB.prepare("SELECT * FROM payments WHERE session_id = ?").bind(id).all();
 

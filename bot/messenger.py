@@ -62,11 +62,13 @@ class LoginRequired(Exception):
 
 
 class MessengerClient:
+    """Một browser, mỗi thread trong config.THREAD_IDS một tab."""
+
     def __init__(self) -> None:
         self._playwright = None
         self._browser: Browser | None = None
         self._context: BrowserContext | None = None
-        self.page: Page | None = None
+        self.pages: dict[str, Page] = {}
 
     async def start(self) -> None:
         self._playwright = await async_playwright().start()
@@ -75,17 +77,25 @@ class MessengerClient:
         )
         self._context = await self._browser.new_context(storage_state=config.STORAGE_STATE)
         await self._context.route("**/*", self._block_heavy_resources)
-        self.page = await self._context.new_page()
-        await self.page.goto(config.THREAD_URL, wait_until="domcontentloaded", timeout=60_000)
-        self._check_logged_in()
-        await self.page.wait_for_selector(_TEXTBOX_SELECTOR, timeout=30_000)
-        await self._dismiss_overlays()
-        log.info("Đã mở thread %s", config.THREAD_ID)
+        for thread_id in config.THREAD_IDS:
+            page = await self._context.new_page()
+            await page.goto(config.thread_url(thread_id), wait_until="domcontentloaded", timeout=60_000)
+            self._check_logged_in(page)
+            await page.wait_for_selector(_TEXTBOX_SELECTOR, timeout=30_000)
+            await self._dismiss_overlays(page)
+            self.pages[thread_id] = page
+            log.info("Đã mở thread %s", thread_id)
 
-    async def _dismiss_overlays(self) -> None:
+    def _page(self, thread_id: str) -> Page:
+        page = self.pages.get(thread_id)
+        if page is None:
+            raise KeyError(f"Thread {thread_id} không nằm trong THREAD_IDS")
+        return page
+
+    async def _dismiss_overlays(self, page: Page) -> None:
         """Đóng popup/dialog FB đè lên trang — best effort, không có cũng không sao."""
         for _ in range(3):
-            btn = self.page.locator(_CLOSE_BUTTON_SELECTOR).first
+            btn = page.locator(_CLOSE_BUTTON_SELECTOR).first
             try:
                 if not await btn.is_visible():
                     break
@@ -101,20 +111,22 @@ class MessengerClient:
         else:
             await route.continue_()
 
-    def _check_logged_in(self) -> None:
-        url = self.page.url if self.page else ""
+    def _check_logged_in(self, page: Page) -> None:
+        url = page.url if page else ""
         if "login" in url or "checkpoint" in url:
             raise LoginRequired(f"Bị chuyển tới {url} — cookie hết hạn, chạy lại save_login.py")
 
-    async def read_messages(self) -> list[dict]:
-        """Trả về tối đa 30 tin cuối: [{sender, text, label}]."""
-        self._check_logged_in()
-        return await self.page.evaluate(_EXTRACT_JS)
+    async def read_messages(self, thread_id: str) -> list[dict]:
+        """Trả về tối đa 30 tin cuối của thread: [{sender, text, label}]."""
+        page = self._page(thread_id)
+        self._check_logged_in(page)
+        return await page.evaluate(_EXTRACT_JS)
 
-    async def send(self, text: str) -> None:
-        """Gõ reply vào ô soạn tin. Xuống dòng bằng Shift+Enter, gửi bằng Enter."""
-        await self._dismiss_overlays()
-        box = self.page.locator(_TEXTBOX_SELECTOR).last
+    async def send(self, text: str, thread_id: str | None = None) -> None:
+        """Gõ reply vào ô soạn tin của thread. Xuống dòng Shift+Enter, gửi Enter."""
+        page = self._page(thread_id or config.THREAD_ID)
+        await self._dismiss_overlays(page)
+        box = page.locator(_TEXTBOX_SELECTOR).last
         try:
             await box.click(timeout=5_000)
         except Exception:  # noqa: BLE001 — overlay chặn click: focus thẳng bằng JS
@@ -123,11 +135,11 @@ class MessengerClient:
         lines = text.split("\n")
         for i, line in enumerate(lines):
             if i > 0:
-                await self.page.keyboard.press("Shift+Enter")
+                await page.keyboard.press("Shift+Enter")
             if line:
                 # insert_text dán nguyên văn, không kích hoạt phím tắt/emoji-autocomplete
-                await self.page.keyboard.insert_text(line)
-        await self.page.keyboard.press("Enter")
+                await page.keyboard.insert_text(line)
+        await page.keyboard.press("Enter")
         # Cho messenger kịp đẩy tin lên trước lần đọc kế tiếp
         await asyncio.sleep(0.5)
 
@@ -143,4 +155,5 @@ class MessengerClient:
                 await self._playwright.stop()
             except Exception:  # noqa: BLE001
                 pass
-        self._playwright = self._browser = self._context = self.page = None
+        self._playwright = self._browser = self._context = None
+        self.pages = {}

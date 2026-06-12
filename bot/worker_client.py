@@ -18,13 +18,14 @@ async def ask_worker(
     text: str,
     sender_name: str | None = None,
     context: list[dict] | None = None,
+    thread_id: str | None = None,
 ) -> str | None:
     """Forward tin nhắn lên Worker, trả về chuỗi reply (None nếu lỗi/không có).
 
     context: các tin gần nhất trước tin hiện tại [{role: user|assistant, text}] —
     Worker dùng để hiểu tham chiếu kiểu "buổi đó", "kèo vừa rồi".
     """
-    payload: dict = {"threadId": config.THREAD_ID, "text": text}
+    payload: dict = {"threadId": thread_id or config.THREAD_ID, "text": text}
     if sender_name:
         payload["senderName"] = sender_name
     if context:
@@ -41,3 +42,31 @@ async def ask_worker(
     data = resp.json()
     reply = (data or {}).get("reply")
     return reply.strip() if isinstance(reply, str) and reply.strip() else None
+
+
+async def fetch_outbox(thread_id: str | None = None) -> list[dict]:
+    """Kéo các tin Worker muốn chủ động gửi (nhắc kèo, báo kèo mới...). Lỗi → []."""
+    url = f"{config.WORKER_URL}/api/bot/outbox"
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(url, params={"threadId": thread_id or config.THREAD_ID}, headers=_HEADERS)
+    except httpx.HTTPError as exc:
+        log.warning("Không kéo được outbox: %s", exc)
+        return []
+    if resp.status_code != 200:
+        log.warning("Outbox trả %s: %s", resp.status_code, resp.text[:200])
+        return []
+    messages = (resp.json() or {}).get("messages")
+    return [m for m in messages if isinstance(m, dict) and m.get("id") and m.get("text")] if isinstance(messages, list) else []
+
+
+async def ack_outbox(ids: list[str]) -> None:
+    """Báo Worker các tin outbox đã gửi xong (best effort)."""
+    if not ids:
+        return
+    url = f"{config.WORKER_URL}/api/bot/outbox/ack"
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            await client.post(url, json={"ids": ids}, headers=_HEADERS)
+    except httpx.HTTPError as exc:
+        log.warning("Không ACK được outbox %s: %s", ids, exc)

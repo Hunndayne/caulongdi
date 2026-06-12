@@ -22,7 +22,7 @@ from pydantic import BaseModel
 
 import config
 from messenger import LoginRequired, MessengerClient
-from worker_client import ask_worker
+from worker_client import ack_outbox, ask_worker, fetch_outbox
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("bot")
@@ -92,9 +92,9 @@ def _msg_key(m: dict) -> str:
     return f"{m.get('sender') or ''}|{m.get('text') or ''}|{m.get('label') or ''}"
 
 
-async def _process_new_messages(client: MessengerClient, prev_keys: list[str]) -> list[str]:
+async def _process_new_messages(client: MessengerClient, thread_id: str, prev_keys: list[str]) -> list[str]:
     """So sánh đuôi danh sách tin với lần đọc trước, xử lý phần mới, trả về keys hiện tại."""
-    messages = await client.read_messages()
+    messages = await client.read_messages(thread_id)
     keys = [_msg_key(m) for m in messages]
     if not prev_keys:
         return keys  # baseline — không reply lịch sử
@@ -118,18 +118,33 @@ async def _process_new_messages(client: MessengerClient, prev_keys: list[str]) -
             log.info("Bỏ qua (không phải lệnh/@bot) từ %s: %r", m.get("sender") or "?", text[:80])
             continue
         sender = m.get("sender")
-        log.info("Forward từ %s: %r", sender or "?", text[:120])
+        log.info("[%s] Forward từ %s: %r", thread_id, sender or "?", text[:120])
         state["messages_forwarded"] += 1
         context = _build_context(messages, m)
-        reply = await ask_worker(_clean_mention(text), sender, context)
+        reply = await ask_worker(_clean_mention(text), sender, context, thread_id)
         if reply:
             async with _send_lock:
-                await client.send(reply)
+                await client.send(reply, thread_id)
             state["replies_sent"] += 1
             # Reply của chính mình sẽ xuất hiện ở lần đọc sau — không lọt filter
             # vì không bắt đầu bằng "/" và không @nhắc bot.
-            keys = [_msg_key(x) for x in await client.read_messages()]
+            keys = [_msg_key(x) for x in await client.read_messages(thread_id)]
     return keys
+
+
+async def _drain_outbox(client: MessengerClient) -> None:
+    """Gửi các tin Worker chủ động xếp hàng (nhắc kèo, báo kèo mới...) rồi ACK từng tin."""
+    for thread_id in config.THREAD_IDS:
+        for item in await fetch_outbox(thread_id):
+            try:
+                async with _send_lock:
+                    await client.send(item["text"], thread_id)
+            except Exception:  # noqa: BLE001 — gửi hỏng thì giữ lại tin trong outbox, thử vòng sau
+                log.exception("[%s] Gửi tin outbox %s thất bại, sẽ thử lại", thread_id, item["id"])
+                break
+            await ack_outbox([item["id"]])
+            state["replies_sent"] += 1
+            log.info("[%s] Đã gửi tin outbox %s", thread_id, item["id"])
 
 
 async def watcher() -> None:
@@ -143,9 +158,13 @@ async def watcher() -> None:
             state["browser_started_at"] = time.time()
             state["last_error"] = None
             restart_at = time.time() + config.RESTART_HOURS * 3600
-            prev_keys: list[str] = []
+            prev_keys_by_thread: dict[str, list[str]] = {tid: [] for tid in config.THREAD_IDS}
             while time.time() < restart_at:
-                prev_keys = await _process_new_messages(client, prev_keys)
+                for thread_id in config.THREAD_IDS:
+                    prev_keys_by_thread[thread_id] = await _process_new_messages(
+                        client, thread_id, prev_keys_by_thread[thread_id]
+                    )
+                await _drain_outbox(client)
                 state["last_poll_at"] = time.time()
                 await asyncio.sleep(config.POLL_SECONDS)
             log.info("Restart browser định kỳ (%.0f giờ)", config.RESTART_HOURS)
@@ -202,6 +221,7 @@ async def debug_messages():
 
 class SendBody(BaseModel):
     text: str
+    threadId: str | None = None  # mặc định: thread đầu tiên trong THREAD_IDS
 
 
 @app.post("/send")
@@ -209,8 +229,11 @@ async def send_manual(body: SendBody):
     """Gửi tin thủ công vào thread (test). Chỉ bind localhost."""
     if _client is None or state["status"] != "running":
         raise HTTPException(503, f"Bot chưa sẵn sàng (status={state['status']})")
+    thread_id = body.threadId or config.THREAD_ID
+    if thread_id not in config.THREAD_IDS:
+        raise HTTPException(400, f"threadId {thread_id} không nằm trong THREAD_IDS")
     async with _send_lock:
-        await _client.send(body.text)
+        await _client.send(body.text, thread_id)
     return {"ok": True}
 
 

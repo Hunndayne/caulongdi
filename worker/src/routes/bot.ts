@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { Env } from "../types";
 import { ensureBotTables } from "../db/botTables";
+import { recalcSessionPayments } from "./sessions";
 
 // Router cho Messenger userbot (server riêng gọi vào).
 // Xác thực bằng Bearer BOT_SERVICE_SECRET (DDNS nên không allowlist IP được).
@@ -22,8 +23,13 @@ type Intent =
   | "list_members"
   | "list_attendees"
   | "add_member"
+  | "remove_member"
   | "create_session"
+  | "update_session"
+  | "cancel_session"
   | "costs"
+  | "add_cost"
+  | "stats"
   | "chat";
 
 type SessionDraft = {
@@ -33,7 +39,21 @@ type SessionDraft = {
   note?: string;
 };
 
-type ParsedIntent = { intent: Intent; names: string[]; session?: SessionDraft };
+type CostDraft = {
+  label?: string;
+  amount?: number;
+  quantity?: number;
+  payerName?: string;
+};
+
+type ParsedIntent = {
+  intent: Intent;
+  names: string[];
+  session?: SessionDraft;
+  cost?: CostDraft;
+  // update_session: session = buổi đang nói tới (giá trị cũ), changes = giá trị mới
+  changes?: SessionDraft;
+};
 
 type BotContextMessage = {
   role: "user" | "assistant";
@@ -150,7 +170,12 @@ function helpText() {
     '• "thành viên" — danh sách thành viên nhóm',
     '• "buổi sắp tới có ai" — ai tham gia buổi sắp tới',
     '• "thêm <tên> vào buổi" — thêm người vào buổi sắp tới',
+    '• "bớt tôi ra" / "Nam không đi nữa" — rút người khỏi buổi',
+    '• "dời kèo mai sang 19h" / "đổi sân sang Q7" — sửa buổi',
+    '• "hủy kèo ngày mai" — hủy buổi (bot hỏi xác nhận trước khi xóa)',
+    '• "tháng này đánh mấy buổi" / "ai đi nhiều nhất" — thống kê',
     '• "chi phí buổi vừa rồi" / "ai nợ ai" — xem tổng tiền và công nợ của buổi',
+    '• "tiền sân 240k" / "3 ống cầu 270k Nam trả" — ghi khoản chi vào buổi (chia đều)',
     '• /alias <tên trên web> — ghép tên Messenger của bạn với thành viên web (để "thêm tôi" đúng người; /alias xoa để bỏ)',
     "• /connect <mã> — liên kết nhóm chat với nhóm TingTing (lấy mã trên web)",
     "• /disconnect — huỷ liên kết",
@@ -386,6 +411,19 @@ function parseCreateParticipants(text: string): string[] {
   );
 }
 
+// "bớt Nam ra", "tôi không đi nữa" — rút tên người cần bỏ khỏi buổi (fallback khi AI không trả names).
+function extractRemoveNames(text: string): string[] {
+  const direct = text.match(/(?:^|[\s,.;:!?])(?:bớt|bot|rút|rut|xóa|xoa|gỡ|go|bỏ|bo)\s+(.+)$/i);
+  let segment = direct?.[1] ?? "";
+  if (!segment) {
+    const negated = text.match(/^(.+?)\s+(?:không|khong|ko)\s+(?:đi|di|tham gia|chơi|choi|đánh|danh)/i);
+    segment = negated?.[1] ?? "";
+  }
+  if (!segment) return [];
+  segment = segment.replace(/\s+(?:ra|khỏi|khoi)\b.*$/i, "").replace(/\s+(?:buổi|buoi|kèo|keo|lịch|lich)\b.*$/i, "");
+  return cleanupNameList([segment]);
+}
+
 function hasSessionContext(t: string): boolean {
   return (
     /^\/buoi\b/.test(t) ||
@@ -456,8 +494,13 @@ function normalizeIntent(value: unknown): Intent | null {
     "list_members",
     "list_attendees",
     "add_member",
+    "remove_member",
     "create_session",
+    "update_session",
+    "cancel_session",
     "costs",
+    "add_cost",
+    "stats",
     "help",
     "chat",
   ];
@@ -466,7 +509,32 @@ function normalizeIntent(value: unknown): Intent | null {
   return null;
 }
 
-// Gọi DeepSeek (API tương thích OpenAI) để phân loại ý định + rút tên người (cho add_member).
+// Hiểu tiền kiểu Việt: "240k", "1tr2", "270 nghìn", "240000đ" — fallback khi AI không trả amount.
+function parseMoneyVn(text: string): number | undefined {
+  const t = removeDiacritics(text.toLowerCase());
+  let m = t.match(/(\d+)\s*(?:tr|trieu)\s*(\d)?(?!\d)/);
+  if (m) return Number(m[1]) * 1_000_000 + (m[2] ? Number(m[2]) * 100_000 : 0);
+  m = t.match(/(\d+(?:[.,]\d+)?)\s*(?:k|nghin|ngan)\b/);
+  if (m) return Math.round(parseFloat(m[1].replace(",", ".")) * 1000);
+  m = t.match(/(\d{4,9})\s*(?:d|dong|vnd)\b/);
+  if (m) return Number(m[1]);
+  return undefined;
+}
+
+function normalizeAiDate(value: unknown): string | undefined {
+  const s = String(value ?? "").trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : undefined;
+}
+
+function normalizeAiTime(value: unknown): string | undefined {
+  const match = String(value ?? "").trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return undefined;
+  const hour = Number(match[1]);
+  if (hour > 23 || Number(match[2]) > 59) return undefined;
+  return `${String(hour).padStart(2, "0")}:${match[2]}`;
+}
+
+// Gọi DeepSeek (API tương thích OpenAI) để phân loại ý định + rút tên người + thông tin buổi.
 async function classifyWithAI(
   env: Env,
   text: string,
@@ -478,20 +546,32 @@ async function classifyWithAI(
   const baseUrl = (env.DEEPSEEK_BASE_URL?.trim() || DEFAULT_DEEPSEEK_BASE_URL).replace(/\/+$/, "");
   const model = env.DEEPSEEK_MODEL?.trim() || DEFAULT_DEEPSEEK_MODEL;
 
+  const now = vnNow();
+  const weekdayNames = ["Chủ nhật", "Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7"];
   const system = [
+    `Hôm nay là ${weekdayNames[now.getUTCDay()]}, ngày ${vnToday()} (giờ Việt Nam).`,
     `Nếu người dùng nói tôi/mình/tui/em/anh/chị để chỉ chính người gửi, trả names ["${SELF_NAME_TOKEN}"].`,
     "Nếu người dùng muốn tạo/set/lên kèo/buổi/lịch mới, intent là create_session.",
+    'Nếu muốn rút/bớt ai khỏi buổi ("bớt tôi ra", "Nam không đi nữa", "tôi bận rồi không đi được") thì intent là remove_member, names là người cần rút.',
+    "Nếu muốn dời/đổi giờ/ngày/sân của buổi ĐÃ CÓ thì intent là update_session: session là buổi đang nói tới (theo thông tin cũ/ngữ cảnh), changes là giá trị MỚI muốn đổi sang.",
+    'Nếu muốn hủy/xóa kèo/buổi thì intent là cancel_session — kể cả câu xác nhận ngắn ("đồng ý hủy", "ok hủy đi") ngay sau khi bot vừa hỏi xác nhận trong ngữ cảnh.',
+    "Nếu hỏi thống kê tổng hợp NHIỀU buổi (đánh mấy buổi tháng này, ai đi nhiều nhất, tổng chi tiêu tháng/tuần/năm) thì intent là stats — khác costs (chi phí của MỘT buổi cụ thể).",
     'Hiểu tiếng lóng cầu lông: "quánh", "đánh cầu", "đi cầu", "đi sân", "kèo" đều nói về buổi chơi.',
     "Nếu người dùng hỏi ngắn kiểu lịch, lịch quánh, có lịch không, kèo nào, sân nào, mấy giờ thì intent là upcoming/next/today/week tuỳ mốc thời gian.",
     "Nếu câu hỏi lịch/buổi/kèo có hỏi ai, thành viên, người tham gia thì intent là list_attendees; chỉ dùng list_members khi hỏi danh sách thành viên của nhóm nói chung.",
-    "Nếu người dùng hỏi chi phí, tổng tiền, bill, hóa đơn, tiền sân/nước/cầu, công nợ, ai nợ ai, ai trả ai, chia tiền, mỗi người bao nhiêu thì intent là costs.",
+    "Nếu người dùng HỎI chi phí, tổng tiền, bill, hóa đơn, công nợ, ai nợ ai, ai trả ai, chia tiền, mỗi người bao nhiêu thì intent là costs.",
+    'Nếu người dùng BÁO/GHI một khoản chi vừa tiêu (có số tiền, vd "tiền sân 240k", "3 ống cầu 270k Nam trả", "nước hết 60k") thì intent là add_cost — phân biệt với costs là câu hỏi.',
     "Only classify today/week/upcoming/next/recent/list_attendees when the user clearly asks about badminton sessions, schedule, court, or players; casual chat that happens to mention time words must be unknown.",
     "Bạn phân tích câu của người dùng về lịch chơi cầu lông của một nhóm và TRẢ VỀ JSON.",
-    'Định dạng JSON: {"intent": "...", "names": ["..."]}.',
-    "intent là MỘT trong: next, upcoming, today, week, recent, list_members, list_attendees, add_member, create_session, costs, help, unknown.",
+    'Định dạng JSON: {"intent": "...", "names": ["..."], "session": {"date": "YYYY-MM-DD", "startTime": "HH:MM", "venue": "..."}, "changes": {"date": "...", "startTime": "...", "venue": "..."}, "cost": {"label": "...", "amount": 0, "quantity": 1, "payerName": "..."}}.',
+    "intent là MỘT trong: next, upcoming, today, week, recent, list_members, list_attendees, add_member, remove_member, create_session, update_session, cancel_session, costs, add_cost, stats, help, unknown.",
     "Ý nghĩa: next=buổi sắp tới gần nhất; upcoming=danh sách buổi sắp tới; today=hôm nay; week=tuần này; recent=các buổi gần đây/lịch sử;",
-    "list_members=liệt kê thành viên nhóm; list_attendees=ai tham gia buổi; add_member=thêm người vào buổi; create_session=tạo buổi/kèo mới; costs=xem chi phí/công nợ buổi; help=hướng dẫn; unknown=không liên quan.",
-    'names điền khi intent=add_member (người cần thêm) hoặc create_session (người tham gia nhắc trong câu, vd "gồm có tôi và An"), ví dụ ["An","Bình"]. Các intent khác để names rỗng [].',
+    "list_members=liệt kê thành viên nhóm; list_attendees=ai tham gia buổi; add_member=thêm người vào buổi; create_session=tạo buổi/kèo mới; costs=xem chi phí/công nợ buổi; add_cost=ghi một khoản chi mới; help=hướng dẫn; unknown=không liên quan.",
+    `cost CHỈ điền khi intent=add_cost: label là tên khoản (vd "tiền sân", "ống cầu"), amount là số VND tuyệt đối (240k → 240000, 1tr2 → 1200000), quantity mặc định 1, payerName là người trả nếu có nhắc ("${SELF_NAME_TOKEN}" nếu người gửi tự trả).`,
+    'names điền khi intent=add_member/remove_member (người cần thêm/rút) hoặc create_session (người tham gia nhắc trong câu, vd "gồm có tôi và An"), ví dụ ["An","Bình"]. Các intent khác để names rỗng [].',
+    "changes CHỈ điền khi intent=update_session.",
+    "session điền khi câu nói về MỘT buổi cụ thể (tạo mới hoặc tham chiếu buổi nào đó, kể cả buổi nhắc trong ngữ cảnh trước): quy đổi 'ngày mai', 'thứ 7'... thành ngày cụ thể theo hôm nay; startTime dạng 24h; venue là tên sân/địa điểm.",
+    "Trong session, trường nào người dùng (hoặc ngữ cảnh) KHÔNG nhắc tới thì BỎ QUA, tuyệt đối không tự đoán.",
   ].join(" ");
 
   const contextBlock = contextForPrompt(context);
@@ -524,7 +604,7 @@ async function classifyWithAI(
 
   const data = (await resp.json()) as { choices?: Array<{ message?: { content?: string } }> };
   const content = data?.choices?.[0]?.message?.content ?? "";
-  let obj: { intent?: unknown; names?: unknown };
+  let obj: { intent?: unknown; names?: unknown; session?: unknown };
   try {
     obj = JSON.parse(content);
   } catch {
@@ -539,7 +619,36 @@ async function classifyWithAI(
         .filter((n): n is string => typeof n === "string" && n.trim().length > 0)
         .map((n) => n.trim())
     : [];
-  return { intent, names };
+
+  const parseAiDraft = (value: unknown): SessionDraft | undefined => {
+    if (!value || typeof value !== "object") return undefined;
+    const raw = value as { date?: unknown; startTime?: unknown; venue?: unknown };
+    const venueRaw = typeof raw.venue === "string" ? cleanupVenue(raw.venue) : "";
+    const draft: SessionDraft = {
+      date: normalizeAiDate(raw.date),
+      startTime: normalizeAiTime(raw.startTime),
+      venue: venueRaw ? venueRaw.slice(0, 80) : undefined,
+    };
+    return draft.date || draft.startTime || draft.venue ? draft : undefined;
+  };
+  const session = parseAiDraft(obj?.session);
+  const changes = parseAiDraft((obj as { changes?: unknown })?.changes);
+
+  let cost: CostDraft | undefined;
+  if ((obj as { cost?: unknown }).cost && typeof (obj as { cost?: unknown }).cost === "object") {
+    const raw = (obj as { cost: { label?: unknown; amount?: unknown; quantity?: unknown; payerName?: unknown } }).cost;
+    const amount = Math.round(Number(raw.amount));
+    const quantity = Math.floor(Number(raw.quantity));
+    cost = {
+      label: typeof raw.label === "string" && raw.label.trim() ? raw.label.trim().slice(0, 80) : undefined,
+      amount: Number.isFinite(amount) && amount > 0 ? amount : undefined,
+      quantity: Number.isFinite(quantity) && quantity >= 1 ? quantity : undefined,
+      payerName: typeof raw.payerName === "string" && raw.payerName.trim() ? raw.payerName.trim() : undefined,
+    };
+    if (!cost.label && !cost.amount && !cost.payerName) cost = undefined;
+  }
+
+  return { intent, names, session, cost, changes };
 }
 
 function naturalChatFallback(groupName: string, text = "", actor?: BotActor) {
@@ -614,36 +723,75 @@ async function replyNaturalChat(
   return { ok: true, reply: reply ? reply.slice(0, 1600) : fallback };
 }
 
+// AI là nguồn chính cho session (hiểu "9h30 sáng mai" tự nhiên hơn); regex bù trường còn thiếu.
+function mergeSession(primary?: SessionDraft, fallback?: SessionDraft): SessionDraft {
+  return {
+    date: primary?.date ?? fallback?.date,
+    startTime: primary?.startTime ?? fallback?.startTime,
+    venue: primary?.venue ?? fallback?.venue,
+  };
+}
+
 function enrichAiIntent(ai: ParsedIntent, text: string, context?: BotContextMessage[]): ParsedIntent {
   if (ai.intent === "create_session") {
     const names = [...new Set([...cleanupNameList(ai.names), ...parseCreateParticipants(text)])];
-    return { intent: "create_session", names, session: parseCreateSessionDraft(text) };
+    return { intent: "create_session", names, session: mergeSession(ai.session, parseCreateSessionDraft(text)) };
   }
 
   if (ai.intent === "add_member") {
-    return { intent: "add_member", names: normalizeAddNames(text, ai.names), session: parseSessionReference(text, context) };
+    return {
+      intent: "add_member",
+      names: normalizeAddNames(text, ai.names),
+      session: mergeSession(ai.session, parseSessionReference(text, context)),
+    };
   }
 
-  if (ai.intent === "list_attendees") {
-    return { ...ai, session: parseSessionReference(text, context) };
+  if (ai.intent === "list_attendees" || ai.intent === "costs") {
+    return { ...ai, session: mergeSession(ai.session, parseSessionReference(text, context)) };
   }
 
-  if (ai.intent === "costs") {
-    return { ...ai, session: parseSessionReference(text, context) };
+  if (ai.intent === "add_cost") {
+    return {
+      ...ai,
+      cost: { ...ai.cost, amount: ai.cost?.amount ?? parseMoneyVn(text) },
+      session: mergeSession(ai.session, parseSessionReference(text, context)),
+    };
+  }
+
+  if (ai.intent === "remove_member") {
+    const names = ai.names.length ? cleanupNameList(ai.names) : extractRemoveNames(text);
+    return { ...ai, names, session: mergeSession(ai.session, parseSessionReference(text, context)) };
+  }
+
+  if (ai.intent === "update_session" || ai.intent === "cancel_session") {
+    return { ...ai, session: mergeSession(ai.session, parseSessionReference(text, context)) };
   }
 
   return ai;
 }
 
+// Mẫu "chắc ăn" — hẹp hơn isAddLike/isCreateSessionLike, chỉ dùng vá khi AI xếp nhầm sang chat.
+function isStrongAddLike(t: string): boolean {
+  return /\b(them|add|cho|dua)\b.*\b(vao|vo|tham gia)\b.*\b(buoi|keo|lich)\b/.test(t);
+}
+
+function isStrongCreateLike(t: string): boolean {
+  return /\b(tao|set|lap)\b.*\b(buoi|keo)\b/.test(t) || /\b(buoi|keo)\s+moi\b/.test(t);
+}
+
 async function resolveIntent(env: Env, text: string, actor?: BotActor, context?: BotContextMessage[]): Promise<ParsedIntent> {
   const t = removeDiacritics(text.toLowerCase()).trim();
-  const createLike = isCreateSessionLike(t);
-  const addLike = isAddLike(t);
 
-  if (createLike) {
-    return { intent: "create_session", names: parseCreateParticipants(text), session: parseCreateSessionDraft(text) };
+  // Lệnh "/" tường minh — quyết ngay, không cần AI.
+  if (/^\/(them|add)\b/.test(t)) {
+    return { intent: "add_member", names: normalizeAddNames(text), session: parseSessionReference(text, context) };
+  }
+  if (/^\/buoi\b/.test(t) && !text.replace(/^\/buoi\b/i, "").trim()) {
+    return { intent: "upcoming", names: [] }; // chỉ gõ "/buoi"
   }
 
+  // AI là bộ phân loại chính — regex ép trước AI từng gây nhầm với câu nhiều thông tin
+  // ("ai tạo buổi hôm qua vậy?" bị ép thành create_session).
   let ai: ParsedIntent | null = null;
   if (env.DEEPSEEK_API_KEY?.trim()) {
     try {
@@ -653,16 +801,41 @@ async function resolveIntent(env: Env, text: string, actor?: BotActor, context?:
     }
   }
 
-  if (addLike) {
-    // Luôn xử lý như "thêm". Ưu tiên tên DeepSeek rút được; không có thì tự tách tên.
-    const names = normalizeAddNames(text, ai?.intent === "add_member" ? ai.names : []);
-    return { intent: "add_member", names, session: parseSessionReference(text, context) };
+  if (ai) {
+    if (ai.intent !== "chat") return enrichAiIntent(ai, text, context);
+
+    // AI bảo "chat" nhưng câu khớp mẫu lệnh rất rõ → vá lại bằng regex hẹp.
+    if (isCancelConfirmation(text, context)) {
+      return { intent: "cancel_session", names: [] };
+    }
+    if (isStrongAddLike(t)) {
+      return { intent: "add_member", names: normalizeAddNames(text), session: parseSessionReference(text, context) };
+    }
+    if (isStrongCreateLike(t)) {
+      return { intent: "create_session", names: parseCreateParticipants(text), session: parseCreateSessionDraft(text) };
+    }
+    const byRegex = detectIntentByRegex(text);
+    if (byRegex) {
+      return {
+        intent: byRegex,
+        names: [],
+        session: byRegex === "list_attendees" || byRegex === "costs" ? parseSessionReference(text, context) : undefined,
+      };
+    }
+    return { intent: "chat", names: [] };
   }
 
-  if (ai && ai.intent !== "chat") {
-    return enrichAiIntent(ai, text, context);
+  // Không gọi được AI (thiếu key / lỗi mạng) → pipeline regex như trước.
+  // Câu có số tiền + từ chi tiêu mà không phải câu hỏi → ghi chi phí.
+  if (parseMoneyVn(text) !== undefined && /\b(tien|phi|san|nuoc|cau|bill)\b/.test(t) && !asksForCosts(t)) {
+    return { intent: "add_cost", names: [], cost: { amount: parseMoneyVn(text) }, session: parseSessionReference(text, context) };
   }
-
+  if (isCreateSessionLike(t)) {
+    return { intent: "create_session", names: parseCreateParticipants(text), session: parseCreateSessionDraft(text) };
+  }
+  if (isAddLike(t)) {
+    return { intent: "add_member", names: normalizeAddNames(text), session: parseSessionReference(text, context) };
+  }
   const byRegex = detectIntentByRegex(text);
   if (byRegex) {
     return {
@@ -673,9 +846,9 @@ async function resolveIntent(env: Env, text: string, actor?: BotActor, context?:
   }
 
   const cleaned = text.replace(/^\/buoi\b/i, "").trim();
-  if (!cleaned) return { intent: "upcoming", names: [] }; // chỉ gõ "/buoi"
+  if (!cleaned) return { intent: "upcoming", names: [] };
 
-  return ai ? enrichAiIntent(ai, text, context) : { intent: "chat", names: [] };
+  return { intent: "chat", names: [] };
 }
 
 // --- Truy vấn buổi chơi ---
@@ -1003,10 +1176,20 @@ async function handleQuery(
       return replyAttendees(env, groupId, groupName, parsed.session);
     case "add_member":
       return replyAddMembers(env, groupId, groupName, parsed.names, actor, parsed.session, aliases);
+    case "remove_member":
+      return replyRemoveMembers(env, groupId, groupName, parsed.names, actor, parsed.session, aliases);
     case "create_session":
       return replyCreateSession(env, groupId, groupName, parsed.session, actor, parsed.names, aliases);
+    case "update_session":
+      return replyUpdateSession(env, groupId, groupName, parsed.session, parsed.changes);
+    case "cancel_session":
+      return replyCancelSession(env, groupId, groupName, text, parsed.session, context);
+    case "stats":
+      return replyStats(env, groupId, groupName, text);
     case "costs":
       return replyCosts(env, groupId, groupName, text, parsed.session);
+    case "add_cost":
+      return replyAddCost(env, groupId, groupName, text, actor, parsed.cost, parsed.session, aliases);
     case "chat":
       return replyNaturalChat(env, groupName, text, actor, context);
     default:
@@ -1037,10 +1220,20 @@ export async function handleGroupBotQuery(
       return replyAttendees(env, groupId, groupName, parsed.session);
     case "add_member":
       return replyAddMembers(env, groupId, groupName, parsed.names, actor, parsed.session);
+    case "remove_member":
+      return replyRemoveMembers(env, groupId, groupName, parsed.names, actor, parsed.session);
     case "create_session":
       return replyCreateSession(env, groupId, groupName, parsed.session, actor, parsed.names);
+    case "update_session":
+      return replyUpdateSession(env, groupId, groupName, parsed.session, parsed.changes);
+    case "cancel_session":
+      return replyCancelSession(env, groupId, groupName, text, parsed.session, context);
+    case "stats":
+      return replyStats(env, groupId, groupName, text);
     case "costs":
       return replyCosts(env, groupId, groupName, text, parsed.session);
+    case "add_cost":
+      return replyAddCost(env, groupId, groupName, text, actor, parsed.cost, parsed.session);
     case "chat":
       return replyNaturalChat(env, groupName, text, actor, context);
     default:
@@ -1213,6 +1406,123 @@ async function replyCosts(
     lines.push("", "Chưa thấy dòng công nợ cần chuyển. Nếu vừa sửa chi phí, bấm tính lại chia tiền trên web để cập nhật payments.");
   }
 
+  return { ok: true, reply: lines.join("\n") };
+}
+
+// Buổi mặc định để ghi chi phí: hôm nay → gần nhất đã qua → sắp tới gần nhất.
+async function findSessionForAddCost(env: Env, groupId: string, selector?: SessionDraft): Promise<SessionRow | null> {
+  if (hasSessionSelector(selector)) return findSessionForAttendees(env, groupId, selector);
+
+  const recent = await env.DB.prepare(
+    `SELECT s.id, s.date, s.start_time, s.venue, s.location, s.note, s.status,
+      (SELECT COUNT(*) FROM session_members sm WHERE sm.session_id = s.id AND sm.attended = 1) AS attendee_count
+     FROM sessions s
+     WHERE s.group_id = ? AND s.date <= ?
+     ORDER BY s.date DESC, s.start_time DESC
+     LIMIT 1`
+  )
+    .bind(groupId, vnToday())
+    .first<SessionRow>();
+  return recent ?? soonestUpcoming(env, groupId);
+}
+
+function matchMembersByName(
+  members: Array<{ id: string; name: string }>,
+  raw: string,
+  aliases?: Map<string, string>
+): Array<{ id: string; name: string }> {
+  const q = normalizeName(raw);
+  if (!q) return [];
+  let matches = members.filter((m) => normalizeName(m.name) === q);
+  if (!matches.length) matches = members.filter((m) => normalizeName(m.name).includes(q));
+  if (!matches.length && aliases?.has(q)) {
+    const aliased = members.find((m) => m.id === aliases.get(q));
+    if (aliased) matches = [aliased];
+  }
+  return matches;
+}
+
+function resolveMemberByName(
+  members: Array<{ id: string; name: string }>,
+  raw: string,
+  aliases?: Map<string, string>
+): { id: string; name: string } | null {
+  const matches = matchMembersByName(members, raw, aliases);
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function resolveSelfMember(
+  members: Array<{ id: string; name: string }>,
+  actor?: BotActor
+): { id: string; name: string } | null {
+  if (actor?.memberId) {
+    const m = members.find((x) => x.id === actor.memberId);
+    if (m) return m;
+  }
+  if (actor?.name) return resolveMemberByName(members, actor.name);
+  return null;
+}
+
+async function replyAddCost(
+  env: Env,
+  groupId: string,
+  groupName: string,
+  text: string,
+  actor?: BotActor,
+  cost?: CostDraft,
+  selector?: SessionDraft,
+  aliases?: Map<string, string>
+): Promise<BotReply> {
+  const amount = cost?.amount ?? parseMoneyVn(text);
+  if (!amount || amount < 1000) {
+    return { ok: false, reply: 'Mình chưa rõ số tiền. Ví dụ: "tiền sân 240k" hoặc "3 ống cầu 270k Nam trả".' };
+  }
+
+  const session = await findSessionForAddCost(env, groupId, selector);
+  if (!session) return { ok: true, reply: `${groupName}: chưa có buổi nào để ghi chi phí.` };
+
+  const members =
+    (await env.DB.prepare("SELECT id, name FROM members WHERE group_id = ? AND is_active = 1")
+      .bind(groupId)
+      .all<{ id: string; name: string }>()).results ?? [];
+
+  // Người trả: nhắc tên → match; "tôi trả" → alias người gửi; không nói gì → coi như người gửi ứng.
+  let payer: { id: string; name: string } | null = null;
+  if (cost?.payerName && cost.payerName !== SELF_NAME_TOKEN && !isSelfReference(cost.payerName)) {
+    payer = resolveMemberByName(members, cost.payerName, aliases);
+  } else {
+    payer = resolveSelfMember(members, actor);
+  }
+
+  const label = cost?.label?.trim() || "Chi phí";
+  const quantity = cost?.quantity && cost.quantity >= 1 ? Math.floor(cost.quantity) : 1;
+  const costId = crypto.randomUUID();
+  await env.DB.prepare(
+    `INSERT INTO costs (id, session_id, label, amount, quantity, type, payer_id, consumer_id, consumer_ids, consumer_pending)
+     VALUES (?, ?, ?, ?, ?, 'other', ?, NULL, NULL, 0)`
+  )
+    .bind(costId, session.id, label, Math.round(amount), quantity, payer?.id ?? null)
+    .run();
+
+  const recalcError = await recalcSessionPayments(env, session.id);
+  const totalRow = await env.DB.prepare("SELECT SUM(amount) AS total FROM costs WHERE session_id = ?")
+    .bind(session.id)
+    .first<{ total: number | null }>();
+
+  // Echo đầy đủ — tiền bạc phải nhìn thấy được mình vừa ghi gì.
+  const lines = [
+    `🧾 Đã ghi vào buổi ${formatDate(session.date)} • ${session.start_time} • ${session.venue}:`,
+    `• ${label}${quantity > 1 ? ` x${quantity}` : ""}: ${formatMoney(amount)} (${payer ? `${payer.name} trả` : "chưa rõ ai trả"}, chia đều)`,
+    `Tổng buổi này: ${formatMoney(Number(totalRow?.total) || 0)}`,
+  ];
+  if (!payer) {
+    lines.push('⚠️ Chưa xác định được người trả — gán lại trên web, hoặc /alias rồi nhắn kiểu "tiền sân 240k tôi trả".');
+  }
+  if (recalcError) {
+    lines.push(`⚠️ Chưa chia lại được tiền (${recalcError}) — kiểm tra trên web nhé.`);
+  } else {
+    lines.push('Gõ "ai nợ ai" để xem công nợ mới. Sai thì sửa trên web.');
+  }
   return { ok: true, reply: lines.join("\n") };
 }
 
@@ -1429,6 +1739,252 @@ async function replyAddMembers(
   return { ok: true, reply: `${header}${formatAddOutcome(outcome)}` };
 }
 
+async function replyRemoveMembers(
+  env: Env,
+  groupId: string,
+  groupName: string,
+  names: string[],
+  actor?: BotActor,
+  selector?: SessionDraft,
+  aliases?: Map<string, string>
+): Promise<BotReply> {
+  if (!names.length) {
+    return { ok: false, reply: 'Bạn muốn rút ai khỏi buổi? Ví dụ: "bớt tôi ra" hoặc "Nam không đi nữa".' };
+  }
+
+  const session = await findUpcomingSession(env, groupId, selector);
+  if (!session) {
+    const hint = hasSessionSelector(selector) ? " phù hợp" : "";
+    return { ok: true, reply: `${groupName}: chưa có buổi sắp tới${hint} để rút người.` };
+  }
+
+  const members =
+    (await env.DB.prepare("SELECT id, name FROM members WHERE group_id = ? AND is_active = 1")
+      .bind(groupId)
+      .all<{ id: string; name: string }>()).results ?? [];
+  const attendingRows =
+    (await env.DB.prepare("SELECT member_id FROM session_members WHERE session_id = ? AND attended = 1")
+      .bind(session.id)
+      .all<{ member_id: string }>()).results ?? [];
+  const attending = new Set(attendingRows.map((r) => r.member_id));
+
+  const removed: string[] = [];
+  const notIn: string[] = [];
+  const ambiguous: string[] = [];
+  const notFound: string[] = [];
+  const toDelete: string[] = [];
+
+  const queueRemove = (member: { id: string; name: string }) => {
+    if (!attending.has(member.id)) {
+      notIn.push(member.name);
+      return;
+    }
+    toDelete.push(member.id);
+    removed.push(member.name);
+    attending.delete(member.id);
+  };
+
+  for (const raw of names) {
+    if (raw === SELF_NAME_TOKEN) {
+      const self = resolveSelfMember(members, actor);
+      if (self) queueRemove(self);
+      else notFound.push("bạn (chưa /alias?)");
+      continue;
+    }
+    const matches = matchMembersByName(members, raw, aliases);
+    if (matches.length === 0) {
+      notFound.push(raw);
+      continue;
+    }
+    if (matches.length > 1) {
+      ambiguous.push(raw);
+      continue;
+    }
+    queueRemove(matches[0]);
+  }
+
+  if (toDelete.length) {
+    const stmts = toDelete.map((memberId) =>
+      env.DB.prepare("DELETE FROM session_members WHERE session_id = ? AND member_id = ?").bind(session.id, memberId)
+    );
+    stmts.push(env.DB.prepare("DELETE FROM payments WHERE session_id = ? AND paid = 0").bind(session.id));
+    await env.DB.batch(stmts);
+    // Chia lại tiền với danh sách mới; buổi trống người thì thôi (payments chưa trả đã xoá).
+    await recalcSessionPayments(env, session.id);
+  }
+
+  const lines = [`🏸 ${formatDate(session.date)} • ${session.start_time} • ${session.venue}`];
+  if (removed.length) lines.push(`✅ Đã rút: ${removed.join(", ")}`);
+  if (notIn.length) lines.push(`ℹ️ Vốn không có trong buổi: ${notIn.join(", ")}`);
+  if (ambiguous.length) lines.push(`⚠️ Trùng tên, ghi rõ hơn: ${ambiguous.join(", ")}`);
+  if (notFound.length) lines.push(`❓ Không tìm thấy: ${notFound.join(", ")}`);
+  return { ok: true, reply: lines.join("\n") };
+}
+
+function parseStatsPeriod(text: string): { from: string; to: string; label: string } {
+  const t = normalizeName(text);
+  const now = vnNow();
+  const year = now.getUTCFullYear();
+  const month = now.getUTCMonth();
+
+  if (/\btuan nay\b|\btuan\b/.test(t) && !/\btuan truoc\b/.test(t)) {
+    const week = vnWeekRange();
+    return { ...week, label: "tuần này" };
+  }
+  if (/\bthang truoc\b/.test(t)) {
+    const from = new Date(Date.UTC(year, month - 1, 1)).toISOString().slice(0, 10);
+    const to = new Date(Date.UTC(year, month, 0)).toISOString().slice(0, 10);
+    return { from, to, label: "tháng trước" };
+  }
+  if (/\bnam nay\b|\btrong nam\b|\bca nam\b/.test(t)) {
+    return { from: `${year}-01-01`, to: `${year}-12-31`, label: `năm ${year}` };
+  }
+  const from = new Date(Date.UTC(year, month, 1)).toISOString().slice(0, 10);
+  const to = new Date(Date.UTC(year, month + 1, 0)).toISOString().slice(0, 10);
+  return { from, to, label: "tháng này" };
+}
+
+async function replyStats(env: Env, groupId: string, groupName: string, text: string): Promise<BotReply> {
+  const { from, to, label } = parseStatsPeriod(text);
+
+  const [sessionRow, costRow, topRows] = await Promise.all([
+    env.DB.prepare("SELECT COUNT(*) AS n FROM sessions WHERE group_id = ? AND date BETWEEN ? AND ?")
+      .bind(groupId, from, to)
+      .first<{ n: number }>(),
+    env.DB.prepare(
+      `SELECT SUM(c.amount) AS total FROM costs c
+       JOIN sessions s ON s.id = c.session_id
+       WHERE s.group_id = ? AND s.date BETWEEN ? AND ?`
+    )
+      .bind(groupId, from, to)
+      .first<{ total: number | null }>(),
+    env.DB.prepare(
+      `SELECT m.name, COUNT(*) AS n FROM session_members sm
+       JOIN sessions s ON s.id = sm.session_id
+       JOIN members m ON m.id = sm.member_id
+       WHERE s.group_id = ? AND s.date BETWEEN ? AND ? AND sm.attended = 1
+       GROUP BY m.id ORDER BY n DESC, m.name COLLATE NOCASE LIMIT 5`
+    )
+      .bind(groupId, from, to)
+      .all<{ name: string; n: number }>(),
+  ]);
+
+  const sessionCount = Number(sessionRow?.n) || 0;
+  const total = Number(costRow?.total) || 0;
+  const top = topRows.results ?? [];
+
+  const lines = [`📊 Thống kê ${label} của ${groupName} (${formatDate(from)} → ${formatDate(to)})`];
+  lines.push(`🏸 Số buổi: ${sessionCount}`);
+  lines.push(`💸 Tổng chi: ${formatMoney(total)}`);
+  if (top.length) {
+    lines.push("🔥 Chăm đi nhất:");
+    top.forEach((row, i) => lines.push(`${i + 1}. ${row.name} — ${row.n} buổi`));
+  }
+  if (!sessionCount) lines.push("Chưa có buổi nào trong khoảng này.");
+  return { ok: true, reply: lines.join("\n") };
+}
+
+async function replyUpdateSession(
+  env: Env,
+  groupId: string,
+  groupName: string,
+  selector?: SessionDraft,
+  changes?: SessionDraft
+): Promise<BotReply> {
+  if (!changes || (!changes.date && !changes.startTime && !changes.venue)) {
+    return { ok: false, reply: 'Bạn muốn đổi gì? Ví dụ: "dời kèo mai sang 19h" hoặc "đổi sân sang Q7".' };
+  }
+
+  const session = await findUpcomingSession(env, groupId, selector);
+  if (!session) {
+    return { ok: true, reply: `${groupName}: chưa có buổi sắp tới phù hợp để sửa.` };
+  }
+
+  const sets: string[] = [];
+  const binds: unknown[] = [];
+  if (changes.date) {
+    sets.push("date = ?");
+    binds.push(changes.date);
+  }
+  if (changes.startTime) {
+    sets.push("start_time = ?");
+    binds.push(changes.startTime);
+  }
+  if (changes.venue) {
+    sets.push("venue = ?");
+    binds.push(changes.venue);
+  }
+  binds.push(session.id);
+  await env.DB.prepare(`UPDATE sessions SET ${sets.join(", ")} WHERE id = ?`).bind(...binds).run();
+
+  const updated: SessionRow = {
+    ...session,
+    date: changes.date ?? session.date,
+    start_time: changes.startTime ?? session.start_time,
+    venue: changes.venue ?? session.venue,
+  };
+  return {
+    ok: true,
+    reply: `✏️ Đã sửa kèo:\n${formatDate(session.date)} • ${session.start_time} • ${session.venue}\n→ ${formatDate(updated.date)} • ${updated.start_time} • ${updated.venue}`,
+  };
+}
+
+const CANCEL_CONFIRM_HINT = 'Trả lời "đồng ý hủy" để xác nhận';
+
+function isCancelConfirmation(text: string, context?: BotContextMessage[]): boolean {
+  const t = normalizeName(text);
+  const saidYes = /^(dong y( huy)?|ok huy|xac nhan( huy)?|chac chan( huy)?|huy di)$/.test(t);
+  if (!saidYes) return false;
+  const lastAssistant = [...(context ?? [])].reverse().find((m) => m.role === "assistant");
+  return Boolean(lastAssistant?.text.includes("đồng ý hủy"));
+}
+
+async function replyCancelSession(
+  env: Env,
+  groupId: string,
+  groupName: string,
+  text: string,
+  selector?: SessionDraft,
+  context?: BotContextMessage[]
+): Promise<BotReply> {
+  const confirmed = isCancelConfirmation(text, context);
+  // Câu xác nhận ngắn không chứa thông tin buổi — lấy lại từ chính câu hỏi của bot trong context.
+  const effectiveSelector = confirmed ? parseContextSessionReference(context) : selector;
+
+  const session = await findUpcomingSession(env, groupId, effectiveSelector);
+  if (!session) {
+    return { ok: true, reply: `${groupName}: không thấy buổi sắp tới phù hợp để hủy.` };
+  }
+
+  if (!confirmed) {
+    return {
+      ok: true,
+      reply: `❓ Xác nhận hủy kèo này?\n🏸 ${formatDate(session.date)} • ${session.start_time} • ${session.venue} (${session.attendee_count} người)\n${CANCEL_CONFIRM_HINT}.`,
+    };
+  }
+
+  const paidRow = await env.DB.prepare(
+    "SELECT COUNT(*) AS n FROM payments WHERE session_id = ? AND paid = 1"
+  )
+    .bind(session.id)
+    .first<{ n: number }>();
+  if (Number(paidRow?.n) > 0) {
+    return { ok: false, reply: "Buổi này đã có thanh toán được xác nhận — muốn hủy thì thao tác trên web nhé." };
+  }
+
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM payments WHERE session_id = ?").bind(session.id),
+    env.DB.prepare("DELETE FROM costs WHERE session_id = ?").bind(session.id),
+    env.DB.prepare("DELETE FROM session_members WHERE session_id = ?").bind(session.id),
+    env.DB.prepare("DELETE FROM sessions WHERE id = ?").bind(session.id),
+  ]);
+
+  return {
+    ok: true,
+    reply: `🗑️ Đã hủy kèo ${formatDate(session.date)} • ${session.start_time} • ${session.venue}.`,
+  };
+}
+
 // --- Alias: ghép tên Messenger ↔ thành viên web ---
 
 async function loadThreadAliases(env: Env, threadId: string): Promise<Map<string, string>> {
@@ -1580,6 +2136,31 @@ bot.use("*", async (c, next) => {
   const token = bearerToken(c.req.header("Authorization"));
   if (!token || token !== expected) return c.json({ error: "Unauthorized" }, 401);
   await next();
+});
+
+// Outbox: bot Python poll tin Worker muốn chủ động gửi (nhắc kèo, báo kèo mới...).
+bot.get("/outbox", async (c) => {
+  const threadId = c.req.query("threadId")?.trim();
+  if (!threadId) return c.json({ error: "threadId required" }, 400);
+  await ensureBotTables(c.env.DB);
+  const rows = await c.env.DB.prepare(
+    "SELECT id, text FROM bot_outbox WHERE thread_id = ? AND sent_at IS NULL ORDER BY created_at ASC LIMIT 10"
+  )
+    .bind(threadId)
+    .all<{ id: string; text: string }>();
+  return c.json({ messages: rows.results ?? [] });
+});
+
+bot.post("/outbox/ack", async (c) => {
+  const body = await c.req.json<{ ids?: unknown }>().catch(() => null);
+  const ids = (Array.isArray(body?.ids) ? body!.ids : []).filter(
+    (x): x is string => typeof x === "string" && x.length > 0
+  );
+  if (!ids.length) return c.json({ ok: true, acked: 0 });
+  await ensureBotTables(c.env.DB);
+  const now = new Date().toISOString();
+  await c.env.DB.batch(ids.map((id) => c.env.DB.prepare("UPDATE bot_outbox SET sent_at = ? WHERE id = ?").bind(now, id)));
+  return c.json({ ok: true, acked: ids.length });
 });
 
 bot.post("/message", async (c) => {

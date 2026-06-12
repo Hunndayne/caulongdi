@@ -12,6 +12,7 @@ import profilesRouter from "./routes/profiles";
 import groupsRouter from "./routes/groups";
 import paymentWebhooksRouter from "./routes/paymentWebhooks";
 import botRouter from "./routes/bot";
+import { enqueueSessionReminders } from "./botOutbox";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -191,4 +192,16 @@ app.route("/api/chat", chatRouter);
 app.route("/api/profiles", profilesRouter);
 app.route("/api/groups", groupsRouter);
 
-export default app;
+export default {
+  fetch: app.fetch,
+  // Cron (wrangler.toml [triggers]): nhắc kèo sắp diễn ra qua bot Messenger.
+  scheduled(_controller: unknown, env: Env, ctx: ExecutionContext) {
+    ctx.waitUntil(
+      enqueueSessionReminders(env)
+        .then((queued) => {
+          if (queued > 0) console.log(`[cron] đã xếp ${queued} tin nhắc kèo vào outbox`);
+        })
+        .catch((error) => console.error("[cron] enqueueSessionReminders", error))
+    );
+  },
+};

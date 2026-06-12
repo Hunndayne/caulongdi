@@ -37,6 +37,23 @@ export async function ensureBotTables(db: D1Database) {
     .prepare("CREATE INDEX IF NOT EXISTS idx_bot_link_codes_expires ON bot_link_codes(expires_at)")
     .run();
 
+  // Hàng đợi tin bot chủ động gửi (nhắc kèo, báo kèo mới...) — bot Python poll rồi ACK.
+  await db
+    .prepare(
+      `CREATE TABLE IF NOT EXISTS bot_outbox (
+        id         TEXT PRIMARY KEY,
+        thread_id  TEXT NOT NULL,
+        text       TEXT NOT NULL,
+        dedupe_key TEXT UNIQUE,
+        created_at TEXT NOT NULL,
+        sent_at    TEXT
+      )`
+    )
+    .run();
+  await db
+    .prepare("CREATE INDEX IF NOT EXISTS idx_bot_outbox_unsent ON bot_outbox(thread_id, sent_at)")
+    .run();
+
   // Ghép tên hiển thị Messenger ↔ thành viên web (lệnh /alias) — theo từng thread.
   await db
     .prepare(

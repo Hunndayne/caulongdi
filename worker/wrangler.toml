@@ -13,6 +13,10 @@ run_worker_first = ["/api/*", "/sessions/*"]
 [ai]
 binding = "AI"
 
+# Cron nhắc kèo sắp diễn ra (ghi vào bot_outbox, bot Messenger tự kéo về gửi)
+[triggers]
+crons = ["*/30 * * * *"]
+
 [[d1_databases]]
 binding = "DB"
 database_name = "caulong"
