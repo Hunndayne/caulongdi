@@ -29,7 +29,9 @@ type PreviewSession = {
 };
 
 function escapeHtml(value: string) {
+  // NFC: gộp dấu vào ký tự — trình raster ảnh của Facebook vẽ sai dấu với chuỗi NFD
   return value
+    .normalize("NFC")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
@@ -74,16 +76,26 @@ function renderPreviewSvg(session: PreviewSession) {
   const location = session.location ?? "TingTing";
   const count = `${session.attendee_count} người tham gia`;
 
+  // Tối đa 5 tên người tham gia, dư thì "+N nữa"
+  const allNames = (session.attendee_names ?? "")
+    .split(",")
+    .map((name) => name.trim())
+    .filter(Boolean);
+  const shownNames = allNames.slice(0, 5).join(", ");
+  const extra = allNames.length > 5 ? ` +${allNames.length - 5} nữa` : "";
+  const namesLine = shownNames ? truncate(`${shownNames}${extra}`, 64) : "";
+
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
   <rect width="1200" height="630" fill="#ecfdf5"/>
   <rect x="72" y="72" width="1056" height="486" rx="32" fill="#ffffff"/>
   <circle cx="152" cy="150" r="28" fill="#16a34a"/>
   <text x="198" y="161" font-family="Arial, sans-serif" font-size="34" font-weight="700" fill="#14532d">TingTing</text>
-  <text x="120" y="275" font-family="Arial, sans-serif" font-size="64" font-weight="800" fill="#111827">${escapeHtml(truncate(session.venue, 36))}</text>
-  <text x="120" y="360" font-family="Arial, sans-serif" font-size="42" font-weight="700" fill="#16a34a">${escapeHtml(dateLine)}</text>
-  <text x="120" y="430" font-family="Arial, sans-serif" font-size="32" fill="#4b5563">${escapeHtml(truncate(location, 54))}</text>
-  <text x="120" y="495" font-family="Arial, sans-serif" font-size="30" fill="#6b7280">${escapeHtml(count)}</text>
+  <text x="120" y="265" font-family="Arial, sans-serif" font-size="64" font-weight="800" fill="#111827">${escapeHtml(truncate(session.venue, 36))}</text>
+  <text x="120" y="345" font-family="Arial, sans-serif" font-size="42" font-weight="700" fill="#16a34a">${escapeHtml(dateLine)}</text>
+  <text x="120" y="410" font-family="Arial, sans-serif" font-size="32" fill="#4b5563">${escapeHtml(truncate(location, 54))}</text>
+  <text x="120" y="470" font-family="Arial, sans-serif" font-size="30" fill="#6b7280">${escapeHtml(count)}</text>
+  ${namesLine ? `<text x="120" y="525" font-family="Arial, sans-serif" font-size="27" fill="#9ca3af">${escapeHtml(namesLine)}</text>` : ""}
 </svg>`;
 }
 
