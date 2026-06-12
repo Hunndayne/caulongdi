@@ -145,6 +145,10 @@ export const api = {
   joinViaLink: (code: string) =>
     request<{ success: boolean; groupId: string; alreadyMember: boolean }>(`/api/groups/join/${code}`, { method: "POST" }),
 
+  // Messenger bot
+  createBotLinkCode: (groupId: string) =>
+    request<{ code: string; expiresAt: string; ttlSeconds: number }>(`/api/groups/${groupId}/bot-link-code`, { method: "POST" }),
+
   // Profiles
   getProfiles: (groupId: string) => request<UserProfile[]>(`/api/profiles?groupId=${encodeURIComponent(groupId)}`),
   getMyProfile: () => request<UserProfile>("/api/profiles/me"),

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import {
+  Bot,
   Check,
   Copy,
   Link2,
@@ -59,6 +60,10 @@ export default function MembersPage() {
   const [inviteLinkCode, setInviteLinkCode] = useState<string | null>(null);
   const [inviteLinkLoading, setInviteLinkLoading] = useState(false);
   const [inviteLinkCopied, setInviteLinkCopied] = useState(false);
+  const [botLinkCode, setBotLinkCode] = useState<string | null>(null);
+  const [botLinkExpiresAt, setBotLinkExpiresAt] = useState<string | null>(null);
+  const [botLinkLoading, setBotLinkLoading] = useState(false);
+  const [botLinkCopied, setBotLinkCopied] = useState(false);
   const [deletingGroup, setDeletingGroup] = useState(false);
 
   const currentUserId = (session?.user as { id?: string } | undefined)?.id;
@@ -81,8 +86,11 @@ export default function MembersPage() {
       setMembers([]);
       setPendingInvites([]);
       setInviteLinkCode(null);
-      return;
     }
+    // Mã bot thuộc về nhóm cụ thể — đổi nhóm là bỏ mã đang hiện
+    setBotLinkCode(null);
+    setBotLinkExpiresAt(null);
+    if (!activeGroupId) return;
 
     setMembersLoading(true);
     api.getGroupMembers(activeGroupId)
@@ -215,6 +223,22 @@ export default function MembersPage() {
       setError(err instanceof Error ? err.message : "Không hủy được lời mời");
     } finally {
       setActingInviteId(null);
+    }
+  };
+
+  const handleCreateBotLinkCode = async () => {
+    if (!activeGroupId) return;
+    setBotLinkLoading(true);
+    setError(null);
+    try {
+      const result = await api.createBotLinkCode(activeGroupId);
+      setBotLinkCode(result.code);
+      setBotLinkExpiresAt(result.expiresAt);
+      setBotLinkCopied(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Không tạo được mã liên kết bot");
+    } finally {
+      setBotLinkLoading(false);
     }
   };
 
@@ -528,6 +552,70 @@ export default function MembersPage() {
               </div>
             ))}
           </div>
+        </section>
+      )}
+
+      {activeGroup && canManageGroup && (
+        <section className="rounded-xl border border-gray-100 bg-white p-4 shadow-sm space-y-3">
+          <div className="flex items-center gap-2">
+            <Bot size={18} className="text-green-600" />
+            <h2 className="font-semibold text-gray-900">Kết nối Messenger</h2>
+          </div>
+          <p className="text-sm text-gray-500">
+            Liên kết nhóm với group chat Messenger có bot TingTing: tạo mã rồi gõ{" "}
+            <code className="rounded bg-gray-100 px-1 py-0.5 text-xs text-gray-700">/connect &lt;mã&gt;</code>{" "}
+            trong group chat.
+          </p>
+          {botLinkCode ? (
+            <div className="space-y-2">
+              <div className="flex gap-2">
+                <div className="flex-1 min-w-0 select-all rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-center font-mono text-2xl tracking-[0.3em] text-gray-900">
+                  {botLinkCode}
+                </div>
+                <Button
+                  size="sm"
+                  variant={botLinkCopied ? "default" : "outline"}
+                  onClick={() => {
+                    navigator.clipboard.writeText(`/connect ${botLinkCode}`);
+                    setBotLinkCopied(true);
+                    setTimeout(() => setBotLinkCopied(false), 2000);
+                  }}
+                >
+                  {botLinkCopied ? (
+                    <><Check size={14} className="mr-1" />Đã copy</>
+                  ) : (
+                    <><Copy size={14} className="mr-1" />Copy lệnh</>
+                  )}
+                </Button>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-gray-400">
+                  Mã dùng 1 lần
+                  {botLinkExpiresAt &&
+                    `, hết hạn lúc ${new Date(botLinkExpiresAt).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })}`}
+                </span>
+                <button
+                  className="flex items-center gap-1 text-xs text-green-600 hover:text-green-700"
+                  onClick={handleCreateBotLinkCode}
+                  disabled={botLinkLoading}
+                >
+                  <RefreshCw size={11} />
+                  Tạo mã mới
+                </button>
+              </div>
+            </div>
+          ) : (
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full"
+              disabled={botLinkLoading}
+              onClick={handleCreateBotLinkCode}
+            >
+              <Bot size={15} className="mr-1.5" />
+              {botLinkLoading ? "Đang tạo..." : "Tạo mã liên kết"}
+            </Button>
+          )}
         </section>
       )}
 
