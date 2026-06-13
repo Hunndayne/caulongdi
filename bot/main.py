@@ -12,6 +12,7 @@ Python chỉ làm I/O Facebook — mọi logic NLU/D1/format nằm ở Worker.
 
 import asyncio
 import logging
+import random
 import time
 import unicodedata
 from contextlib import asynccontextmanager
@@ -23,7 +24,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 import config
-from messenger import LoginRequired, MessengerClient
+from messenger import LoginRequired, MessengerClient, TemporarilyBlocked
 from worker_client import ack_outbox, ask_worker, fetch_outbox_all
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -177,6 +178,9 @@ async def _drain_outbox(client: MessengerClient) -> None:
         try:
             async with _send_lock:
                 await client.send(item["text"], thread_id)
+        except (LoginRequired, TemporarilyBlocked):
+            await ack_outbox(sent_ids)  # ACK phần đã gửi rồi mới ném lên để watcher lùi
+            raise
         except Exception:  # noqa: BLE001 — gửi hỏng thì giữ lại tin trong outbox, thử vòng sau
             log.exception("[%s] Gửi tin outbox %s thất bại, sẽ thử lại", thread_id, item["id"])
             continue
@@ -185,6 +189,13 @@ async def _drain_outbox(client: MessengerClient) -> None:
         log.info("[%s] Đã gửi tin outbox %s", thread_id, item["id"])
     # ACK gộp một lần — tiết kiệm request Worker
     await ack_outbox(sent_ids)
+
+
+def _rover_delay() -> float:
+    """Khoảng cách tới lần rover kế: ngẫu nhiên trong [MIN, MAX] giây (jitter giống người)."""
+    lo = config.ROVER_INTERVAL_SECONDS
+    hi = max(config.ROVER_INTERVAL_MAX_SECONDS, lo)
+    return random.uniform(lo, hi)
 
 
 async def _rover_tick(
@@ -220,8 +231,8 @@ async def _rover_tick(
         rover_keys[thread_id] = await _process_new_messages(
             client, thread_id, rover_keys.get(thread_id, []), process_baseline_command=first_visit
         )
-    except LoginRequired:
-        raise
+    except (LoginRequired, TemporarilyBlocked):
+        raise  # lỗi toàn cục → để watcher xử lý (đăng nhập lại / lùi backoff), không cách ly lẻ
     except Exception:  # noqa: BLE001 — bị kick/lỗi điều hướng/không tải được: cách ly tạm thời
         rover_skip[thread_id] = time.time() + config.ROVER_SKIP_MINUTES * 60
         log.warning(
@@ -282,7 +293,7 @@ async def watcher() -> None:
             rover_keys: dict[str, list[str]] = {}
             rover_queue: list[str] = []
             rover_skip: dict[str, float] = {}  # thread_id -> timestamp hết cách ly
-            next_rover_at = time.time() + config.ROVER_INTERVAL_SECONDS
+            next_rover_at = time.time() + _rover_delay()
             next_outbox_at = time.time() + config.OUTBOX_POLL_SECONDS
             next_refresh_at = time.time() + config.REFRESH_MINUTES * 60
             while time.time() < restart_at:
@@ -303,7 +314,7 @@ async def watcher() -> None:
                     )
                 if config.ROVER_ENABLED and time.time() >= next_rover_at:
                     await _rover_tick(client, rover_keys, rover_queue, rover_skip)
-                    next_rover_at = time.time() + config.ROVER_INTERVAL_SECONDS
+                    next_rover_at = time.time() + _rover_delay()
                 # Outbox nhịp riêng (mặc định 60s) — tiết kiệm quota Worker free
                 if time.time() >= next_outbox_at:
                     await _drain_outbox(client)
@@ -320,6 +331,16 @@ async def watcher() -> None:
             await client.close()
             _client = None
             await asyncio.sleep(300)
+            continue
+        except TemporarilyBlocked as exc:
+            # FB chặn tạm do thao tác nhanh — đóng browser, ngủ DÀI, KHÔNG retry dồn.
+            mins = config.BLOCK_BACKOFF_MINUTES
+            state["status"] = "blocked"
+            state["last_error"] = str(exc)
+            log.warning("FB chặn tạm (%s) — đóng browser, lùi %.0f phút rồi thử lại", exc, mins)
+            await client.close()
+            _client = None
+            await asyncio.sleep(mins * 60)
             continue
         except asyncio.CancelledError:
             await client.close()

@@ -81,6 +81,22 @@ class LoginRequired(Exception):
     """Cookie hết hạn — cần chạy lại save_login.py."""
 
 
+class TemporarilyBlocked(Exception):
+    """FB chặn tạm vì thao tác quá nhanh ("Bạn tạm thời bị chặn"). PHẢI lùi lại
+    (ngủ dài), KHÔNG retry dồn dập kẻo bị checkpoint/khóa acc."""
+
+
+# Dấu hiệu trang "tạm thời bị chặn" của Facebook (cả VI lẫn EN).
+_BLOCK_MARKERS = (
+    "tạm thời bị chặn",
+    "dùng nhầm tính năng",
+    "temporarily blocked",
+    "misusing this feature",
+    "you’re going too fast",
+    "you're going too fast",
+)
+
+
 class MessengerClient:
     """Một browser: mỗi thread trong config.THREAD_IDS một tab cố định,
     cộng một tab "rover" tuần tra các group chat khác phát hiện qua sidebar."""
@@ -107,8 +123,8 @@ class MessengerClient:
                 self._check_logged_in(page)
                 await self._wait_ready(page, timeout=30_000)
                 await self._dismiss_overlays(page)
-            except LoginRequired:
-                raise  # cookie hết hạn → lỗi chí mạng, để watcher báo trạng thái
+            except (LoginRequired, TemporarilyBlocked):
+                raise  # lỗi toàn cục (cookie hết hạn / FB chặn tạm) → để watcher lùi
             except Exception:  # noqa: BLE001 — 1 group hỏng KHÔNG được làm sập cả bot
                 log.warning("Không mở được thread %s — bỏ qua, sẽ thử lại lần refresh sau", thread_id, exc_info=True)
                 try:
@@ -150,7 +166,7 @@ class MessengerClient:
                 await self._wait_ready(page, timeout=30_000)
                 await self._dismiss_overlays(page)
                 log.info("[refresh] Đã reload tab %s", thread_id)
-            except LoginRequired:
+            except (LoginRequired, TemporarilyBlocked):
                 raise
             except Exception:  # noqa: BLE001 — reload hỏng 1 tab thì bỏ qua, vòng sau thử lại
                 log.warning("[refresh] Reload tab %s lỗi, bỏ qua", thread_id, exc_info=True)
@@ -164,7 +180,7 @@ class MessengerClient:
                 self._check_logged_in(page)
                 await self._wait_ready(page, timeout=30_000)
                 await self._dismiss_overlays(page)
-            except LoginRequired:
+            except (LoginRequired, TemporarilyBlocked):
                 raise
             except Exception:  # noqa: BLE001 — vẫn chưa mở được thì thử lại lần refresh sau
                 log.warning("[refresh] Vẫn chưa mở được thread %s", thread_id, exc_info=True)
@@ -219,10 +235,24 @@ class MessengerClient:
         if "login" in url or "checkpoint" in url:
             raise LoginRequired(f"Bị chuyển tới {url} — cookie hết hạn, chạy lại save_login.py")
 
+    async def _detect_block(self, page: Page) -> bool:
+        """True nếu trang đang hiện thông báo "tạm thời bị chặn" của FB."""
+        try:
+            body = (await page.inner_text("body", timeout=2_000)).lower()
+        except Exception:  # noqa: BLE001 — không đọc được body thì coi như không chặn
+            return False
+        return any(m in body for m in _BLOCK_MARKERS)
+
     async def _wait_ready(self, page: Page, timeout: int) -> None:
         """Chờ trang vào được trạng thái ĐỌC (có khung tin hoặc ô soạn).
-        KHÔNG ép ô soạn tin — thread không reply được vẫn cần đọc."""
-        await page.wait_for_selector(_READY_SELECTOR, timeout=timeout)
+        KHÔNG ép ô soạn tin — thread không reply được vẫn cần đọc.
+        Nếu timeout vì FB chèn trang chặn tạm → raise TemporarilyBlocked để lùi."""
+        try:
+            await page.wait_for_selector(_READY_SELECTOR, timeout=timeout)
+        except Exception:  # noqa: BLE001 — phân biệt: bị chặn tạm vs lỗi tải thường
+            if await self._detect_block(page):
+                raise TemporarilyBlocked("FB chặn tạm (thao tác quá nhanh)") from None
+            raise
 
     async def read_messages(self, thread_id: str) -> list[dict]:
         """Trả về tối đa 30 tin cuối của thread: [{sender, text, label}].

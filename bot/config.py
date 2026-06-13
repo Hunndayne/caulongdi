@@ -33,13 +33,19 @@ RESTART_HOURS = float(os.getenv("RESTART_HOURS", "8"))
 # Reload nhẹ định kỳ (phút): reload các tab cố định + reset rover để gỡ kẹt khi
 # trang Messenger treo/đứng ở 1 chat. 0 = tắt. Nhẹ hơn nhiều so với RESTART_HOURS.
 REFRESH_MINUTES = float(os.getenv("REFRESH_MINUTES", "15"))
+# Khi FB chặn tạm ("Bạn tạm thời bị chặn" do thao tác nhanh): đóng browser và ngủ
+# bấy nhiêu phút trước khi thử lại — KHÔNG retry dồn kẻo bị checkpoint/khóa acc.
+BLOCK_BACKOFF_MINUTES = float(os.getenv("BLOCK_BACKOFF_MINUTES", "60"))
 API_HOST = os.getenv("API_HOST", "127.0.0.1")
 API_PORT = int(os.getenv("API_PORT", "8090"))
 
 # Rover: tab tuần tra tự phát hiện group chat ngoài THREAD_IDS qua sidebar.
 # Mỗi ROVER_INTERVAL_SECONDS ghé một thread (round-robin) — RAM cố định 1 tab phụ.
 ROVER_ENABLED = os.getenv("ROVER_ENABLED", "true").strip().lower() != "false"
-ROVER_INTERVAL_SECONDS = float(os.getenv("ROVER_INTERVAL_SECONDS", "15"))
+# Khoảng cách rover ghé thread: NGẪU NHIÊN trong [MIN, MAX] giây cho giống người,
+# tránh nhịp đều dễ bị FB phát hiện bot. MAX<=MIN thì coi như cố định = MIN.
+ROVER_INTERVAL_SECONDS = float(os.getenv("ROVER_INTERVAL_SECONDS", "60"))  # cận dưới
+ROVER_INTERVAL_MAX_SECONDS = float(os.getenv("ROVER_INTERVAL_MAX_SECONDS", "120"))  # cận trên
 ROVER_MAX_THREADS = int(os.getenv("ROVER_MAX_THREADS", "10"))
 # Khi rover ghé 1 thread bị lỗi (trang không tải được, không có khung tin), tạm
 # bỏ qua thread đó trong bao nhiêu phút để khỏi đập vào nó mỗi vòng (chặn loop).
