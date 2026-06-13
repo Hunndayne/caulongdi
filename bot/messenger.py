@@ -26,6 +26,11 @@ _BROWSER_ARGS = [
 # Ô soạn tin nhắn của messenger.
 _TEXTBOX_SELECTOR = 'div[role="textbox"][contenteditable="true"]'
 
+# Trang đã sẵn sàng để ĐỌC: có khung danh sách tin HOẶC ô soạn tin. Dùng cái này
+# thay cho _TEXTBOX_SELECTOR khi điều hướng — nhiều thread (community, message
+# request, chat không reply được) KHÔNG có ô soạn tin nhưng vẫn đọc được tin.
+_READY_SELECTOR = f'[role="log"], {_TEXTBOX_SELECTOR}'
+
 # Nút đóng các dialog/popup FB hay đè lên trang (chặn click vào ô soạn tin).
 _CLOSE_BUTTON_SELECTOR = '[role="dialog"] [aria-label="Đóng"], [role="dialog"] [aria-label="Close"]'
 
@@ -97,10 +102,20 @@ class MessengerClient:
         await self._context.route("**/*", self._block_heavy_resources)
         for thread_id in config.THREAD_IDS:
             page = await self._context.new_page()
-            await page.goto(config.thread_url(thread_id), wait_until="domcontentloaded", timeout=60_000)
-            self._check_logged_in(page)
-            await page.wait_for_selector(_TEXTBOX_SELECTOR, timeout=30_000)
-            await self._dismiss_overlays(page)
+            try:
+                await page.goto(config.thread_url(thread_id), wait_until="domcontentloaded", timeout=60_000)
+                self._check_logged_in(page)
+                await self._wait_ready(page, timeout=30_000)
+                await self._dismiss_overlays(page)
+            except LoginRequired:
+                raise  # cookie hết hạn → lỗi chí mạng, để watcher báo trạng thái
+            except Exception:  # noqa: BLE001 — 1 group hỏng KHÔNG được làm sập cả bot
+                log.warning("Không mở được thread %s — bỏ qua, sẽ thử lại lần refresh sau", thread_id, exc_info=True)
+                try:
+                    await page.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                continue
             self.pages[thread_id] = page
             log.info("Đã mở thread %s", thread_id)
         if config.ROVER_ENABLED:
@@ -132,13 +147,34 @@ class MessengerClient:
             try:
                 await page.reload(wait_until="domcontentloaded", timeout=60_000)
                 self._check_logged_in(page)
-                await page.wait_for_selector(_TEXTBOX_SELECTOR, timeout=30_000)
+                await self._wait_ready(page, timeout=30_000)
                 await self._dismiss_overlays(page)
                 log.info("[refresh] Đã reload tab %s", thread_id)
             except LoginRequired:
                 raise
             except Exception:  # noqa: BLE001 — reload hỏng 1 tab thì bỏ qua, vòng sau thử lại
                 log.warning("[refresh] Reload tab %s lỗi, bỏ qua", thread_id, exc_info=True)
+        # Thử mở lại các tab cố định đã hỏng lúc start (chưa có trong self.pages).
+        for thread_id in config.THREAD_IDS:
+            if thread_id in self.pages or self._context is None:
+                continue
+            page = await self._context.new_page()
+            try:
+                await page.goto(config.thread_url(thread_id), wait_until="domcontentloaded", timeout=60_000)
+                self._check_logged_in(page)
+                await self._wait_ready(page, timeout=30_000)
+                await self._dismiss_overlays(page)
+            except LoginRequired:
+                raise
+            except Exception:  # noqa: BLE001 — vẫn chưa mở được thì thử lại lần refresh sau
+                log.warning("[refresh] Vẫn chưa mở được thread %s", thread_id, exc_info=True)
+                try:
+                    await page.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                continue
+            self.pages[thread_id] = page
+            log.info("[refresh] Đã mở lại thread %s", thread_id)
         self._rover_at = None
 
     async def _ensure_rover(self, thread_id: str) -> Page:
@@ -147,7 +183,8 @@ class MessengerClient:
         if self._rover_at != thread_id:
             await self._rover.goto(config.thread_url(thread_id), wait_until="domcontentloaded", timeout=60_000)
             self._check_logged_in(self._rover)
-            await self._rover.wait_for_selector(_TEXTBOX_SELECTOR, timeout=30_000)
+            # Timeout ngắn: thread hỏng/không tải được chỉ tốn vài giây, không chặn loop 30s.
+            await self._wait_ready(self._rover, timeout=15_000)
             await self._dismiss_overlays(self._rover)
             self._rover_at = thread_id
         return self._rover
@@ -181,6 +218,11 @@ class MessengerClient:
         url = page.url if page else ""
         if "login" in url or "checkpoint" in url:
             raise LoginRequired(f"Bị chuyển tới {url} — cookie hết hạn, chạy lại save_login.py")
+
+    async def _wait_ready(self, page: Page, timeout: int) -> None:
+        """Chờ trang vào được trạng thái ĐỌC (có khung tin hoặc ô soạn).
+        KHÔNG ép ô soạn tin — thread không reply được vẫn cần đọc."""
+        await page.wait_for_selector(_READY_SELECTOR, timeout=timeout)
 
     async def read_messages(self, thread_id: str) -> list[dict]:
         """Trả về tối đa 30 tin cuối của thread: [{sender, text, label}].

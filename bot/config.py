@@ -41,6 +41,9 @@ API_PORT = int(os.getenv("API_PORT", "8090"))
 ROVER_ENABLED = os.getenv("ROVER_ENABLED", "true").strip().lower() != "false"
 ROVER_INTERVAL_SECONDS = float(os.getenv("ROVER_INTERVAL_SECONDS", "15"))
 ROVER_MAX_THREADS = int(os.getenv("ROVER_MAX_THREADS", "10"))
+# Khi rover ghé 1 thread bị lỗi (trang không tải được, không có khung tin), tạm
+# bỏ qua thread đó trong bao nhiêu phút để khỏi đập vào nó mỗi vòng (chặn loop).
+ROVER_SKIP_MINUTES = float(os.getenv("ROVER_SKIP_MINUTES", "30"))
 
 # Múi giờ bot dùng để tính QUIET_HOURS — tường minh để KHÔNG phụ thuộc múi giờ
 # ambient của host. Tiến trình khởi động trước khi đổi tz hệ thống vẫn cache UTC

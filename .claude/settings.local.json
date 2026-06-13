@@ -21,7 +21,8 @@
       "PowerShell(New-Item *)",
       "PowerShell(Set-Location D:\\\\code\\\\caulongdi\\\\worker; npx tsc --noEmit; echo \"WORKER_TS=$?\")",
       "PowerShell(pnpm *)",
-      "PowerShell(& D:\\\\code\\\\caulongdi\\\\bot\\\\.venv\\\\Scripts\\\\python.exe -m py_compile D:\\\\code\\\\caulongdi\\\\bot\\\\main.py D:\\\\code\\\\caulongdi\\\\bot\\\\worker_client.py D:\\\\code\\\\caulongdi\\\\bot\\\\messenger.py D:\\\\code\\\\caulongdi\\\\bot\\\\config.py; echo \"PY=$?\")"
+      "PowerShell(& D:\\\\code\\\\caulongdi\\\\bot\\\\.venv\\\\Scripts\\\\python.exe -m py_compile D:\\\\code\\\\caulongdi\\\\bot\\\\main.py D:\\\\code\\\\caulongdi\\\\bot\\\\worker_client.py D:\\\\code\\\\caulongdi\\\\bot\\\\messenger.py D:\\\\code\\\\caulongdi\\\\bot\\\\config.py; echo \"PY=$?\")",
+      "Bash(echo \"exit: $?\")"
     ]
   }
 }

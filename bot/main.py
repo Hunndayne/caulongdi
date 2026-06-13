@@ -187,14 +187,28 @@ async def _drain_outbox(client: MessengerClient) -> None:
     await ack_outbox(sent_ids)
 
 
-async def _rover_tick(client: MessengerClient, rover_keys: dict[str, list[str]], rover_queue: list[str]) -> None:
+async def _rover_tick(
+    client: MessengerClient,
+    rover_keys: dict[str, list[str]],
+    rover_queue: list[str],
+    rover_skip: dict[str, float],
+) -> None:
     """Ghé một group chat ngoài THREAD_IDS (round-robin theo sidebar) bằng tab rover."""
     if not rover_queue:
         sidebar = await client.list_sidebar_threads()
-        others = [t for t in sidebar if not client.has_dedicated(t)][: config.ROVER_MAX_THREADS]
+        now = time.time()
+        # Bỏ qua thread đang trong thời gian cách ly (vừa lỗi gần đây).
+        rover_skip_active = {t for t, until in rover_skip.items() if until > now}
+        others = [
+            t for t in sidebar
+            if not client.has_dedicated(t) and t not in rover_skip_active
+        ][: config.ROVER_MAX_THREADS]
         # Quên các thread đã rời sidebar (bị kick/ẩn) để khỏi giữ keys vô hạn.
         for stale in [t for t in rover_keys if t not in others]:
             rover_keys.pop(stale, None)
+        # Dọn các mục cách ly đã hết hạn.
+        for expired in [t for t, until in rover_skip.items() if until <= now]:
+            rover_skip.pop(expired, None)
         rover_queue.extend(others)
         if not rover_queue:
             return
@@ -208,8 +222,12 @@ async def _rover_tick(client: MessengerClient, rover_keys: dict[str, list[str]],
         )
     except LoginRequired:
         raise
-    except Exception:  # noqa: BLE001 — bị kick/lỗi điều hướng: bỏ vòng này, lần sau sidebar quyết định lại
-        log.exception("[rover] Lỗi khi ghé thread %s", thread_id)
+    except Exception:  # noqa: BLE001 — bị kick/lỗi điều hướng/không tải được: cách ly tạm thời
+        rover_skip[thread_id] = time.time() + config.ROVER_SKIP_MINUTES * 60
+        log.warning(
+            "[rover] Lỗi khi ghé thread %s — cách ly %.0f phút",
+            thread_id, config.ROVER_SKIP_MINUTES, exc_info=True,
+        )
 
 
 def _quiet_until() -> float | None:
@@ -263,6 +281,7 @@ async def watcher() -> None:
             prev_keys_by_thread: dict[str, list[str]] = {tid: [] for tid in config.THREAD_IDS}
             rover_keys: dict[str, list[str]] = {}
             rover_queue: list[str] = []
+            rover_skip: dict[str, float] = {}  # thread_id -> timestamp hết cách ly
             next_rover_at = time.time() + config.ROVER_INTERVAL_SECONDS
             next_outbox_at = time.time() + config.OUTBOX_POLL_SECONDS
             next_refresh_at = time.time() + config.REFRESH_MINUTES * 60
@@ -275,11 +294,15 @@ async def watcher() -> None:
                     await client.refresh()
                     next_refresh_at = time.time() + config.REFRESH_MINUTES * 60
                 for thread_id in config.THREAD_IDS:
+                    # Tab cố định nào chưa mở được (lỗi lúc start) thì bỏ qua — refresh
+                    # sẽ thử mở lại; KHÔNG để rơi vào rover làm kẹt/sập vòng lặp.
+                    if not client.has_dedicated(thread_id):
+                        continue
                     prev_keys_by_thread[thread_id] = await _process_new_messages(
                         client, thread_id, prev_keys_by_thread[thread_id]
                     )
                 if config.ROVER_ENABLED and time.time() >= next_rover_at:
-                    await _rover_tick(client, rover_keys, rover_queue)
+                    await _rover_tick(client, rover_keys, rover_queue, rover_skip)
                     next_rover_at = time.time() + config.ROVER_INTERVAL_SECONDS
                 # Outbox nhịp riêng (mặc định 60s) — tiết kiệm quota Worker free
                 if time.time() >= next_outbox_at:
