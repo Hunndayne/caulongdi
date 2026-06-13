@@ -30,6 +30,9 @@ STORAGE_STATE = str(Path(__file__).parent / os.getenv("STORAGE_STATE", "storage_
 HEADLESS = os.getenv("HEADLESS", "true").strip().lower() != "false"
 POLL_SECONDS = float(os.getenv("POLL_SECONDS", "4"))
 RESTART_HOURS = float(os.getenv("RESTART_HOURS", "8"))
+# Reload nhẹ định kỳ (phút): reload các tab cố định + reset rover để gỡ kẹt khi
+# trang Messenger treo/đứng ở 1 chat. 0 = tắt. Nhẹ hơn nhiều so với RESTART_HOURS.
+REFRESH_MINUTES = float(os.getenv("REFRESH_MINUTES", "15"))
 API_HOST = os.getenv("API_HOST", "127.0.0.1")
 API_PORT = int(os.getenv("API_PORT", "8090"))
 

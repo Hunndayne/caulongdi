@@ -265,10 +265,15 @@ async def watcher() -> None:
             rover_queue: list[str] = []
             next_rover_at = time.time() + config.ROVER_INTERVAL_SECONDS
             next_outbox_at = time.time() + config.OUTBOX_POLL_SECONDS
+            next_refresh_at = time.time() + config.REFRESH_MINUTES * 60
             while time.time() < restart_at:
                 if _quiet_until():
                     log.info("Đến giờ ngủ (%s) — đóng browser", config.QUIET_HOURS)
                     break
+                # Reload nhẹ định kỳ — gỡ kẹt khi trang Messenger treo/đứng ở 1 chat.
+                if config.REFRESH_MINUTES > 0 and time.time() >= next_refresh_at:
+                    await client.refresh()
+                    next_refresh_at = time.time() + config.REFRESH_MINUTES * 60
                 for thread_id in config.THREAD_IDS:
                     prev_keys_by_thread[thread_id] = await _process_new_messages(
                         client, thread_id, prev_keys_by_thread[thread_id]

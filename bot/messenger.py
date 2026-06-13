@@ -123,6 +123,24 @@ class MessengerClient:
             log.warning("Không đọc được sidebar", exc_info=True)
             return []
 
+    async def refresh(self) -> None:
+        """Reload nhẹ để gỡ kẹt khi trang Messenger treo/đứng (gọi định kỳ).
+
+        Tab cố định: reload tại chỗ. Rover: xả vị trí (`_rover_at=None`) để lần ghé
+        kế tiếp tự điều hướng lại — gỡ tình trạng rover đứng ở 1 chat sau ~15'."""
+        for thread_id, page in self.pages.items():
+            try:
+                await page.reload(wait_until="domcontentloaded", timeout=60_000)
+                self._check_logged_in(page)
+                await page.wait_for_selector(_TEXTBOX_SELECTOR, timeout=30_000)
+                await self._dismiss_overlays(page)
+                log.info("[refresh] Đã reload tab %s", thread_id)
+            except LoginRequired:
+                raise
+            except Exception:  # noqa: BLE001 — reload hỏng 1 tab thì bỏ qua, vòng sau thử lại
+                log.warning("[refresh] Reload tab %s lỗi, bỏ qua", thread_id, exc_info=True)
+        self._rover_at = None
+
     async def _ensure_rover(self, thread_id: str) -> Page:
         if self._rover is None:
             raise RuntimeError(f"Thread {thread_id} không có tab cố định và rover đang tắt")
