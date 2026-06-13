@@ -250,6 +250,24 @@ function safeFileName(value: string) {
   return value.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "qr";
 }
 
+// Bỏ dấu tiếng Việt — nội dung chuyển khoản VietQR/app ngân hàng hợp nhất với ASCII.
+function deburrVi(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(new RegExp("[\\u0300-\\u036f]", "g"), "")
+    .replace(/đ/g, "d")
+    .replace(/Đ/g, "D");
+}
+
+// Nội dung CK dễ đọc cho luồng thủ công: "A chuyen tien buoi <sân> ngay dd/MM/yyyy".
+function buildManualTransferContent(payerName: string, venue: string, date: string) {
+  const [y, m, d] = date.split("-");
+  const dmy = y && m && d ? `${d}/${m}/${y}` : date;
+  const venuePart = venue.trim() ? `buoi ${venue.trim()} ` : "";
+  const raw = `${payerName.trim()} chuyen tien ${venuePart}ngay ${dmy}`;
+  return deburrVi(raw).replace(/\s+/g, " ").trim().slice(0, 80);
+}
+
 function createReceiptDraftId(index: number) {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
   return `${Date.now()}-${index}`;
@@ -1094,8 +1112,11 @@ export default function SessionDetailPage() {
     if (!recipient.user_bank_bin || !recipient.user_bank_account_number || !recipient.user_bank_account_name) return null;
     if (amount <= 0 || debtor.id === recipient.id) return null;
     const isAutoRecipient = isTimoWebhookRecipient(recipient) || (effectiveAutoConfirm && recipient.id === recipientId);
-    const prefix = isAutoRecipient ? PAYMENT_QR_PREFIX.autoConfirm : PAYMENT_QR_PREFIX.manual;
-    const note = `${prefix}-${paymentId}`;
+    // Tự động (CLD): GIỮ mã để webhook Timo đối soát. Thủ công (TT cũ): mã vô dụng
+    // (email không về hộp webhook) → thay bằng nội dung dễ đọc cho người nhận.
+    const note = isAutoRecipient
+      ? `${PAYMENT_QR_PREFIX.autoConfirm}-${paymentId}`
+      : buildManualTransferContent(debtor.name, s.venue, s.date);
     const roundedAmount = Math.ceil(amount);
     const qrUrl = `https://img.vietqr.io/image/${recipient.user_bank_bin}-${recipient.user_bank_account_number}-compact.png?amount=${roundedAmount}&addInfo=${encodeURIComponent(note)}&accountName=${encodeURIComponent(recipient.user_bank_account_name)}`;
 
