@@ -16,6 +16,7 @@ import time
 import unicodedata
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
@@ -223,7 +224,7 @@ def _quiet_until() -> float | None:
         log.warning("QUIET_HOURS không hợp lệ: %r — bỏ qua", config.QUIET_HOURS)
         return None
 
-    now = datetime.now()
+    now = datetime.now(ZoneInfo(config.BOT_TZ))
     start = now.replace(hour=sh, minute=sm, second=0, microsecond=0)
     end = now.replace(hour=eh, minute=em, second=0, microsecond=0)
     if start <= end:  # cửa sổ trong cùng một ngày (vd 02:00-04:00)
@@ -246,7 +247,7 @@ async def watcher() -> None:
         if wake_at:
             if state["status"] != "sleeping":
                 log.info("Giờ ngủ (%s) — bot offline đến %s", config.QUIET_HOURS,
-                         datetime.fromtimestamp(wake_at).strftime("%H:%M"))
+                         datetime.fromtimestamp(wake_at, ZoneInfo(config.BOT_TZ)).strftime("%H:%M"))
             state["status"] = "sleeping"
             await asyncio.sleep(min(max(wake_at - time.time(), 5), 300))
             continue

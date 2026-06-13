@@ -39,7 +39,12 @@ ROVER_ENABLED = os.getenv("ROVER_ENABLED", "true").strip().lower() != "false"
 ROVER_INTERVAL_SECONDS = float(os.getenv("ROVER_INTERVAL_SECONDS", "15"))
 ROVER_MAX_THREADS = int(os.getenv("ROVER_MAX_THREADS", "10"))
 
-# Giờ ngủ hằng ngày (giờ máy chủ, dạng "HH:MM-HH:MM") — bot tắt browser hẳn để
+# Múi giờ bot dùng để tính QUIET_HOURS — tường minh để KHÔNG phụ thuộc múi giờ
+# ambient của host. Tiến trình khởi động trước khi đổi tz hệ thống vẫn cache UTC
+# (glibc), khiến bot ngủ nhầm khung 09:00-11:00 thay vì 02:00-04:00 giờ VN.
+BOT_TZ = os.getenv("BOT_TZ", "Asia/Ho_Chi_Minh").strip()
+
+# Giờ ngủ hằng ngày (theo BOT_TZ, dạng "HH:MM-HH:MM") — bot tắt browser hẳn để
 # hành vi giống người thật, giảm nghi ngờ từ Facebook. Để rỗng nếu muốn chạy 24/7.
 QUIET_HOURS = os.getenv("QUIET_HOURS", "02:00-04:00").strip()
 
