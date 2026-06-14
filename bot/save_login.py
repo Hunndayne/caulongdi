@@ -18,8 +18,24 @@ STORAGE_STATE = str(Path(__file__).parent / os.getenv("STORAGE_STATE", "storage_
 
 def main() -> None:
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False)
-        context = browser.new_context()
+        # FB hay trả trang 2FA TRẮNG cho Chromium bundled của Playwright (bị nhận diện
+        # automation). Dùng Google Chrome thật + tắt cờ AutomationControlled → render đúng.
+        launch_args = ["--disable-blink-features=AutomationControlled"]
+        try:
+            browser = p.chromium.launch(headless=False, channel="chrome", args=launch_args)
+            print("Đang dùng Google Chrome thật.")
+        except Exception:  # noqa: BLE001 — máy chưa cài Chrome thì lùi về Chromium bundled
+            print("Không thấy Google Chrome — dùng Chromium bundled (2FA có thể bị trắng trang).")
+            browser = p.chromium.launch(headless=False, args=launch_args)
+        # UA + viewport như người thật; giấu navigator.webdriver để FB bớt nghi.
+        context = browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            ),
+            viewport={"width": 1280, "height": 800},
+        )
+        context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         page = context.new_page()
         page.goto("https://www.messenger.com/")
         input("\n>> Đăng nhập xong (thấy danh sách chat) thì bấm Enter ở đây để lưu cookie... ")

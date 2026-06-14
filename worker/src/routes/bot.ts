@@ -579,6 +579,7 @@ async function classifyWithAI(
     "changes CHỈ điền khi intent=update_session.",
     "session điền khi câu nói về MỘT buổi cụ thể (tạo mới hoặc tham chiếu buổi nào đó, kể cả buổi nhắc trong ngữ cảnh trước): quy đổi 'ngày mai', 'thứ 7'... thành ngày cụ thể theo hôm nay; startTime dạng 24h; venue là tên sân/địa điểm.",
     "Trong session, trường nào người dùng (hoặc ngữ cảnh) KHÔNG nhắc tới thì BỎ QUA, tuyệt đối không tự đoán.",
+    'Các từ "hiện tại", "bây giờ", "giờ này", "đang" chỉ là từ đệm — KHÔNG suy ra date/startTime từ chúng. Khi câu đã nêu rõ buổi (vd "buổi 18/6") thì chỉ điền date theo buổi đó, không thêm startTime trừ khi user nói giờ cụ thể.',
   ].join(" ");
 
   const contextBlock = contextForPrompt(context);
@@ -1151,33 +1152,11 @@ async function findSessionForCosts(
   if (wantsUpcomingSession(text) && !hasSessionSelector(selector)) return soonestUpcoming(env, groupId);
 
   if (hasSessionSelector(selector)) {
-    const where = ["s.group_id = ?"];
-    const binds: unknown[] = [groupId];
-    if (selector?.date) {
-      where.push("s.date = ?");
-      binds.push(selector.date);
+    for (const sel of loosenSelector(selector!)) {
+      const row = await querySessionRow(env, groupId, sel, "DESC");
+      if (row) return row;
     }
-    if (selector?.startTime) {
-      where.push("s.start_time = ?");
-      binds.push(selector.startTime);
-    }
-    if (selector?.venue) {
-      where.push("lower(s.venue) LIKE ?");
-      binds.push(`%${selector.venue.toLowerCase()}%`);
-    }
-
-    const result = await env.DB.prepare(
-      `SELECT s.id, s.date, s.start_time, s.venue, s.location, s.note, s.status,
-        (SELECT COUNT(*) FROM session_members sm WHERE sm.session_id = s.id AND sm.attended = 1) AS attendee_count
-       FROM sessions s
-       WHERE ${where.join(" AND ")}
-       ORDER BY CASE WHEN s.status = 'upcoming' THEN 0 ELSE 1 END, s.date DESC, s.start_time DESC
-       LIMIT 1`
-    )
-      .bind(...binds)
-      .first<SessionRow>();
-
-    return result ?? null;
+    return null;
   }
 
   const result = await env.DB.prepare(
@@ -1201,36 +1180,72 @@ async function findSessionForCosts(
   return result ?? null;
 }
 
-async function findSessionForAttendees(env: Env, groupId: string, selector?: SessionDraft): Promise<SessionRow | null> {
-  if (!hasSessionSelector(selector)) return soonestUpcoming(env, groupId);
-
+// Một query khớp buổi theo selector (date/startTime/venue). dateDir=ASC ưu tiên
+// buổi sớm nhất, DESC ưu tiên gần đây nhất.
+async function querySessionRow(
+  env: Env,
+  groupId: string,
+  selector: SessionDraft,
+  dateDir: "ASC" | "DESC" = "ASC"
+): Promise<SessionRow | null> {
   const where = ["s.group_id = ?"];
   const binds: unknown[] = [groupId];
-  if (selector?.date) {
+  if (selector.date) {
     where.push("s.date = ?");
     binds.push(selector.date);
   }
-  if (selector?.startTime) {
+  if (selector.startTime) {
     where.push("s.start_time = ?");
     binds.push(selector.startTime);
   }
-  if (selector?.venue) {
+  if (selector.venue) {
     where.push("lower(s.venue) LIKE ?");
     binds.push(`%${selector.venue.toLowerCase()}%`);
   }
-
   const result = await env.DB.prepare(
     `SELECT s.id, s.date, s.start_time, s.venue, s.location, s.note, s.status,
       (SELECT COUNT(*) FROM session_members sm WHERE sm.session_id = s.id AND sm.attended = 1) AS attendee_count
      FROM sessions s
      WHERE ${where.join(" AND ")}
-     ORDER BY CASE WHEN s.status = 'upcoming' THEN 0 ELSE 1 END, s.date ASC, s.start_time ASC
+     ORDER BY CASE WHEN s.status = 'upcoming' THEN 0 ELSE 1 END, s.date ${dateDir}, s.start_time ${dateDir}
      LIMIT 1`
   )
     .bind(...binds)
     .first<SessionRow>();
-
   return result ?? null;
+}
+
+// Nới lỏng selector dần để tránh "ràng buộc quá chặt": NLU đôi khi nhét thêm giờ
+// (vd từ "hiện tại"/"bây giờ") hoặc sân thừa làm trượt khớp dù NGÀY vẫn đúng.
+// Thứ tự tin cậy: ngày > sân > giờ. Bỏ giờ trước, rồi bỏ sân, giữ ngày làm mỏ neo.
+function* loosenSelector(selector: SessionDraft): Generator<SessionDraft> {
+  const variants: SessionDraft[] = [
+    selector,
+    { date: selector.date, venue: selector.venue },
+    { date: selector.date },
+    { venue: selector.venue },
+  ];
+  const seen = new Set<string>();
+  for (const v of variants) {
+    const clean: SessionDraft = {};
+    if (v.date) clean.date = v.date;
+    if (v.startTime) clean.startTime = v.startTime;
+    if (v.venue) clean.venue = v.venue;
+    if (!hasSessionSelector(clean)) continue;
+    const key = JSON.stringify(clean);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    yield clean;
+  }
+}
+
+async function findSessionForAttendees(env: Env, groupId: string, selector?: SessionDraft): Promise<SessionRow | null> {
+  if (!hasSessionSelector(selector)) return soonestUpcoming(env, groupId);
+  for (const sel of loosenSelector(selector!)) {
+    const row = await querySessionRow(env, groupId, sel, "ASC");
+    if (row) return row;
+  }
+  return null;
 }
 
 async function handleQuery(
