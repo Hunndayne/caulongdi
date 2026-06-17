@@ -106,11 +106,11 @@ type PaymentNotificationRow = {
   amount_owed: number;
 };
 
-const RECEIPT_AI_MODEL = "@cf/mistralai/mistral-small-3.1-24b-instruct";
+const RECEIPT_AI_MODEL = "@cf/google/gemma-4-26b-a4b-it";
 const RECEIPT_AI_IS_REASONING = RECEIPT_AI_MODEL.includes("gemma-4");
-const RECEIPT_PROMPT_VERSION = "receipt-mistral-vi-v8";
+const RECEIPT_PROMPT_VERSION = "receipt-gemma4-raw-v1";
 const RECEIPT_AI_FEATURE = "receipt_scan";
-const RECEIPT_AI_MAX_COMPLETION_TOKENS = 4000;
+const RECEIPT_AI_MAX_COMPLETION_TOKENS = 12000;
 const RECEIPT_AI_REASONING_EFFORT = "low";
 const GEMMA4_INPUT_NEURONS_PER_MILLION_TOKENS = 9091;
 const GEMMA4_OUTPUT_NEURONS_PER_MILLION_TOKENS = 27273;
@@ -1979,11 +1979,8 @@ sessions.post("/:id/receipt/parse", async (c) => {
     "",
     "MANDATORY: items MUST list every visible purchasable row in the Description/item table — typically 10-30 rows on supermarket receipts.",
     "Never collapse the table into one Tong hoa don/Tong cong summary item. A rough label for a row is far better than skipping that row.",
-    "Labels: restore to clean, readable Vietnamese with correct diacritics, lowercase (except brand/proper names). Receipts print ALL-CAPS, no accents, heavily abbreviated — reconstruct the natural Vietnamese product name.",
-    "Expand common abbreviations: B.=bánh, TT/T.=thịt, SCU/Scu=sữa chua, Sc=sữa chua, vnm/VNM=Vinamilk, T.C=tiệt trùng, NZ=New Zealand, Xxich=xúc xích, NTC=nước trái cây, 'it duong'=ít đường, 'k duong'=không đường, KG/kg=kg, ML=ml.",
-    "Examples: 'Sc vnm it duong' = 'sữa chua Vinamilk ít đường'; 'NTC cam' = 'nước trái cây cam'.",
-    "Keep brand/proper names as printed (Vissan, Bibigo, CJ, Aquafina, Vinamilk, Co.opmart, Coop Select, Ngọc Thơm, Lý Sơn).",
-    "Do NOT invent products or details not on the receipt. If a token is unreadable, keep it close to the original characters instead of guessing a different product.",
+    "Labels: copy the product name exactly as it appears on the receipt. Do not translate, expand abbreviations, or add diacritics.",
+    "Do NOT invent products or details not on the receipt. If a token is unreadable, keep whatever characters are visible.",
     "",
     "Parse rules:",
     "Read only purchasable goods/services in the item area.",
