@@ -1041,6 +1041,62 @@ function getReceiptScanReservedNeurons(c: any) {
   return readPositiveInteger(c.env.AI_RECEIPT_SCAN_RESERVED_NEURONS, DEFAULT_RECEIPT_SCAN_RESERVED_NEURONS);
 }
 
+async function normalizeReceiptLabelsVi(c: any, items: ReceiptParsedCost[]): Promise<Map<string, string>> {
+  const apiKey = c.env.DEEPSEEK_API_KEY?.trim();
+  if (!apiKey) return new Map();
+
+  const baseUrl = (c.env.DEEPSEEK_BASE_URL?.trim() || "https://api.deepseek.com").replace(/\/+$/, "");
+  const model = c.env.DEEPSEEK_MODEL?.trim() || "deepseek-chat";
+
+  const labels = [...new Set(items.map((item) => item.label))];
+  if (labels.length === 0) return new Map();
+
+  try {
+    const resp = await fetch(`${baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model,
+        messages: [
+          {
+            role: "system",
+            content: [
+              "Chuẩn hóa nhãn sản phẩm từ hóa đơn sang tiếng Việt có dấu.",
+              "Input: JSON array các nhãn gốc (in hoa, không dấu, viết tắt).",
+              "Output: JSON object, key là nhãn gốc, value là tên tiếng Việt đầy đủ có dấu.",
+              "Mở rộng viết tắt: SC/Scu=sữa chua, vnm/VNM=Vinamilk, TT/T.=thịt, B.=bánh, NTC=nước trái cây, T.C=tiệt trùng, Xxich=xúc xích, 'it duong'=ít đường, 'k duong'=không đường.",
+              "Giữ nguyên tên thương hiệu (Vissan, Bibigo, TH, Vinamilk, Aquafina...).",
+              "Chỉ trả JSON object, không giải thích.",
+            ].join(" "),
+          },
+          { role: "user", content: JSON.stringify(labels) },
+        ],
+        temperature: 0,
+        max_tokens: 800,
+        response_format: { type: "json_object" },
+        stream: false,
+      }),
+    });
+
+    if (!resp.ok) {
+      console.warn("[receipt-normalize] deepseek http", resp.status);
+      return new Map();
+    }
+
+    const data = (await resp.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    const content = data?.choices?.[0]?.message?.content ?? "";
+    const obj = JSON.parse(content) as Record<string, unknown>;
+    return new Map(
+      Object.entries(obj)
+        .filter(([, v]) => typeof v === "string" && (v as string).trim())
+        .map(([k, v]) => [k, (v as string).trim()])
+    );
+  } catch (err) {
+    console.warn("[receipt-normalize] failed, keeping raw labels", err);
+    return new Map();
+  }
+}
+
 function getUtcDayKey(date = new Date()) {
   return date.toISOString().slice(0, 10);
 }
@@ -2070,6 +2126,11 @@ sessions.post("/:id/receipt/parse", async (c) => {
       parsed = safeParsed;
     }
     console.log("[receipt-ai] parsed items", parsed.items.length, "total", parsed.totalAmount);
+
+    const labelMap = await normalizeReceiptLabelsVi(c, parsed.items);
+    if (labelMap.size > 0) {
+      parsed = { ...parsed, items: parsed.items.map((item) => ({ ...item, label: labelMap.get(item.label) ?? item.label })) };
+    }
 
     await adjustAiNeuronReservation(
       c,
