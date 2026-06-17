@@ -106,7 +106,7 @@ type PaymentNotificationRow = {
   amount_owed: number;
 };
 
-const RECEIPT_AI_MODEL = "@cf/google/gemma-4-26b-a4b-it";
+const RECEIPT_AI_MODEL = "@cf/mistralai/mistral-small-3.1-24b-instruct";
 const RECEIPT_AI_IS_REASONING = RECEIPT_AI_MODEL.includes("gemma-4");
 const RECEIPT_PROMPT_VERSION = "receipt-gemma4-raw-v1";
 const RECEIPT_AI_FEATURE = "receipt_scan";
