@@ -24,7 +24,6 @@ function isMissingGroupSchema(error: unknown) {
 }
 
 async function canAccessGroup(c: any, groupId: string) {
-  if (c.get("userRole") === "admin") return true;
   const membership = await c.env.DB.prepare(`
     SELECT role
     FROM group_members
@@ -51,25 +50,32 @@ function mapMemberStats(row: MemberStatsRow) {
 async function getGroupMemberStats(c: any, groupId: string) {
   const rows = await c.env.DB.prepare(`
     WITH scoped_members AS (
-      SELECT m.id, m.user_id, m.name, m.avatar_color
+      SELECT m.id, m.group_id, m.user_id, m.name, m.avatar_color
       FROM members m
       WHERE m.is_active = 1
         AND m.group_id = ?
     ),
     attendance AS (
-      SELECT sm.member_id, COUNT(DISTINCT sm.session_id) AS attend_count
-      FROM session_members sm
-      JOIN scoped_members m ON m.id = sm.member_id
-      WHERE sm.attended = 1
-      GROUP BY sm.member_id
+      SELECT m.id AS member_id, COUNT(DISTINCT s.id) AS attend_count
+      FROM scoped_members m
+      LEFT JOIN session_members sm
+        ON sm.member_id = m.id
+       AND sm.attended = 1
+      LEFT JOIN sessions s
+        ON s.id = sm.session_id
+       AND s.group_id = m.group_id
+      GROUP BY m.id
     ),
     payment_totals AS (
-      SELECT p.member_id,
-        COALESCE(SUM(p.amount_owed), 0) AS total_owed,
-        COALESCE(SUM(CASE WHEN p.paid = 1 THEN p.amount_owed ELSE 0 END), 0) AS total_paid
-      FROM payments p
-      JOIN scoped_members m ON m.id = p.member_id
-      GROUP BY p.member_id
+      SELECT m.id AS member_id,
+        COALESCE(SUM(CASE WHEN s.id IS NOT NULL THEN p.amount_owed ELSE 0 END), 0) AS total_owed,
+        COALESCE(SUM(CASE WHEN s.id IS NOT NULL AND p.paid = 1 THEN p.amount_owed ELSE 0 END), 0) AS total_paid
+      FROM scoped_members m
+      LEFT JOIN payments p ON p.member_id = m.id
+      LEFT JOIN sessions s
+        ON s.id = p.session_id
+       AND s.group_id = m.group_id
+      GROUP BY m.id
     )
     SELECT
       m.id AS member_id,
@@ -90,31 +96,15 @@ async function getGroupMemberStats(c: any, groupId: string) {
   return rows.results.map(mapMemberStats);
 }
 
-async function getAllMemberStats(c: any) {
-  const isAdmin = c.get("userRole") === "admin";
-  const scopedMembersSql = isAdmin
-    ? `
-      SELECT m.id, m.user_id, m.name, m.avatar_color
-      FROM members m
-      WHERE m.is_active = 1
-    `
-    : `
-      SELECT m.id, m.user_id, m.name, m.avatar_color
-      FROM members m
-      WHERE m.is_active = 1
-        AND (
-          m.group_id IS NULL
-          OR m.group_id IN (
-            SELECT gm.group_id
-            FROM group_members gm
-            WHERE gm.user_id = ?
-          )
-        )
-    `;
-
+async function getJoinedGroupMemberStats(c: any) {
   const rows = await c.env.DB.prepare(`
     WITH scoped_members AS (
-      ${scopedMembersSql}
+      SELECT m.id, m.group_id, m.user_id, m.name, m.avatar_color
+      FROM members m
+      JOIN group_members viewer_gm
+        ON viewer_gm.group_id = m.group_id
+       AND viewer_gm.user_id = ?
+      WHERE m.is_active = 1
     ),
     member_groups AS (
       SELECT
@@ -138,11 +128,14 @@ async function getAllMemberStats(c: any) {
           WHEN m.user_id IS NOT NULL THEN 'user:' || m.user_id
           ELSE 'member:' || m.id
         END AS member_id,
-        COUNT(DISTINCT sm.session_id) AS attend_count
+        COUNT(DISTINCT s.id) AS attend_count
       FROM scoped_members m
       LEFT JOIN session_members sm
         ON sm.member_id = m.id
        AND sm.attended = 1
+      LEFT JOIN sessions s
+        ON s.id = sm.session_id
+       AND s.group_id = m.group_id
       GROUP BY
         CASE
           WHEN m.user_id IS NOT NULL THEN 'user:' || m.user_id
@@ -155,10 +148,13 @@ async function getAllMemberStats(c: any) {
           WHEN m.user_id IS NOT NULL THEN 'user:' || m.user_id
           ELSE 'member:' || m.id
         END AS member_id,
-        COALESCE(SUM(p.amount_owed), 0) AS total_owed,
-        COALESCE(SUM(CASE WHEN p.paid = 1 THEN p.amount_owed ELSE 0 END), 0) AS total_paid
+        COALESCE(SUM(CASE WHEN s.id IS NOT NULL THEN p.amount_owed ELSE 0 END), 0) AS total_owed,
+        COALESCE(SUM(CASE WHEN s.id IS NOT NULL AND p.paid = 1 THEN p.amount_owed ELSE 0 END), 0) AS total_paid
       FROM scoped_members m
       LEFT JOIN payments p ON p.member_id = m.id
+      LEFT JOIN sessions s
+        ON s.id = p.session_id
+       AND s.group_id = m.group_id
       GROUP BY
         CASE
           WHEN m.user_id IS NOT NULL THEN 'user:' || m.user_id
@@ -178,10 +174,18 @@ async function getAllMemberStats(c: any) {
     LEFT JOIN payment_totals pt ON pt.member_id = mg.member_id
     ORDER BY attend_count DESC, mg.member_name COLLATE NOCASE ASC
   `)
-    .bind(...(isAdmin ? [] : [c.get("userId")]))
+    .bind(c.get("userId"))
     .all() as { results: MemberStatsRow[] };
 
   return rows.results.map(mapMemberStats);
+}
+
+function emptyStatsResponse() {
+  return {
+    totalSessions: 0,
+    memberStats: [],
+    monthlyStats: [],
+  };
 }
 
 stats.get("/", async (c) => {
@@ -196,25 +200,19 @@ stats.get("/", async (c) => {
       ? await c.env.DB.prepare("SELECT COUNT(*) as cnt FROM sessions WHERE group_id = ?")
         .bind(groupId)
         .first<CountRow>()
-      : c.get("userRole") === "admin"
-        ? await c.env.DB.prepare("SELECT COUNT(*) as cnt FROM sessions").first<CountRow>()
-        : await c.env.DB.prepare(`
+      : await c.env.DB.prepare(`
           SELECT COUNT(*) as cnt
           FROM sessions s
-          WHERE s.group_id IS NULL
-             OR EXISTS (
-               SELECT 1
-               FROM group_members gm
-               WHERE gm.group_id = s.group_id
-                 AND gm.user_id = ?
-             )
+          JOIN group_members gm
+            ON gm.group_id = s.group_id
+           AND gm.user_id = ?
         `)
           .bind(c.get("userId"))
           .first<CountRow>();
 
     const memberStats = groupId
       ? await getGroupMemberStats(c, groupId)
-      : await getAllMemberStats(c);
+      : await getJoinedGroupMemberStats(c);
 
     const monthlyStats = groupId
       ? await c.env.DB.prepare(`
@@ -233,36 +231,18 @@ stats.get("/", async (c) => {
       `)
         .bind(groupId)
         .all()
-      : c.get("userRole") === "admin"
-        ? await c.env.DB.prepare(`
+      : await c.env.DB.prepare(`
           SELECT
             substr(s.date, 1, 7) as month,
             COUNT(*) as session_count,
             COALESCE(SUM(c.total), 0) as total_cost
           FROM sessions s
+          JOIN group_members gm
+            ON gm.group_id = s.group_id
+           AND gm.user_id = ?
           LEFT JOIN (
             SELECT session_id, SUM(amount) as total FROM costs GROUP BY session_id
           ) c ON c.session_id = s.id
-          GROUP BY month
-          ORDER BY month DESC
-          LIMIT 12
-        `).all()
-        : await c.env.DB.prepare(`
-          SELECT
-            substr(s.date, 1, 7) as month,
-            COUNT(*) as session_count,
-            COALESCE(SUM(c.total), 0) as total_cost
-          FROM sessions s
-          LEFT JOIN (
-            SELECT session_id, SUM(amount) as total FROM costs GROUP BY session_id
-          ) c ON c.session_id = s.id
-          WHERE s.group_id IS NULL
-             OR EXISTS (
-               SELECT 1
-               FROM group_members gm
-               WHERE gm.group_id = s.group_id
-                 AND gm.user_id = ?
-             )
           GROUP BY month
           ORDER BY month DESC
           LIMIT 12
@@ -277,63 +257,8 @@ stats.get("/", async (c) => {
     });
   } catch (error) {
     if (!isMissingGroupSchema(error)) throw error;
+    return c.json(emptyStatsResponse());
   }
-
-  const totalSessionsRow = await c.env.DB.prepare("SELECT COUNT(*) as cnt FROM sessions").first<CountRow>();
-  const memberStats = await c.env.DB.prepare(`
-    WITH scoped_members AS (
-      SELECT m.id, m.user_id, m.name, m.avatar_color
-      FROM members m
-      WHERE m.is_active = 1
-    ),
-    attendance AS (
-      SELECT sm.member_id, COUNT(DISTINCT sm.session_id) AS attend_count
-      FROM session_members sm
-      JOIN scoped_members m ON m.id = sm.member_id
-      WHERE sm.attended = 1
-      GROUP BY sm.member_id
-    ),
-    payment_totals AS (
-      SELECT p.member_id,
-        COALESCE(SUM(p.amount_owed), 0) AS total_owed,
-        COALESCE(SUM(CASE WHEN p.paid = 1 THEN p.amount_owed ELSE 0 END), 0) AS total_paid
-      FROM payments p
-      JOIN scoped_members m ON m.id = p.member_id
-      GROUP BY p.member_id
-    )
-    SELECT
-      m.id AS member_id,
-      m.user_id,
-      m.name AS member_name,
-      m.avatar_color,
-      COALESCE(a.attend_count, 0) AS attend_count,
-      COALESCE(pt.total_owed, 0) AS total_owed,
-      COALESCE(pt.total_paid, 0) AS total_paid
-    FROM scoped_members m
-    LEFT JOIN attendance a ON a.member_id = m.id
-    LEFT JOIN payment_totals pt ON pt.member_id = m.id
-    ORDER BY attend_count DESC, m.name COLLATE NOCASE ASC
-  `).all<MemberStatsRow>();
-
-  const monthlyStats = await c.env.DB.prepare(`
-    SELECT
-      substr(s.date, 1, 7) as month,
-      COUNT(*) as session_count,
-      COALESCE(SUM(c.total), 0) as total_cost
-    FROM sessions s
-    LEFT JOIN (
-      SELECT session_id, SUM(amount) as total FROM costs GROUP BY session_id
-    ) c ON c.session_id = s.id
-    GROUP BY month
-    ORDER BY month DESC
-    LIMIT 12
-  `).all();
-
-  return c.json({
-    totalSessions: totalSessionsRow?.cnt ?? 0,
-    memberStats: memberStats.results.map(mapMemberStats),
-    monthlyStats: monthlyStats.results,
-  });
 });
 
 export default stats;
