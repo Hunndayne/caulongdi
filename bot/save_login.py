@@ -8,8 +8,16 @@ terminal bấm Enter → cookie lưu vào STORAGE_STATE (mặc định storage_s
 import os
 from pathlib import Path
 
-from dotenv import load_dotenv
-from playwright.sync_api import sync_playwright
+try:
+    from dotenv import load_dotenv
+    from playwright.sync_api import sync_playwright
+except ModuleNotFoundError as exc:
+    missing = exc.name or str(exc)
+    raise SystemExit(
+        f"Missing Python dependency '{missing}'. "
+        "From the bot folder, activate bot\\.venv or run: "
+        ".\\.venv\\Scripts\\python.exe -m pip install -r requirements.txt"
+    ) from exc
 
 # Không import config — bước này chỉ cần STORAGE_STATE, chưa cần secret/thread.
 load_dotenv(Path(__file__).parent / ".env")
@@ -23,9 +31,9 @@ def main() -> None:
         launch_args = ["--disable-blink-features=AutomationControlled"]
         try:
             browser = p.chromium.launch(headless=False, channel="chrome", args=launch_args)
-            print("Đang dùng Google Chrome thật.")
+            print("Using real Google Chrome.")
         except Exception:  # noqa: BLE001 — máy chưa cài Chrome thì lùi về Chromium bundled
-            print("Không thấy Google Chrome — dùng Chromium bundled (2FA có thể bị trắng trang).")
+            print("Google Chrome not found - using bundled Chromium (2FA may show a blank page).")
             browser = p.chromium.launch(headless=False, args=launch_args)
         # UA + viewport như người thật; giấu navigator.webdriver để FB bớt nghi.
         context = browser.new_context(
@@ -38,9 +46,9 @@ def main() -> None:
         context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         page = context.new_page()
         page.goto("https://www.messenger.com/")
-        input("\n>> Đăng nhập xong (thấy danh sách chat) thì bấm Enter ở đây để lưu cookie... ")
+        input("\n>> After login finishes and chats are visible, press Enter here to save cookies... ")
         context.storage_state(path=STORAGE_STATE)
-        print(f"Đã lưu cookie vào {STORAGE_STATE}")
+        print(f"Saved cookies to {STORAGE_STATE}")
         browser.close()
 
 

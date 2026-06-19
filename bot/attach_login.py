@@ -19,8 +19,16 @@ Các bước (Windows):
 import os
 from pathlib import Path
 
-from dotenv import load_dotenv
-from playwright.sync_api import sync_playwright
+try:
+    from dotenv import load_dotenv
+    from playwright.sync_api import sync_playwright
+except ModuleNotFoundError as exc:
+    missing = exc.name or str(exc)
+    raise SystemExit(
+        f"Missing Python dependency '{missing}'. "
+        "From the bot folder, activate bot\\.venv or run: "
+        ".\\.venv\\Scripts\\python.exe -m pip install -r requirements.txt"
+    ) from exc
 
 load_dotenv(Path(__file__).parent / ".env")
 STORAGE_STATE = str(Path(__file__).parent / os.getenv("STORAGE_STATE", "storage_state.json"))
@@ -33,23 +41,23 @@ def main() -> None:
             browser = p.chromium.connect_over_cdp(CDP_URL)
         except Exception as exc:  # noqa: BLE001
             raise SystemExit(
-                f"Không kết nối được Chrome ở {CDP_URL}.\n"
-                "Bạn đã mở Chrome với --remote-debugging-port=9222 chưa? "
-                "Xem hướng dẫn ở đầu file."
+                f"Could not connect to Chrome at {CDP_URL}.\n"
+                "Did you start Chrome with --remote-debugging-port=9222? "
+                "See the instructions at the top of this file."
             ) from exc
 
         contexts = browser.contexts
         if not contexts:
-            raise SystemExit("Chrome chưa có cửa sổ/tab nào — mở messenger.com trong Chrome đó trước.")
+            raise SystemExit("Chrome has no windows/tabs yet - open messenger.com in that Chrome first.")
         context = contexts[0]
 
         # Liệt kê tab để bạn chắc đang đúng cửa sổ.
         for page in context.pages:
             print("Tab:", page.url)
 
-        input("\n>> Đăng nhập messenger.com xong (thấy danh sách chat) thì bấm Enter để lưu cookie... ")
+        input("\n>> After messenger.com login finishes and chats are visible, press Enter to save cookies... ")
         context.storage_state(path=STORAGE_STATE)
-        print(f"Đã lưu cookie vào {STORAGE_STATE}")
+        print(f"Saved cookies to {STORAGE_STATE}")
         # KHÔNG browser.close() — để Chrome của bạn nguyên vẹn, chỉ ngắt kết nối.
 
 

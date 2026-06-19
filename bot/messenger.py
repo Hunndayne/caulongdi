@@ -21,7 +21,14 @@ _BROWSER_ARGS = [
     "--disable-gpu",
     "--no-sandbox",
     "--disable-extensions",
+    "--disable-blink-features=AutomationControlled",
 ]
+
+_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+_VIEWPORT = {"width": 1280, "height": 800}
 
 # Ô soạn tin nhắn của messenger.
 _TEXTBOX_SELECTOR = 'div[role="textbox"][contenteditable="true"]'
@@ -114,7 +121,16 @@ class MessengerClient:
         self._browser = await self._playwright.chromium.launch(
             headless=config.HEADLESS, args=_BROWSER_ARGS
         )
-        self._context = await self._browser.new_context(storage_state=config.STORAGE_STATE)
+        self._context = await self._browser.new_context(
+            storage_state=config.STORAGE_STATE,
+            user_agent=_USER_AGENT,
+            viewport=_VIEWPORT,
+            locale="vi-VN",
+            timezone_id=config.BOT_TZ,
+        )
+        await self._context.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        )
         await self._context.route("**/*", self._block_heavy_resources)
         for thread_id in config.THREAD_IDS:
             page = await self._context.new_page()

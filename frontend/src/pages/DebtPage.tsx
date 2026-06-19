@@ -23,22 +23,22 @@ export default function DebtPage() {
   return (
     <div>
       <div className="mb-5 flex items-center justify-between">
-        <h1 className="text-xl font-bold text-gray-900">Cong no</h1>
+        <h1 className="text-xl font-bold text-gray-900">Công nợ</h1>
       </div>
 
       <div className="mb-5">
-        <GroupSelector value={selectedGroupId} onChange={setSelectedGroupId} allowAll allLabel="Tong hop tat ca nhom" />
+        <GroupSelector value={selectedGroupId} onChange={setSelectedGroupId} allowAll allLabel="Tổng hợp tất cả nhóm" />
       </div>
 
       {loading ? (
-        <div className="py-12 text-center text-gray-400">Dang tai...</div>
+        <div className="py-12 text-center text-gray-400">Đang tải...</div>
       ) : stats.length === 0 ? (
-        <EmptyState icon="💰" title="Chua co du lieu" description="Cong no se hien thi sau khi co buoi choi" />
+        <EmptyState icon="💰" title="Chưa có dữ liệu" description="Công nợ sẽ hiển thị sau khi có buổi chơi" />
       ) : (
         <div className="space-y-4">
           {totalDebt > 0 && (
             <div className="flex items-center justify-between rounded-xl border border-red-200 bg-red-50 p-4">
-              <span className="font-medium text-red-700">Tong chua thu</span>
+              <span className="font-medium text-red-700">Tổng chưa thu</span>
               <span className="text-lg font-bold text-red-800">{formatCurrency(totalDebt)}</span>
             </div>
           )}
@@ -47,9 +47,9 @@ export default function DebtPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-gray-100 bg-gray-50">
-                  <th className="p-3 text-left font-medium text-gray-600">Thanh vien</th>
-                  <th className="p-3 text-right font-medium text-gray-600">Da tra</th>
-                  <th className="p-3 text-right font-medium text-gray-600">Con no</th>
+                  <th className="p-3 text-left font-medium text-gray-600">Thành viên</th>
+                  <th className="p-3 text-right font-medium text-gray-600">Đã trả</th>
+                  <th className="p-3 text-right font-medium text-gray-600">Còn nợ</th>
                 </tr>
               </thead>
               <tbody>
@@ -60,14 +60,14 @@ export default function DebtPage() {
                         <Avatar name={s.memberName} color={s.avatarColor} size="sm" />
                         <div>
                           <div className="font-medium text-gray-900">{s.memberName}</div>
-                          <div className="text-xs text-gray-400">{s.attendCount} buoi</div>
+                          <div className="text-xs text-gray-400">{s.attendCount} buổi</div>
                         </div>
                       </div>
                     </td>
                     <td className="p-3 text-right font-medium text-green-700">{formatCurrency(s.totalPaid)}</td>
                     <td className="p-3 text-right">
                       <span className={`font-semibold ${s.debt > 0 ? "text-red-600" : "text-gray-400"}`}>
-                        {s.debt > 0 ? formatCurrency(s.debt) : "Du"}
+                        {s.debt > 0 ? formatCurrency(s.debt) : "Đủ"}
                       </span>
                     </td>
                   </tr>
