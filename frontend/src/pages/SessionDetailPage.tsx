@@ -1107,6 +1107,13 @@ export default function SessionDetailPage() {
   };
 
   const totalCost = s.costs.reduce((sum, cost) => sum + cost.amount, 0);
+  const totalTransferAmount = paymentRows.reduce((sum, row) => sum + row.payment.amount_owed, 0);
+  const confirmedTransferAmount = paymentRows.reduce(
+    (sum, row) => sum + (row.payment.paid ? row.payment.amount_owed : 0),
+    0
+  );
+  const paymentProgressTarget = totalCost > 0 ? totalCost : totalTransferAmount;
+  const confirmedCostProgress = Math.min(confirmedTransferAmount, paymentProgressTarget);
 
   const buildQrData = (paymentId: string, debtor: Member, recipient: Member, amount: number): PaymentQrData | null => {
     if (!recipient.user_bank_bin || !recipient.user_bank_account_number || !recipient.user_bank_account_name) return null;
@@ -2008,9 +2015,15 @@ export default function SessionDetailPage() {
                   </span>
                 </div>
                 <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-600">Đã thanh toán</span>
+                  <span className="text-sm font-medium text-gray-900">
+                    {formatCurrency(confirmedCostProgress)}/{formatCurrency(paymentProgressTarget)}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
                   <span className="text-sm text-gray-600">Tổng cần chuyển</span>
                   <span className="text-sm font-medium text-gray-900">
-                    {formatCurrency(paymentRows.reduce((sum, row) => sum + row.payment.amount_owed, 0))}
+                    {formatCurrency(totalTransferAmount)}
                   </span>
                 </div>
               </div>
