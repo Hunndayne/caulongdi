@@ -173,6 +173,16 @@ function parseImportAmount(value: unknown) {
   return Number.isFinite(amount) && amount > 0 ? amount : null;
 }
 
+function onlyDigits(value: unknown) {
+  return String(value ?? "").replace(/[^\d]/g, "");
+}
+
+function formatMoneyInput(value: unknown) {
+  const digits = onlyDigits(value).replace(/^0+(?=\d)/, "");
+  if (!digits) return "";
+  return digits.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+}
+
 function parseImportQuantity(value: unknown) {
   if (String(value ?? "").trim() === "") return 1;
   const quantity = Math.round(Number(String(value ?? "").replace(/[^\d.]/g, "")));
@@ -952,9 +962,9 @@ export default function SessionDetailPage() {
 
   const handleSaveCost = async () => {
     if (!costForm.label.trim() || !costForm.amount) return;
-    const unitAmount = parseFloat(costForm.amount);
+    const unitAmount = parseImportAmount(costForm.amount);
     const quantity = Math.round(Number(costForm.quantity || "1"));
-    if (!Number.isFinite(unitAmount) || unitAmount <= 0 || !Number.isFinite(quantity) || quantity <= 0) return;
+    if (!unitAmount || !Number.isFinite(quantity) || quantity <= 0) return;
     if (costForm.consumerMode === "specific" && costForm.consumerIds.length === 0) {
       alert("Chọn ít nhất một người dùng cho món này.");
       return;
@@ -1000,10 +1010,9 @@ export default function SessionDetailPage() {
   };
 
   const updateCostAmountInput = (raw: string) => {
-    const parsed = parseInt(raw, 10);
     setCostForm((current) => ({
       ...current,
-      amount: Number.isFinite(parsed) && parsed > 0 ? String(parsed) : raw.replace(/[^\d]/g, ""),
+      amount: onlyDigits(raw),
     }));
   };
 
@@ -1659,12 +1668,10 @@ export default function SessionDetailPage() {
                   ))}
                 </select>
                 <Input
-                  value={costForm.amount}
+                  value={formatMoneyInput(costForm.amount)}
                   onChange={(event) => updateCostAmountInput(event.target.value)}
-                  placeholder="Đơn giá (VNĐ)"
-                  type="number"
-                  min="0"
-                  step="1"
+                  placeholder="Đơn giá (VD: 100.000)"
+                  inputMode="numeric"
                 />
                 <Input
                   value={costForm.quantity}
@@ -1765,12 +1772,10 @@ export default function SessionDetailPage() {
                           ))}
                         </select>
                         <Input
-                          value={costForm.amount}
+                          value={formatMoneyInput(costForm.amount)}
                           onChange={(event) => updateCostAmountInput(event.target.value)}
-                          placeholder="Đơn giá (VNĐ)"
-                          type="number"
-                          min="0"
-                          step="1"
+                          placeholder="Đơn giá (VD: 100.000)"
+                          inputMode="numeric"
                         />
                         <Input
                           value={costForm.quantity}
@@ -2116,13 +2121,11 @@ export default function SessionDetailPage() {
                       ))}
                     </select>
                     <Input
-                      value={item.unitAmount || ""}
+                      value={formatMoneyInput(item.unitAmount || "")}
                       onChange={(event) => updateReceiptDraftAmount(item.id, "unitAmount", event.target.value)}
                       disabled={!item.selected || savingReceiptDraft}
                       placeholder="Đơn giá"
-                      type="number"
-                      min="0"
-                      step="1"
+                      inputMode="numeric"
                     />
                     <Input
                       value={item.quantity || ""}
@@ -2201,13 +2204,11 @@ export default function SessionDetailPage() {
             <div className="flex items-center justify-between gap-2 rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm">
               <label className="font-medium text-gray-700">Giảm giá (phân bổ vào các món)</label>
               <Input
-                value={receiptDiscount}
-                onChange={(event) => setReceiptDiscount(event.target.value)}
+                value={formatMoneyInput(receiptDiscount)}
+                onChange={(event) => setReceiptDiscount(onlyDigits(event.target.value))}
                 disabled={savingReceiptDraft}
                 placeholder="0"
-                type="number"
-                min="0"
-                step="1000"
+                inputMode="numeric"
                 className="w-32 text-right"
               />
             </div>

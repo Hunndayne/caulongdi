@@ -177,19 +177,19 @@ export default function SessionsPage() {
               placeholder="Kèo tối thứ 5"
             />
           </div>
+          <div>
+            <label className="text-sm font-medium text-gray-700 block mb-1">Ngày *</label>
+            <Input type="date" value={form.date} onChange={(e) => setForm((current) => ({ ...current, date: e.target.value }))} />
+          </div>
           <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-sm font-medium text-gray-700 block mb-1">Ngày *</label>
-              <Input type="date" value={form.date} onChange={(e) => setForm((current) => ({ ...current, date: e.target.value }))} />
-            </div>
             <div>
               <label className="text-sm font-medium text-gray-700 block mb-1">Giờ bắt đầu *</label>
               <Input type="time" value={form.startTime} onChange={(e) => setForm((current) => ({ ...current, startTime: e.target.value }))} />
             </div>
-          </div>
-          <div>
-            <label className="text-sm font-medium text-gray-700 block mb-1">Giờ kết thúc</label>
-            <Input type="time" value={form.endTime} onChange={(e) => setForm((current) => ({ ...current, endTime: e.target.value }))} />
+            <div>
+              <label className="text-sm font-medium text-gray-700 block mb-1">Giờ kết thúc</label>
+              <Input type="time" value={form.endTime} onChange={(e) => setForm((current) => ({ ...current, endTime: e.target.value }))} />
+            </div>
           </div>
           <div>
             <label className="text-sm font-medium text-gray-700 block mb-1">Sân / địa điểm *</label>
