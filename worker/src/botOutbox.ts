@@ -46,12 +46,24 @@ type ReminderRow = {
   id: string;
   date: string;
   start_time: string;
+  end_time?: string | null;
+  name?: string | null;
   venue: string;
   location: string | null;
   group_id: string;
   attendee_count: number;
   attendee_names: string | null;
 };
+
+function sessionTitle(session: { name?: string | null; venue: string }) {
+  return session.name?.trim() || session.venue;
+}
+
+function timeRange(session: { start_time?: string; startTime?: string; end_time?: string | null; endTime?: string | null }) {
+  const start = session.start_time ?? session.startTime ?? "";
+  const end = session.end_time ?? session.endTime;
+  return end ? `${start}-${end}` : start;
+}
 
 /** Cron: nhắc các kèo sắp diễn ra trong REMIND_AHEAD_MINUTES tới (dedupe theo session). */
 export async function enqueueSessionReminders(env: Env): Promise<number> {
@@ -69,7 +81,7 @@ export async function enqueueSessionReminders(env: Env): Promise<number> {
   const endHM = aheadHM < nowHM ? "23:59" : aheadHM;
 
   const rows = await env.DB.prepare(
-    `SELECT s.id, s.date, s.start_time, s.venue, s.location, s.group_id,
+    `SELECT s.id, s.date, s.start_time, s.end_time, s.name, s.venue, s.location, s.group_id,
       (SELECT COUNT(*) FROM session_members sm WHERE sm.session_id = s.id AND sm.attended = 1) AS attendee_count,
       (SELECT group_concat(m.name, ', ') FROM session_members sm JOIN members m ON m.id = sm.member_id
         WHERE sm.session_id = s.id AND sm.attended = 1) AS attendee_names
@@ -82,7 +94,8 @@ export async function enqueueSessionReminders(env: Env): Promise<number> {
 
   let queued = 0;
   for (const s of rows.results ?? []) {
-    const lines = [`⏰ Sắp tới giờ chơi: ${s.start_time} hôm nay tại ${s.venue}`];
+    const lines = [`⏰ Sắp tới giờ chơi: ${timeRange(s)} hôm nay - ${sessionTitle(s)}`];
+    lines.push(`🏸 ${s.venue}`);
     if (s.location) lines.push(`📍 ${s.location}`);
     lines.push(
       s.attendee_count > 0
@@ -98,11 +111,13 @@ export async function enqueueSessionReminders(env: Env): Promise<number> {
 export async function enqueueNewSessionAnnounce(
   env: Env,
   groupId: string,
-  session: { id: string; date: string; startTime: string; venue: string; location?: string | null }
+  session: { id: string; date: string; startTime: string; endTime?: string | null; name?: string | null; venue: string; location?: string | null }
 ): Promise<boolean> {
   const lines = [
     "🆕 Kèo mới vừa tạo trên web:",
-    `🏸 ${formatDateVn(session.date)} • ${session.startTime} • ${session.venue}`,
+    `🏸 ${sessionTitle(session)}`,
+    `🕒 ${formatDateVn(session.date)} • ${timeRange(session)}`,
+    `Sân: ${session.venue}`,
   ];
   if (session.location) lines.push(`📍 ${session.location}`);
   lines.push('Ai đi thì nhắn "thêm tôi vào buổi" nhé!');

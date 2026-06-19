@@ -1,5 +1,6 @@
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
+import type { Session } from "@/types";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -12,6 +13,14 @@ export function formatCurrency(amount: number): string {
 export function formatDate(dateStr: string): string {
   const [y, m, d] = dateStr.split("-");
   return `${d}/${m}/${y}`;
+}
+
+export function getSessionTitle(session: Pick<Session, "name" | "venue">): string {
+  return session.name?.trim() || session.venue;
+}
+
+export function formatSessionTimeRange(session: Pick<Session, "start_time" | "end_time">): string {
+  return session.end_time ? `${session.start_time} - ${session.end_time}` : session.start_time;
 }
 
 export function formatDateLong(dateStr: string): string {

@@ -37,7 +37,7 @@ import {
 import { useSession } from "@/lib/auth-client";
 import banksData from "@/lib/banks.json";
 import { isAdminUser } from "@/lib/permissions";
-import { formatCurrency, formatDate } from "@/lib/utils";
+import { formatCurrency, formatDate, formatSessionTimeRange, getSessionTitle } from "@/lib/utils";
 import { useGroupsStore } from "@/stores/groupsStore";
 import { useMembersStore } from "@/stores/membersStore";
 import { useSessionsStore } from "@/stores/sessionsStore";
@@ -579,8 +579,8 @@ export default function SessionDetailPage() {
     try {
       if (navigator.share) {
         await navigator.share({
-          title: `${s.venue} - ${formatDate(s.date)}`,
-          text: `Buổi chơi tại ${s.venue}`,
+          title: `${getSessionTitle(s)} - ${formatDate(s.date)}`,
+          text: `Buổi chơi ${getSessionTitle(s)}`,
           url,
         });
       } else {
@@ -1247,8 +1247,10 @@ export default function SessionDetailPage() {
       : "- Chưa tính tiền";
 
     const text = [
-      `Buổi chơi ${formatDate(s.date)} tại ${s.venue}`,
-      `Địa điểm: ${s.location ?? "-"}`,
+      `Buổi chơi: ${getSessionTitle(s)}`,
+      `Thời gian: ${formatDate(s.date)} · ${formatSessionTimeRange(s)}`,
+      `Sân: ${s.venue}`,
+      `Địa chỉ: ${s.location ?? "-"}`,
       `Tham gia: ${s.members.map((member) => member.name).join(", ")}`,
       "",
       `Chi phí: ${costBreakdown}`,
@@ -1279,9 +1281,12 @@ export default function SessionDetailPage() {
           <ArrowLeft size={20} />
         </Link>
         <div className="min-w-0 flex-1">
-          <h1 className="truncate text-xl font-bold text-gray-900">{s.venue}</h1>
+          <h1 className="truncate text-xl font-bold text-gray-900">{getSessionTitle(s)}</h1>
           <div className="text-sm text-gray-500">
-            {formatDate(s.date)} · {s.start_time}
+            {formatDate(s.date)} · {formatSessionTimeRange(s)}
+          </div>
+          <div className="truncate text-sm text-gray-500">
+            {[s.venue, s.location].filter(Boolean).join(" - ")}
           </div>
         </div>
         <div className="flex items-center gap-2">

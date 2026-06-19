@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { Plus, ChevronRight, MapPin, Clock, Users } from "lucide-react";
 import { useSessionsStore } from "@/stores/sessionsStore";
@@ -9,20 +9,24 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/shared/EmptyState";
-import { formatDate, formatCurrency } from "@/lib/utils";
+import { formatDate, formatCurrency, formatSessionTimeRange, getSessionTitle } from "@/lib/utils";
 import type { Session } from "@/types";
 
 interface FormState {
+  name: string;
   date: string;
   startTime: string;
+  endTime: string;
   venue: string;
   location: string;
   note: string;
 }
 
 const defaultForm: FormState = {
+  name: "",
   date: new Date().toISOString().slice(0, 10),
   startTime: "08:00",
+  endTime: "",
   venue: "",
   location: "",
   note: "",
@@ -39,13 +43,39 @@ export default function SessionsPage() {
     fetch(activeGroupId);
   }, [activeGroupId, fetch]);
 
+  const venueSuggestions = useMemo(() => {
+    const byVenue = new Map<string, { venue: string; location: string }>();
+    for (const session of sessions) {
+      const venue = session.venue?.trim();
+      if (!venue) continue;
+      const key = venue.toLocaleLowerCase("vi-VN");
+      if (!byVenue.has(key) || (!byVenue.get(key)?.location && session.location)) {
+        byVenue.set(key, { venue, location: session.location?.trim() ?? "" });
+      }
+    }
+    return Array.from(byVenue.values()).sort((a, b) => a.venue.localeCompare(b.venue, "vi-VN"));
+  }, [sessions]);
+
+  const applyVenue = (value: string) => {
+    setForm((current) => {
+      const suggestion = venueSuggestions.find((item) => item.venue.toLocaleLowerCase("vi-VN") === value.trim().toLocaleLowerCase("vi-VN"));
+      return {
+        ...current,
+        venue: value,
+        location: suggestion?.location && !current.location.trim() ? suggestion.location : current.location,
+      };
+    });
+  };
+
   const handleCreate = async () => {
-    if (!form.venue.trim()) return;
+    if (!form.name.trim() || !form.venue.trim()) return;
     setSaving(true);
     try {
       await create({
+        name: form.name,
         date: form.date,
         startTime: form.startTime,
+        endTime: form.endTime || undefined,
         venue: form.venue,
         location: form.location || undefined,
         note: form.note || undefined,
@@ -102,7 +132,7 @@ export default function SessionsPage() {
                     >
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 mb-0.5">
-                          <span className="font-medium text-gray-900 truncate">{session.venue}</span>
+                          <span className="font-medium text-gray-900 truncate">{getSessionTitle(session)}</span>
                           <Badge variant={session.status === "upcoming" ? "green" : "gray"}>
                             {session.status === "upcoming" ? "Sắp tới" : "Hoàn thành"}
                           </Badge>
@@ -110,12 +140,12 @@ export default function SessionsPage() {
                         <div className="flex items-center gap-3 text-xs text-gray-500 flex-wrap">
                           <span className="flex items-center gap-1">
                             <Clock size={11} />
-                            {formatDate(session.date)} · {session.start_time}
+                            {formatDate(session.date)} · {formatSessionTimeRange(session)}
                           </span>
-                          {session.location && (
+                          {(session.venue || session.location) && (
                             <span className="flex items-center gap-1 truncate">
                               <MapPin size={11} />
-                              {session.location}
+                              {[session.venue, session.location].filter(Boolean).join(" - ")}
                             </span>
                           )}
                           {session.attendee_count != null && (
@@ -139,19 +169,39 @@ export default function SessionsPage() {
 
       <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} title="Tạo buổi chơi mới">
         <div className="space-y-4">
+          <div>
+            <label className="text-sm font-medium text-gray-700 block mb-1">Tên buổi *</label>
+            <Input
+              value={form.name}
+              onChange={(e) => setForm((current) => ({ ...current, name: e.target.value }))}
+              placeholder="Kèo tối thứ 5"
+            />
+          </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="text-sm font-medium text-gray-700 block mb-1">Ngày *</label>
               <Input type="date" value={form.date} onChange={(e) => setForm((current) => ({ ...current, date: e.target.value }))} />
             </div>
             <div>
-              <label className="text-sm font-medium text-gray-700 block mb-1">Giờ *</label>
+              <label className="text-sm font-medium text-gray-700 block mb-1">Giờ bắt đầu *</label>
               <Input type="time" value={form.startTime} onChange={(e) => setForm((current) => ({ ...current, startTime: e.target.value }))} />
             </div>
           </div>
           <div>
-            <label className="text-sm font-medium text-gray-700 block mb-1">Địa điểm *</label>
-            <Input value={form.venue} onChange={(e) => setForm((current) => ({ ...current, venue: e.target.value }))} placeholder="Địa điểm TingTing" />
+            <label className="text-sm font-medium text-gray-700 block mb-1">Giờ kết thúc</label>
+            <Input type="time" value={form.endTime} onChange={(e) => setForm((current) => ({ ...current, endTime: e.target.value }))} />
+          </div>
+          <div>
+            <label className="text-sm font-medium text-gray-700 block mb-1">Sân / địa điểm *</label>
+            <Input value={form.venue} onChange={(e) => applyVenue(e.target.value)} placeholder="Sân HL" list="session-venue-suggestions" />
+            <datalist id="session-venue-suggestions">
+              {venueSuggestions.map((item) => (
+                <option key={item.venue} value={item.venue}>
+                  {item.location}
+                </option>
+              ))}
+            </datalist>
+            <div className="mt-1 text-xs text-gray-400">Gõ hoặc chọn sân quen thuộc để tự điền địa chỉ.</div>
           </div>
           <div>
             <label className="text-sm font-medium text-gray-700 block mb-1">Địa chỉ</label>
@@ -165,7 +215,7 @@ export default function SessionsPage() {
             <Button variant="outline" className="flex-1" onClick={() => setDialogOpen(false)}>
               Hủy
             </Button>
-            <Button className="flex-1" onClick={handleCreate} disabled={saving || !form.venue.trim()}>
+            <Button className="flex-1" onClick={handleCreate} disabled={saving || !form.name.trim() || !form.venue.trim()}>
               {saving ? "Đang tạo..." : "Tạo buổi"}
             </Button>
           </div>

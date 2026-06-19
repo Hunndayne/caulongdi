@@ -65,8 +65,10 @@ type BotContextMessage = {
 
 type SessionRow = {
   id: string;
+  name?: string | null;
   date: string;
   start_time: string;
+  end_time?: string | null;
   venue: string;
   location?: string | null;
   note?: string | null;
@@ -146,13 +148,26 @@ function statusLabel(status: string) {
   return status;
 }
 
+function sessionTitle(s: SessionRow) {
+  return s.name?.trim() || s.venue;
+}
+
+function sessionTimeRange(s: SessionRow) {
+  return s.end_time ? `${s.start_time} - ${s.end_time}` : s.start_time;
+}
+
 function formatSession(s: SessionRow) {
-  const lines = [`🏸 ${formatDate(s.date)} • ${s.start_time} • ${s.venue}`];
+  const lines = [`🏸 ${formatDate(s.date)} • ${sessionTimeRange(s)} • ${sessionTitle(s)}`];
+  if (s.venue && s.venue !== sessionTitle(s)) lines.push(`Sân: ${s.venue}`);
   if (s.location) lines.push(`📍 ${s.location}`);
   const status = s.status && s.status !== "upcoming" ? ` • ${statusLabel(s.status)}` : "";
   lines.push(`👥 ${s.attendee_count} người${status}`);
   if (s.note) lines.push(`📝 ${s.note}`);
   return lines.join("\n");
+}
+
+function sessionSummaryLine(s: SessionRow) {
+  return `${formatDate(s.date)} • ${sessionTimeRange(s)} • ${sessionTitle(s)}`;
 }
 
 function formatMoney(amount: number) {
@@ -948,7 +963,7 @@ async function querySessions(env: Env, groupId: string, opts: QueryOpts): Promis
   const limit = Math.max(1, Math.floor(opts.limit ?? MAX_SESSIONS_IN_REPLY));
 
   const sql = `
-    SELECT s.id, s.date, s.start_time, s.venue, s.location, s.note, s.status,
+    SELECT s.id, s.name, s.date, s.start_time, s.end_time, s.venue, s.location, s.note, s.status,
       (SELECT COUNT(*) FROM session_members sm WHERE sm.session_id = s.id AND sm.attended = 1) AS attendee_count
     FROM sessions s
     WHERE ${where.join(" AND ")}
@@ -1077,7 +1092,7 @@ async function matchSessionsBySelector(
   }
 
   const result = await env.DB.prepare(
-    `SELECT s.id, s.date, s.start_time, s.venue, s.location, s.note, s.status,
+    `SELECT s.id, s.name, s.date, s.start_time, s.end_time, s.venue, s.location, s.note, s.status,
       (SELECT COUNT(*) FROM session_members sm WHERE sm.session_id = s.id AND sm.attended = 1) AS attendee_count
      FROM sessions s
      WHERE ${where.join(" AND ")}
@@ -1104,7 +1119,7 @@ async function resolveSessionForAction(
 }
 
 function ambiguousSessionsReply(choices: SessionRow[]): BotReply {
-  const list = choices.map((s) => `• ${formatDate(s.date)} • ${s.start_time} • ${s.venue}`).join("\n");
+  const list = choices.map((s) => `• ${sessionSummaryLine(s)}`).join("\n");
   return {
     ok: false,
     reply: `Có ${choices.length} buổi khớp với mô tả — bạn ghi rõ thêm ngày/giờ giúp mình:\n${list}`,
@@ -1130,7 +1145,7 @@ async function findUpcomingSession(env: Env, groupId: string, selector?: Session
   }
 
   const result = await env.DB.prepare(
-    `SELECT s.id, s.date, s.start_time, s.venue, s.location, s.note, s.status,
+    `SELECT s.id, s.name, s.date, s.start_time, s.end_time, s.venue, s.location, s.note, s.status,
       (SELECT COUNT(*) FROM session_members sm WHERE sm.session_id = s.id AND sm.attended = 1) AS attendee_count
      FROM sessions s
      WHERE ${where.join(" AND ")}
@@ -1160,7 +1175,7 @@ async function findSessionForCosts(
   }
 
   const result = await env.DB.prepare(
-    `SELECT s.id, s.date, s.start_time, s.venue, s.location, s.note, s.status,
+    `SELECT s.id, s.name, s.date, s.start_time, s.end_time, s.venue, s.location, s.note, s.status,
       (SELECT COUNT(*) FROM session_members sm WHERE sm.session_id = s.id AND sm.attended = 1) AS attendee_count
      FROM sessions s
      WHERE s.group_id = ?
@@ -1203,7 +1218,7 @@ async function querySessionRow(
     binds.push(`%${selector.venue.toLowerCase()}%`);
   }
   const result = await env.DB.prepare(
-    `SELECT s.id, s.date, s.start_time, s.venue, s.location, s.note, s.status,
+    `SELECT s.id, s.name, s.date, s.start_time, s.end_time, s.venue, s.location, s.note, s.status,
       (SELECT COUNT(*) FROM session_members sm WHERE sm.session_id = s.id AND sm.attended = 1) AS attendee_count
      FROM sessions s
      WHERE ${where.join(" AND ")}
@@ -1447,7 +1462,8 @@ async function replyAttendees(
     .bind(session.id)
     .all<{ name: string }>();
   const names = result.results ?? [];
-  const lines = [`🏸 ${formatDate(session.date)} • ${session.start_time} • ${session.venue}`];
+  const lines = [`🏸 ${sessionSummaryLine(session)}`];
+  if (session.venue && session.venue !== sessionTitle(session)) lines.push(`Sân: ${session.venue}`);
   if (session.location) lines.push(`📍 ${session.location}`);
   if (session.note) lines.push(`📝 ${session.note}`);
   if (!names.length) return { ok: true, reply: `${lines.join("\n")}\nChưa có ai tham gia.` };
@@ -1523,7 +1539,7 @@ async function replyCosts(
     .filter((item) => item.consumer_pending)
     .reduce((sum, item) => sum + Math.round(Number(item.amount) || 0), 0);
 
-  const lines = [`💸 Chi phí buổi ${formatDate(session.date)} • ${session.start_time} • ${session.venue}`];
+  const lines = [`💸 Chi phí buổi ${sessionSummaryLine(session)}`];
   lines.push(`Tổng đã nhập: ${formatMoney(total)}`);
   if (pendingTotal > 0) lines.push(`Đang chờ gán người dùng: ${formatMoney(pendingTotal)}`);
 
@@ -1568,7 +1584,7 @@ async function replyMarkPaid(
     ok: true,
     reply: [
       `🔒 Xác nhận "đã trả" cần làm trên web để chắc đúng người, đúng khoản:`,
-      `🏸 ${formatDate(session.date)} • ${session.start_time} • ${session.venue}`,
+      `🏸 ${sessionSummaryLine(session)}`,
       `👉 ${base}/sessions/${session.id}`,
       'Xem nhanh công nợ tại đây thì gõ "ai nợ ai".',
     ].join("\n"),
@@ -1580,7 +1596,7 @@ async function findSessionForAddCost(env: Env, groupId: string, selector?: Sessi
   if (hasSessionSelector(selector)) return findSessionForAttendees(env, groupId, selector);
 
   const recent = await env.DB.prepare(
-    `SELECT s.id, s.date, s.start_time, s.venue, s.location, s.note, s.status,
+    `SELECT s.id, s.name, s.date, s.start_time, s.end_time, s.venue, s.location, s.note, s.status,
       (SELECT COUNT(*) FROM session_members sm WHERE sm.session_id = s.id AND sm.attended = 1) AS attendee_count
      FROM sessions s
      WHERE s.group_id = ? AND s.date <= ?
@@ -1710,7 +1726,7 @@ async function replyAddCost(
   // Echo đầy đủ — tiền bạc phải nhìn thấy được mình vừa ghi gì.
   const scope = consumerNamesResolved.length ? `chia cho ${consumerNamesResolved.join(", ")}` : "chia đều";
   const lines = [
-    `🧾 Đã ghi vào buổi ${formatDate(session.date)} • ${session.start_time} • ${session.venue}:`,
+    `🧾 Đã ghi vào buổi ${sessionSummaryLine(session)}:`,
     `• ${label}${quantity > 1 ? ` x${quantity}` : ""}: ${formatMoney(amount)} (${payer ? `${payer.name} trả` : "chưa rõ ai trả"}, ${scope})`,
     `Tổng buổi này: ${formatMoney(Number(totalRow?.total) || 0)}`,
   ];
@@ -1758,7 +1774,7 @@ async function replyCreateSession(
   const venue = draft!.venue!;
 
   const existing = await env.DB.prepare(
-    `SELECT s.id, s.date, s.start_time, s.venue, s.location, s.note, s.status,
+    `SELECT s.id, s.name, s.date, s.start_time, s.end_time, s.venue, s.location, s.note, s.status,
       (SELECT COUNT(*) FROM session_members sm WHERE sm.session_id = s.id AND sm.attended = 1) AS attendee_count
      FROM sessions s
      WHERE s.group_id = ? AND s.date = ? AND s.start_time = ? AND lower(s.venue) = lower(?) AND s.status = 'upcoming'
@@ -1940,7 +1956,7 @@ async function replyAddMembers(
   }
 
   const outcome = await addNamesToSession(env, groupId, session.id, names, actor, aliases);
-  const header = `🏸 ${formatDate(session.date)} • ${session.start_time} • ${session.venue}`;
+  const header = `🏸 ${sessionSummaryLine(session)}`;
   return { ok: true, reply: `${header}${formatAddOutcome(outcome)}` };
 }
 
@@ -2019,7 +2035,8 @@ async function replyRemoveMembers(
     await recalcSessionPayments(env, session.id);
   }
 
-  const lines = [`🏸 ${formatDate(session.date)} • ${session.start_time} • ${session.venue}`];
+  const lines = [`🏸 ${sessionSummaryLine(session)}`];
+  if (session.venue && session.venue !== sessionTitle(session)) lines.push(`Sân: ${session.venue}`);
   if (removed.length) lines.push(`✅ Đã rút: ${removed.join(", ")}`);
   if (notIn.length) lines.push(`ℹ️ Vốn không có trong buổi: ${notIn.join(", ")}`);
   if (ambiguous.length) lines.push(`⚠️ Trùng tên, ghi rõ hơn: ${ambiguous.join(", ")}`);
@@ -2132,7 +2149,7 @@ async function replyUpdateSession(
   };
   return {
     ok: true,
-    reply: `✏️ Đã sửa kèo:\n${formatDate(session.date)} • ${session.start_time} • ${session.venue}\n→ ${formatDate(updated.date)} • ${updated.start_time} • ${updated.venue}`,
+    reply: `✏️ Đã sửa kèo:\n${sessionSummaryLine(session)}\n→ ${sessionSummaryLine(updated)}`,
   };
 }
 
@@ -2169,7 +2186,7 @@ async function replyCancelSession(
   if (!confirmed) {
     return {
       ok: true,
-      reply: `❓ Xác nhận hủy kèo này?\n🏸 ${formatDate(session.date)} • ${session.start_time} • ${session.venue} (${session.attendee_count} người)\n${CANCEL_CONFIRM_HINT}.`,
+      reply: `❓ Xác nhận hủy kèo này?\n🏸 ${sessionSummaryLine(session)} (${session.attendee_count} người)\n${CANCEL_CONFIRM_HINT}.`,
     };
   }
 
@@ -2191,7 +2208,7 @@ async function replyCancelSession(
 
   return {
     ok: true,
-    reply: `🗑️ Đã hủy kèo ${formatDate(session.date)} • ${session.start_time} • ${session.venue}.`,
+    reply: `🗑️ Đã hủy kèo ${sessionSummaryLine(session)}.`,
   };
 }
 

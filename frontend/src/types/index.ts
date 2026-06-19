@@ -114,8 +114,10 @@ export interface Session {
   id: string;
   group_id?: string;
   created_by?: string;
+  name?: string | null;
   date: string;
   start_time: string;
+  end_time?: string | null;
   venue: string;
   location?: string;
   note?: string;

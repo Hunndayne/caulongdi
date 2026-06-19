@@ -1,0 +1,2 @@
+ALTER TABLE sessions ADD COLUMN name TEXT;
+ALTER TABLE sessions ADD COLUMN end_time TEXT;

@@ -9,9 +9,12 @@ const sessions = new Hono<{ Bindings: Env; Variables: { userId: string; userRole
 const MEMBER_COLORS = ["#22c55e", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4"];
 
 type SessionBody = {
+  name?: string;
   date?: string;
   startTime?: string;
   start_time?: string;
+  endTime?: string | null;
+  end_time?: string | null;
   groupId?: string;
   group_id?: string;
   venue?: string;
@@ -1517,7 +1520,9 @@ sessions.get("/", async (c) => {
 sessions.post("/", async (c) => {
   const body = await c.req.json<SessionBody>();
   const startTime = body.startTime ?? body.start_time;
+  const endTime = body.endTime ?? body.end_time;
   const groupId = body.groupId ?? body.group_id;
+  const name = body.name?.trim() || null;
   const venue = body.venue?.trim();
 
   if (!body.date || !startTime || !venue) {
@@ -1535,28 +1540,28 @@ sessions.post("/", async (c) => {
       }
 
       await c.env.DB.prepare(`
-        INSERT INTO sessions (id, group_id, created_by, date, start_time, venue, location, note, status, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'upcoming', ?)
+        INSERT INTO sessions (id, group_id, created_by, name, date, start_time, end_time, venue, location, note, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'upcoming', ?)
       `)
-        .bind(id, groupId, c.get("userId"), body.date, startTime, venue, body.location ?? null, body.note ?? null, now)
+        .bind(id, groupId, c.get("userId"), name, body.date, startTime, endTime || null, venue, body.location ?? null, body.note ?? null, now)
         .run();
       notifyGroupId = groupId;
     } catch (error) {
       if (!isMissingGroupSchema(error)) throw error;
 
       await c.env.DB.prepare(`
-        INSERT INTO sessions (id, date, start_time, venue, location, note, status, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, 'upcoming', ?)
+        INSERT INTO sessions (id, name, date, start_time, end_time, venue, location, note, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'upcoming', ?)
       `)
-        .bind(id, body.date, startTime, venue, body.location ?? null, body.note ?? null, now)
+        .bind(id, name, body.date, startTime, endTime || null, venue, body.location ?? null, body.note ?? null, now)
         .run();
     }
   } else {
     await c.env.DB.prepare(`
-      INSERT INTO sessions (id, date, start_time, venue, location, note, status, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, 'upcoming', ?)
+      INSERT INTO sessions (id, name, date, start_time, end_time, venue, location, note, status, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'upcoming', ?)
     `)
-      .bind(id, body.date, startTime, venue, body.location ?? null, body.note ?? null, now)
+      .bind(id, name, body.date, startTime, endTime || null, venue, body.location ?? null, body.note ?? null, now)
       .run();
   }
 
@@ -1570,6 +1575,8 @@ sessions.post("/", async (c) => {
         id,
         date: body.date,
         startTime,
+        endTime: endTime || null,
+        name,
         venue,
         location: body.location ?? null,
       }),
@@ -1603,9 +1610,11 @@ sessions.post("/", async (c) => {
       queueTask(c, sendNewSessionNotification(c.env, {
         groupName,
         creatorName,
+        name,
         venue,
         date: body.date,
         startTime,
+        endTime: endTime || null,
         location: body.location ?? null,
         note: body.note ?? null,
         sessionId: id,
@@ -1656,6 +1665,7 @@ sessions.put("/:id", async (c) => {
 
   const body = await c.req.json<SessionBody>();
   const startTime = body.startTime ?? body.start_time;
+  const endTime = body.endTime ?? body.end_time;
   const paymentRecipient = body.paymentRecipient ?? body.payment_recipient;
   const normalizedPaymentRecipient = paymentRecipient === undefined
     ? undefined
@@ -1670,12 +1680,14 @@ sessions.put("/:id", async (c) => {
 
   await c.env.DB.prepare(`
     UPDATE sessions
-    SET date = ?, start_time = ?, venue = ?, location = ?, note = ?, status = ?, payment_recipient = ?, allow_all_edit = ?, force_payment_recipient = ?
+    SET name = ?, date = ?, start_time = ?, end_time = ?, venue = ?, location = ?, note = ?, status = ?, payment_recipient = ?, allow_all_edit = ?, force_payment_recipient = ?
     WHERE id = ?
   `)
     .bind(
+      body.name !== undefined ? body.name.trim() || null : ((existing as any).name ?? null),
       body.date ?? existing.date,
       startTime ?? existing.start_time,
+      endTime !== undefined ? endTime || null : ((existing as any).end_time ?? null),
       body.venue?.trim() || existing.venue,
       body.location !== undefined ? body.location : existing.location,
       body.note !== undefined ? body.note : existing.note,

@@ -11,14 +11,24 @@ type MailMessage = {
 type SessionNotificationInput = {
   groupName: string;
   creatorName: string;
+  name?: string | null;
   venue: string;
   date: string;
   startTime: string;
+  endTime?: string | null;
   location?: string | null;
   note?: string | null;
   sessionId: string;
   recipients: string[];
 };
+
+function sessionTitle(input: { name?: string | null; venue: string }) {
+  return input.name?.trim() || input.venue;
+}
+
+function formatTimeRange(input: { startTime: string; endTime?: string | null }) {
+  return input.endTime ? `${input.startTime} - ${input.endTime}` : input.startTime;
+}
 
 type PaymentNotificationInput = {
   debtorName: string;
@@ -451,13 +461,16 @@ export async function sendNewSessionNotification(env: Env, input: SessionNotific
   if (input.recipients.length === 0) return;
 
   const sessionUrl = normalizeUrl(env.FRONTEND_URL, `/sessions/${input.sessionId}`);
+  const title = sessionTitle(input);
+  const time = `${formatDate(input.date)} lúc ${formatTimeRange(input)}`;
   const textLines = [
     `Nhóm ${input.groupName} vừa có lịch chơi mới.`,
     "",
     `Người tạo: ${input.creatorName}`,
-    `Địa điểm: ${input.venue}`,
-    `Thời gian: ${formatDate(input.date)} lúc ${input.startTime}`,
-    input.location ? `Địa điểm: ${input.location}` : "",
+    `Buổi chơi: ${title}`,
+    `Sân: ${input.venue}`,
+    `Thời gian: ${time}`,
+    input.location ? `Địa chỉ: ${input.location}` : "",
     input.note ? `Ghi chú: ${input.note}` : "",
     "",
     `Xem chi tiết: ${sessionUrl}`,
@@ -468,14 +481,15 @@ export async function sendNewSessionNotification(env: Env, input: SessionNotific
     subject: `Lịch chơi mới trong nhóm ${input.groupName}`,
     text: textLines.join("\n"),
     html: renderEmailShell({
-      preheader: `Lịch chơi mới tại ${input.venue} vào ${formatDate(input.date)}.`,
+      preheader: `Lịch chơi mới ${title} vào ${formatDate(input.date)}.`,
       title: "Có lịch chơi mới trong nhóm",
       intro: `Nhóm ${input.groupName} vừa có thêm một buổi chơi mới. Bạn có thể mở app để xem chi tiết và tham gia.`,
       facts: [
         { label: "Người tạo", value: input.creatorName },
-        { label: "Địa điểm", value: input.venue },
-        { label: "Thời gian", value: `${formatDate(input.date)} lúc ${input.startTime}` },
-        ...(input.location ? [{ label: "Địa điểm", value: input.location }] : []),
+        { label: "Buổi chơi", value: title },
+        { label: "Sân", value: input.venue },
+        { label: "Thời gian", value: time },
+        ...(input.location ? [{ label: "Địa chỉ", value: input.location }] : []),
       ],
       htmlBlocks: input.note ? [
         `<div style="margin-top: 12px; padding: 14px 16px; border-radius: 12px; background: #f9fafb; color: #374151; font-size: 14px; line-height: 1.7;">

@@ -18,8 +18,10 @@ const app = new Hono<{ Bindings: Env }>();
 
 type PreviewSession = {
   id: string;
+  name?: string | null;
   date: string;
   start_time: string;
+  end_time?: string | null;
   venue: string;
   location?: string | null;
   note?: string | null;
@@ -47,6 +49,14 @@ function formatPreviewDate(date: string) {
   return `${day}/${month}/${year}`;
 }
 
+function previewSessionTitle(session: PreviewSession) {
+  return session.name?.trim() || session.venue;
+}
+
+function previewTimeRange(session: PreviewSession) {
+  return session.end_time ? `${session.start_time} - ${session.end_time}` : session.start_time;
+}
+
 async function getPreviewSession(c: Context<{ Bindings: Env }>, id: string) {
   return c.env.DB.prepare(`
     SELECT s.*,
@@ -60,7 +70,7 @@ async function getPreviewSession(c: Context<{ Bindings: Env }>, id: string) {
 }
 
 function previewTitle(session?: PreviewSession | null) {
-  return session ? `TingTing tại ${session.venue}` : "TingTing";
+  return session ? previewSessionTitle(session) : "TingTing";
 }
 
 function previewDescription(session?: PreviewSession | null) {
@@ -68,12 +78,12 @@ function previewDescription(session?: PreviewSession | null) {
   const place = session.location ? ` tại ${session.location}` : "";
   const names = session.attendee_names ? ` (${session.attendee_names})` : "";
   const count = session.attendee_count ? ` · ${session.attendee_count} người tham gia${names}` : "";
-  return `${formatPreviewDate(session.date)} lúc ${session.start_time}${place}${count}`;
+  return `${formatPreviewDate(session.date)} lúc ${previewTimeRange(session)}${place}${count}`;
 }
 
 function renderPreviewSvg(session: PreviewSession) {
-  const dateLine = `${formatPreviewDate(session.date)} · ${session.start_time}`;
-  const location = session.location ?? "TingTing";
+  const dateLine = `${formatPreviewDate(session.date)} · ${previewTimeRange(session)}`;
+  const location = session.location ?? session.venue;
   const count = `${session.attendee_count} người tham gia`;
 
   // Tối đa 5 tên người tham gia, dư thì "+N nữa"
@@ -91,7 +101,7 @@ function renderPreviewSvg(session: PreviewSession) {
   <rect x="72" y="72" width="1056" height="486" rx="32" fill="#ffffff"/>
   <circle cx="152" cy="150" r="28" fill="#16a34a"/>
   <text x="198" y="161" font-family="Arial, sans-serif" font-size="34" font-weight="700" fill="#14532d">TingTing</text>
-  <text x="120" y="265" font-family="Arial, sans-serif" font-size="64" font-weight="800" fill="#111827">${escapeHtml(truncate(session.venue, 36))}</text>
+  <text x="120" y="265" font-family="Arial, sans-serif" font-size="64" font-weight="800" fill="#111827">${escapeHtml(truncate(previewSessionTitle(session), 36))}</text>
   <text x="120" y="345" font-family="Arial, sans-serif" font-size="42" font-weight="700" fill="#16a34a">${escapeHtml(dateLine)}</text>
   <text x="120" y="410" font-family="Arial, sans-serif" font-size="32" fill="#4b5563">${escapeHtml(truncate(location, 54))}</text>
   <text x="120" y="470" font-family="Arial, sans-serif" font-size="30" fill="#6b7280">${escapeHtml(count)}</text>

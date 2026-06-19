@@ -20,7 +20,7 @@ import { useSession } from "@/lib/auth-client";
 import { useSessionsStore } from "@/stores/sessionsStore";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { GroupSelector } from "@/components/shared/GroupSelector";
-import { cn, formatCurrency, formatDate } from "@/lib/utils";
+import { cn, formatCurrency, formatDate, formatSessionTimeRange, getSessionTitle } from "@/lib/utils";
 import type { MemberStats, Session } from "@/types";
 
 const WEEKDAYS = ["T2", "T3", "T4", "T5", "T6", "T7", "CN"];
@@ -53,6 +53,13 @@ function parseSessionDateTime(session: Session) {
   return new Date(year, month - 1, day, hour, minute);
 }
 
+function parseSessionEndDateTime(session: Session) {
+  const start = parseSessionDateTime(session);
+  if (!session.end_time) return new Date(start.getTime() + 2 * 60 * 60 * 1000);
+  const [hour = 0, minute = 0] = session.end_time.split(":").map(Number);
+  return new Date(start.getFullYear(), start.getMonth(), start.getDate(), hour, minute);
+}
+
 function compareSessionAsc(a: Session, b: Session) {
   return `${a.date} ${a.start_time}`.localeCompare(`${b.date} ${b.start_time}`);
 }
@@ -75,8 +82,9 @@ function escapeIcs(value?: string | null) {
 
 function downloadCalendarFile(session: Session) {
   const start = parseSessionDateTime(session);
-  const end = new Date(start.getTime() + 2 * 60 * 60 * 1000);
+  const end = parseSessionEndDateTime(session);
   const location = [session.venue, session.location].filter(Boolean).join(" - ");
+  const title = getSessionTitle(session);
   const ics = [
     "BEGIN:VCALENDAR",
     "VERSION:2.0",
@@ -88,7 +96,7 @@ function downloadCalendarFile(session: Session) {
     `DTSTAMP:${toIcsDate(new Date())}`,
     `DTSTART:${toIcsDate(start)}`,
     `DTEND:${toIcsDate(end)}`,
-    `SUMMARY:${escapeIcs(`TingTing - ${session.venue}`)}`,
+    `SUMMARY:${escapeIcs(title)}`,
     `LOCATION:${escapeIcs(location)}`,
     `DESCRIPTION:${escapeIcs(session.note || "Buổi hẹn TingTing")}`,
     "END:VEVENT",
@@ -98,7 +106,7 @@ function downloadCalendarFile(session: Session) {
   const blob = new Blob([ics], { type: "text/calendar;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
-  const safeVenue = session.venue.toLowerCase().replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "");
+  const safeVenue = title.toLowerCase().replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "");
   link.href = url;
   link.download = `${session.date}-${safeVenue || "tingting"}.ics`;
   document.body.appendChild(link);
@@ -290,9 +298,9 @@ function SessionRow({
     <div className="flex items-center gap-3 rounded-xl border border-[#e8e7e2] bg-white px-3.5 py-3 transition-colors hover:border-[#18181b]">
       <SessionThumb kind={kind} />
       <Link to={`/sessions/${session.id}`} className="min-w-0 flex-1 overflow-hidden">
-        <SessionTitle text={session.venue} marquee={kind === "group"} />
+        <SessionTitle text={getSessionTitle(session)} marquee={kind === "group"} />
         <div className="mt-0.5 truncate text-xs text-[#71717a]">
-          {formatDate(session.date)} · {session.start_time}
+          {formatDate(session.date)} · {formatSessionTimeRange(session)}
         </div>
       </Link>
       <div className="flex shrink-0 items-center gap-2">
@@ -548,7 +556,7 @@ export default function HomePage() {
                                 }`}
                               >
                                 <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${kind === "personal" ? "bg-[#16a34a]" : "bg-[#dc2626]"}`} />
-                                <span className="truncate">{item.start_time} {item.venue}</span>
+                                <span className="truncate">{formatSessionTimeRange(item)} {getSessionTitle(item)}</span>
                               </Link>
                             );
                           })}
@@ -617,8 +625,8 @@ export default function HomePage() {
                                 kind === "personal" ? "border-[#16a34a] bg-[#e7f6ec] text-[#16a34a]" : "border-[#dc2626] bg-[#fdecec] text-[#dc2626]"
                               }`}
                             >
-                              <div className="truncate font-semibold">{item.venue}</div>
-                              <div className="text-[10px] opacity-80">{item.start_time}</div>
+                              <div className="truncate font-semibold">{getSessionTitle(item)}</div>
+                              <div className="text-[10px] opacity-80">{formatSessionTimeRange(item)}</div>
                             </Link>
                           );
                         })}
