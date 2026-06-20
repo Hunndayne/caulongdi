@@ -29,6 +29,7 @@ type Intent =
   | "cancel_session"
   | "costs"
   | "add_cost"
+  | "update_cost"
   | "mark_paid"
   | "stats"
   | "chat";
@@ -238,6 +239,7 @@ function helpText() {
     '• "chi phí buổi vừa rồi" / "ai nợ ai" — xem tổng tiền và công nợ của buổi',
     '• "tiền sân 240k" / "3 ống cầu 270k Nam trả" — ghi khoản chi vào buổi (mặc định chia đều)',
     '• "nem nướng 348k Phát trả, chia cho Phát, Hậu, Vinh" — ghi khoản chỉ chia cho vài người',
+    '• "khoản cầu để Nam trả" / "đổi tiền nước thành 80k" / "xóa khoản cầu" — sửa/xóa khoản đã ghi',
     '• /alias <tên trên web> — ghép tên Messenger của bạn với thành viên web (để "thêm tôi" đúng người; /alias xoa để bỏ)',
     "• /connect <mã> — liên kết nhóm chat với nhóm TingTing (lấy mã trên web)",
     "• /disconnect — huỷ liên kết",
@@ -419,6 +421,21 @@ function isSelfReference(value: string): boolean {
   return /^(toi|minh|tui|em|anh|chi|tao|me|t)$/.test(normalizeName(value));
 }
 
+// Từ đệm/đại từ chỉ định bám đuôi tên ("An Thái ấy", "Nam kia") — chỉ gồm các
+// hư từ gần như không bao giờ là âm tiết tên người (tránh "đó/đấy/này/thế" vì
+// trùng họ/tên thật như Đỗ, Thế). Chỉ cắt ở ĐUÔI và khi còn >1 token.
+const TRAILING_NAME_FILLERS = new Set([
+  "ay", "kia", "nhi", "nhe", "nha", "nhen", "luon", "thoi", "oi", "a", "vay", "ne",
+]);
+
+function stripTrailingNameFillers(value: string): string {
+  const tokens = value.split(/\s+/).filter(Boolean);
+  while (tokens.length > 1 && TRAILING_NAME_FILLERS.has(normalizeName(tokens[tokens.length - 1]))) {
+    tokens.pop();
+  }
+  return tokens.join(" ");
+}
+
 function cleanupAddNameCandidate(raw: string): string | null {
   if (raw.trim() === SELF_NAME_TOKEN) return SELF_NAME_TOKEN;
   let s = extractAddTargetSegment(raw);
@@ -426,6 +443,7 @@ function cleanupAddNameCandidate(raw: string): string | null {
   s = s.replace(/\s+(?:lịch|lich|buổi|buoi)\b.*$/i, "");
   s = s.replace(/\b(?:nhé|nhe|nha|giúp|giup|hộ|ho|với|voi|ạ|a)\b/gi, " ");
   s = s.replace(/^[\s,.;:!?]+|[\s,.;:!?]+$/g, "").replace(/\s+/g, " ").trim();
+  s = stripTrailingNameFillers(s);
 
   if (!s) return null;
   if (isSelfReference(s)) return SELF_NAME_TOKEN;
@@ -530,6 +548,22 @@ function asksForCosts(t: string): boolean {
   );
 }
 
+// Xóa một khoản chi đã ghi: "xóa khoản cầu", "bỏ tiền nước", "hủy chi phí sân".
+function isDeleteCostLike(t: string): boolean {
+  return /\b(xoa|bo|huy|go)\b.*\b(khoan|chi phi|tien|cost)\b/.test(t);
+}
+
+// Sửa khoản chi đã ghi: đổi người trả / số tiền / người chia.
+function isUpdateCostLike(t: string): boolean {
+  if (isDeleteCostLike(t)) return true;
+  if (/\b(sua|doi|cap nhat|chinh|dat lai|set lai)\b.*\b(khoan|chi phi|tien|cost)\b/.test(t)) return true;
+  // "khoản cầu để Nam trả", "tiền sân tôi trả" — đổi người trả mà KHÔNG kèm số tiền
+  // mới (có số tiền + người trả là GHI khoản mới = add_cost).
+  const hasMoney = /\d/.test(t) || /\b(nghin|ngan|trieu|tram|chuc)\b/.test(t);
+  if (!hasMoney && /\b(khoan|chi phi|tien)\b/.test(t) && /\b(tra|ung|bao)\b/.test(t)) return true;
+  return false;
+}
+
 function detectIntentByRegex(text: string): Intent | null {
   const t = removeDiacritics(text.toLowerCase()).trim();
   const sessionContext = hasSessionContext(t);
@@ -567,6 +601,7 @@ function normalizeIntent(value: unknown): Intent | null {
     "cancel_session",
     "costs",
     "add_cost",
+    "update_cost",
     "mark_paid",
     "stats",
     "help",
@@ -587,6 +622,38 @@ function parseMoneyVn(text: string): number | undefined {
   m = t.match(/(\d{4,9})\s*(?:d|dong|vnd)\b/);
   if (m) return Number(m[1]);
   return undefined;
+}
+
+// Rút tên người trả từ câu sửa cost ("Nam trả", "tôi ứng") — fallback khi không có AI.
+// Chỉ lấy 1 từ ngay trước "trả/ứng/bao"; matchMembersByName đủ linh hoạt để khớp tên dài.
+function extractPayerName(text: string): string | undefined {
+  const m = text.match(/([\p{L}]+)\s+(?:trả|tra|ứng|ung|bao)\b/iu);
+  if (!m) return undefined;
+  if (isSelfReference(m[1])) return SELF_NAME_TOKEN;
+  const cand = cleanupAddNameCandidate(m[1]);
+  return cand ?? undefined;
+}
+
+// Rút tên khoản chi cần sửa ("khoản cầu", "tiền sân", "đổi tiền nước thành...").
+function extractCostLabel(text: string): string | undefined {
+  const stop = "(?=\\s+(?:để|de|cho|thành|thanh|sang|của|cua|là|la|tôi|toi|trả|tra|ứng|ung|bao|\\d)|$)";
+  let m = text.match(new RegExp(`(?:khoản|khoan|chi phí|chi phi|tiền|tien)\\s+([\\p{L}\\s]+?)${stop}`, "iu"));
+  if (!m) {
+    m = text.match(
+      new RegExp(`(?:xóa|xoa|bỏ|bo|hủy|huy|sửa|sua|đổi|doi|cập nhật|cap nhat)\\s+(?:khoản|khoan|chi phí|chi phi|tiền|tien)?\\s*([\\p{L}\\s]+?)${stop}`, "iu")
+    );
+  }
+  const label = m?.[1]?.trim().replace(/\s+/g, " ");
+  return label && label.length >= 1 && label.length <= 40 ? label : undefined;
+}
+
+function parseUpdateCostDraft(text: string): CostDraft {
+  const hasMoney = /\d/.test(text) || /\b(nghin|ngan|trieu|tram|chuc)\b/.test(normalizeName(text));
+  return {
+    label: extractCostLabel(text),
+    amount: hasMoney ? parseMoneyVn(text) : undefined,
+    payerName: extractPayerName(text),
+  };
 }
 
 function normalizeAiDate(value: unknown): string | undefined {
@@ -629,14 +696,15 @@ async function classifyWithAI(
     "Nếu câu hỏi lịch/buổi/kèo có hỏi ai, thành viên, người tham gia thì intent là list_attendees; chỉ dùng list_members khi hỏi danh sách thành viên của nhóm nói chung.",
     "Nếu người dùng HỎI chi phí, tổng tiền, bill, hóa đơn, công nợ, ai nợ ai, ai trả ai, chia tiền, mỗi người bao nhiêu thì intent là costs.",
     'Nếu người dùng BÁO/GHI một khoản chi vừa tiêu (có số tiền, vd "tiền sân 240k", "3 ống cầu 270k Nam trả", "nước hết 60k") thì intent là add_cost — phân biệt với costs là câu hỏi.',
+    'Nếu người dùng muốn SỬA/ĐỔI/XÓA một khoản chi ĐÃ ghi (đổi người trả, đổi số tiền, đổi người chia, hoặc xóa khoản — vd "khoản cầu để Nam trả", "tiền sân tôi trả", "đổi tiền nước thành 80k", "xóa khoản cầu") thì intent là update_cost. cost.label là tên khoản CẦN SỬA, các trường còn lại (amount/payerName/consumerNames) là GIÁ TRỊ MỚI; KHÔNG điền field nào nếu không đổi nó.',
     'Nếu người dùng muốn ĐÁNH DẤU/XÁC NHẬN đã trả tiền/đã chuyển khoản công nợ ("tôi trả Nam rồi", "đánh dấu đã trả", "Nam chuyển cho tôi rồi") thì intent là mark_paid.',
     "Only classify today/week/upcoming/next/recent/list_attendees when the user clearly asks about badminton sessions, schedule, court, or players; casual chat that happens to mention time words must be unknown.",
     "Bạn phân tích câu của người dùng về lịch chơi cầu lông của một nhóm và TRẢ VỀ JSON.",
     'Định dạng JSON: {"intent": "...", "names": ["..."], "session": {"date": "YYYY-MM-DD", "startTime": "HH:MM", "venue": "..."}, "changes": {"date": "...", "startTime": "...", "venue": "..."}, "cost": {"label": "...", "amount": 0, "quantity": 1, "payerName": "...", "consumerNames": ["..."]}}.',
-    "intent là MỘT trong: next, upcoming, today, week, recent, list_members, list_attendees, add_member, remove_member, create_session, update_session, cancel_session, costs, add_cost, stats, help, unknown.",
+    "intent là MỘT trong: next, upcoming, today, week, recent, list_members, list_attendees, add_member, remove_member, create_session, update_session, cancel_session, costs, add_cost, update_cost, mark_paid, stats, help, unknown.",
     "Ý nghĩa: next=buổi sắp tới gần nhất; upcoming=danh sách buổi sắp tới; today=hôm nay; week=tuần này; recent=các buổi gần đây/lịch sử;",
-    "list_members=liệt kê thành viên nhóm; list_attendees=ai tham gia buổi; add_member=thêm người vào buổi; create_session=tạo buổi/kèo mới; costs=xem chi phí/công nợ buổi; add_cost=ghi một khoản chi mới; mark_paid=xác nhận đã trả nợ; help=hướng dẫn; unknown=không liên quan.",
-    `cost CHỈ điền khi intent=add_cost: label là tên khoản (vd "tiền sân", "ống cầu", "tiền ăn"), amount là số VND tuyệt đối (240k → 240000, 1tr2 → 1200000), quantity mặc định 1.`,
+    "list_members=liệt kê thành viên nhóm; list_attendees=ai tham gia buổi; add_member=thêm người vào buổi; create_session=tạo buổi/kèo mới; costs=xem chi phí/công nợ buổi; add_cost=ghi một khoản chi mới; update_cost=sửa/xóa khoản chi đã ghi; mark_paid=xác nhận đã trả nợ; help=hướng dẫn; unknown=không liên quan.",
+    `cost điền khi intent=add_cost hoặc update_cost: label là tên khoản (vd "tiền sân", "ống cầu", "tiền ăn"), amount là số VND tuyệt đối (240k → 240000, 1tr2 → 1200000), quantity mặc định 1.`,
     `Trong cost, payerName là người ỨNG/TRẢ tiền: các cách nói "X trả", "X ứng", "X bao", "trả lại cho X", "gửi lại X", "lại cho X" đều nghĩa là X ứng tiền nên payerName=X ("${SELF_NAME_TOKEN}" nếu người gửi tự trả).`,
     `Trong cost, consumerNames là DANH SÁCH người được CHIA khoản này khi câu có liệt kê người hưởng ("cho A, B, C", "của A B C", "A B C ăn", "phần của A B"); nếu KHÔNG liệt kê ai cụ thể thì để consumerNames rỗng [] (chia đều cả buổi). consumerNames là người HƯỞNG, khác payerName là người trả — một người có thể vừa trả vừa nằm trong danh sách hưởng.`,
     'names điền khi intent=add_member/remove_member (người cần thêm/rút) hoặc create_session (người tham gia nhắc trong câu, vd "gồm có tôi và An"), ví dụ ["An","Bình"]. Các intent khác để names rỗng [].',
@@ -839,6 +907,16 @@ function enrichAiIntent(ai: ParsedIntent, text: string, context?: BotContextMess
     };
   }
 
+  if (ai.intent === "update_cost") {
+    // amount chỉ là giá trị MỚI khi câu thực sự có số tiền (tránh AI suy từ ngữ cảnh).
+    const amountInText = /\d/.test(text) || /\b(nghin|ngan|trieu|tram|chuc)\b/.test(normalizeName(text));
+    return {
+      ...ai,
+      cost: { ...ai.cost, amount: amountInText ? ai.cost?.amount ?? parseMoneyVn(text) : undefined },
+      session: mergeSession(ai.session, parseSessionReference(text, context)),
+    };
+  }
+
   if (ai.intent === "remove_member") {
     const names = ai.names.length ? cleanupNameList(ai.names) : extractRemoveNames(text);
     return { ...ai, names, session: mergeSession(ai.session, parseSessionReference(text, context)) };
@@ -883,7 +961,14 @@ async function resolveIntent(env: Env, text: string, actor?: BotActor, context?:
   }
 
   if (ai) {
-    if (ai.intent !== "chat") return enrichAiIntent(ai, text, context);
+    if (ai.intent !== "chat") {
+      // "add_cost" mà câu KHÔNG có số tiền → thực chất là sửa khoản đã ghi (đổi người trả...).
+      if (ai.intent === "add_cost") {
+        const hasMoney = /\d/.test(t) || /\b(nghin|ngan|trieu|tram|chuc)\b/.test(t);
+        if (!hasMoney) return enrichAiIntent({ ...ai, intent: "update_cost" }, text, context);
+      }
+      return enrichAiIntent(ai, text, context);
+    }
 
     // AI bảo "chat" nhưng câu khớp mẫu lệnh rất rõ → vá lại bằng regex hẹp.
     if (isCancelConfirmation(text, context)) {
@@ -895,6 +980,9 @@ async function resolveIntent(env: Env, text: string, actor?: BotActor, context?:
       (/\b(da tra|tra het|tra du|da chuyen( khoan)?|chuyen roi)\b/.test(t) && parseMoneyVn(text) === undefined)
     ) {
       return { intent: "mark_paid", names: [], session: parseSessionReference(text, context) };
+    }
+    if (isUpdateCostLike(t)) {
+      return { intent: "update_cost", names: [], cost: parseUpdateCostDraft(text), session: parseSessionReference(text, context) };
     }
     if (isStrongAddLike(t)) {
       return { intent: "add_member", names: normalizeAddNames(text), session: parseSessionReference(text, context) };
@@ -917,6 +1005,10 @@ async function resolveIntent(env: Env, text: string, actor?: BotActor, context?:
   }
 
   // Không gọi được AI (thiếu key / lỗi mạng) → pipeline regex như trước.
+  // Sửa/xóa khoản đã ghi — ưu tiên trước add_cost (vd "đổi tiền nước thành 80k").
+  if (isUpdateCostLike(t)) {
+    return { intent: "update_cost", names: [], cost: parseUpdateCostDraft(text), session: parseSessionReference(text, context) };
+  }
   // Câu có số tiền + từ chi tiêu mà không phải câu hỏi → ghi chi phí.
   if (parseMoneyVn(text) !== undefined && /\b(tien|phi|san|nuoc|cau|bill)\b/.test(t) && !asksForCosts(t)) {
     return { intent: "add_cost", names: [], cost: { amount: parseMoneyVn(text) }, session: parseSessionReference(text, context) };
@@ -1480,6 +1572,8 @@ async function handleQuery(
       return replyCosts(env, groupId, groupName, text, parsed.session, context);
     case "add_cost":
       return replyAddCost(env, groupId, groupName, text, actor, parsed.cost, parsed.session, aliases);
+    case "update_cost":
+      return replyUpdateCost(env, groupId, groupName, text, actor, parsed.cost, parsed.session, aliases, context);
     case "mark_paid":
       return replyMarkPaid(env, groupId, groupName, text, parsed.session);
     case "chat":
@@ -1526,6 +1620,8 @@ export async function handleGroupBotQuery(
       return replyCosts(env, groupId, groupName, text, parsed.session, context);
     case "add_cost":
       return replyAddCost(env, groupId, groupName, text, actor, parsed.cost, parsed.session);
+    case "update_cost":
+      return replyUpdateCost(env, groupId, groupName, text, actor, parsed.cost, parsed.session, undefined, context);
     case "mark_paid":
       return replyMarkPaid(env, groupId, groupName, text, parsed.session);
     case "chat":
@@ -1782,6 +1878,19 @@ function matchMembersByName(
   if (!q) return [];
   let matches = members.filter((m) => normalizeName(m.name) === q);
   if (!matches.length) matches = members.filter((m) => normalizeName(m.name).includes(q));
+  // q dài hơn tên thành viên (còn dính từ đệm lạ, vd "An Thái ấy") → khớp khi
+  // câu CHỨA đủ các âm tiết của tên; ưu tiên tên dài/cụ thể nhất để khỏi nhầm "An".
+  if (!matches.length) {
+    const qTokens = new Set(q.split(" ").filter(Boolean));
+    const subset = members.filter((m) => {
+      const tokens = normalizeName(m.name).split(" ").filter(Boolean);
+      return tokens.length > 0 && tokens.every((t) => qTokens.has(t));
+    });
+    if (subset.length) {
+      const maxLen = Math.max(...subset.map((m) => normalizeName(m.name).split(" ").filter(Boolean).length));
+      matches = subset.filter((m) => normalizeName(m.name).split(" ").filter(Boolean).length === maxLen);
+    }
+  }
   if (!matches.length && aliases?.has(q)) {
     const aliased = members.find((m) => m.id === aliases.get(q));
     if (aliased) matches = [aliased];
@@ -1820,7 +1929,11 @@ async function replyAddCost(
   selector?: SessionDraft,
   aliases?: Map<string, string>
 ): Promise<BotReply> {
-  const amount = cost?.amount ?? parseMoneyVn(text);
+  // Bắt buộc tin nhắn hiện tại phải có số tiền (chữ số hoặc "nghìn/triệu/trăm")
+  // — tránh AI bịa số tiền từ ngữ cảnh trước (vd "cầu t trả" không có tiền mà
+  // vẫn ghi nhầm 50k của câu trước).
+  const hasMoneyInText = /\d/.test(text) || /\b(nghin|ngan|trieu|tram|chuc)\b/.test(normalizeName(text));
+  const amount = hasMoneyInText ? cost?.amount ?? parseMoneyVn(text) : undefined;
   if (!amount || amount < 1000) {
     return { ok: false, reply: 'Mình chưa rõ số tiền. Ví dụ: "tiền sân 240k" hoặc "3 ống cầu 270k Nam trả".' };
   }
@@ -1844,8 +1957,20 @@ async function replyAddCost(
 
   // Người trả: nhắc tên → match; "tôi trả" → alias người gửi; không nói gì → coi như người gửi ứng.
   let payer: { id: string; name: string } | null = null;
-  if (cost?.payerName && cost.payerName !== SELF_NAME_TOKEN && !isSelfReference(cost.payerName)) {
-    payer = resolveMemberByName(members, cost.payerName, aliases);
+  let payerFallbackNote = "";
+  const namedPayer =
+    cost?.payerName && cost.payerName !== SELF_NAME_TOKEN && !isSelfReference(cost.payerName) ? cost.payerName : null;
+  if (namedPayer) {
+    payer = resolveMemberByName(members, namedPayer, aliases);
+    // Nêu tên nhưng không khớp (vd người ngoài nhóm) → tạm gán người gửi để vẫn
+    // chia được tiền (shared cost cần có người ứng), kèm cảnh báo sửa lại trên web.
+    if (!payer) {
+      const self = resolveSelfMember(members, actor);
+      if (self) {
+        payer = self;
+        payerFallbackNote = `⚠️ Không tìm thấy "${namedPayer}" trong nhóm — tạm ghi ${self.name} trả, sửa lại trên web nếu cần.`;
+      }
+    }
   } else {
     payer = resolveSelfMember(members, actor);
   }
@@ -1897,7 +2022,9 @@ async function replyAddCost(
     `• ${label}${quantity > 1 ? ` x${quantity}` : ""}: ${formatMoney(amount)} (${payer ? `${payer.name} trả` : "chưa rõ ai trả"}, ${scope})`,
     `Tổng buổi này: ${formatMoney(Number(totalRow?.total) || 0)}`,
   ];
-  if (!payer) {
+  if (payerFallbackNote) {
+    lines.push(payerFallbackNote);
+  } else if (!payer) {
     lines.push('⚠️ Chưa xác định được người trả — gán lại trên web, hoặc /alias rồi nhắn kiểu "tiền sân 240k tôi trả".');
   }
   if (unresolvedConsumers.length) {
@@ -1910,6 +2037,157 @@ async function replyAddCost(
   } else {
     lines.push('Gõ "ai nợ ai" để xem công nợ mới. Sai thì sửa trên web.');
   }
+  return { ok: true, reply: lines.join("\n") };
+}
+
+type CostEditRow = {
+  id: string;
+  label: string;
+  amount: number;
+  quantity: number;
+  payer_id: string | null;
+  consumer_ids: string | null;
+};
+
+async function replyUpdateCost(
+  env: Env,
+  groupId: string,
+  groupName: string,
+  text: string,
+  actor?: BotActor,
+  cost?: CostDraft,
+  selector?: SessionDraft,
+  aliases?: Map<string, string>,
+  context?: BotContextMessage[]
+): Promise<BotReply> {
+  const session = await findSessionForCosts(env, groupId, text, selector, context);
+  if (!session) return { ok: true, reply: `${groupName}: chưa tìm thấy buổi để sửa chi phí.` };
+  if (await sessionHasPaidTransfer(env, session.id)) return { ok: false, reply: PAID_LOCK_REPLY };
+
+  const costRows =
+    (await env.DB.prepare(
+      "SELECT id, label, amount, quantity, payer_id, consumer_ids FROM costs WHERE session_id = ? ORDER BY rowid"
+    )
+      .bind(session.id)
+      .all<CostEditRow>()).results ?? [];
+  if (!costRows.length) {
+    return { ok: true, reply: `Buổi ${sessionSummaryLine(session)} chưa có khoản chi nào để sửa.` };
+  }
+
+  // Tìm khoản cần sửa theo label (so hai chiều, bỏ dấu); không nêu label → khoản mới nhất.
+  const labelQ = cost?.label ? normalizeName(cost.label) : "";
+  let targets = costRows;
+  if (labelQ) {
+    targets = costRows.filter((c) => {
+      const ln = normalizeName(c.label);
+      return ln.includes(labelQ) || labelQ.includes(ln);
+    });
+  } else {
+    targets = [costRows[costRows.length - 1]];
+  }
+  if (targets.length === 0) {
+    const list = costRows.map((c) => `• ${c.label}: ${formatMoney(c.amount)}`).join("\n");
+    return { ok: false, reply: `Không thấy khoản "${cost?.label}" trong buổi ${sessionSummaryLine(session)}. Các khoản đang có:\n${list}` };
+  }
+  if (targets.length > 1) {
+    const list = targets.map((c) => `• ${c.label}: ${formatMoney(c.amount)}`).join("\n");
+    return { ok: false, reply: `Có ${targets.length} khoản khớp "${cost?.label}", bạn ghi rõ hơn giúp mình:\n${list}` };
+  }
+  const target = targets[0];
+  const total = async () =>
+    formatMoney(
+      Number(
+        (await env.DB.prepare("SELECT SUM(amount) AS total FROM costs WHERE session_id = ?").bind(session.id).first<{ total: number | null }>())?.total
+      ) || 0
+    );
+
+  // Xóa khoản.
+  if (isDeleteCostLike(normalizeName(text))) {
+    await env.DB.prepare("DELETE FROM costs WHERE id = ?").bind(target.id).run();
+    const recalcError = await recalcSessionPayments(env, session.id);
+    const lines = [
+      `🧾 Đã xóa khoản "${target.label}" (${formatMoney(target.amount)}) khỏi buổi ${sessionSummaryLine(session)}.`,
+      `Tổng buổi này: ${await total()}`,
+    ];
+    if (recalcError) lines.push(`⚠️ Chưa chia lại được tiền (${recalcError}) — kiểm tra trên web nhé.`);
+    return { ok: true, reply: lines.join("\n") };
+  }
+
+  const members =
+    (await env.DB.prepare("SELECT id, name FROM members WHERE group_id = ? AND is_active = 1 AND is_walkin = 0")
+      .bind(groupId)
+      .all<{ id: string; name: string }>()).results ?? [];
+
+  const sets: string[] = [];
+  const binds: unknown[] = [];
+  const changes: string[] = [];
+  let warnNote = "";
+
+  if (cost?.amount && cost.amount >= 1000) {
+    sets.push("amount = ?");
+    binds.push(Math.round(cost.amount));
+    changes.push(`số tiền → ${formatMoney(cost.amount)}`);
+  }
+
+  if (cost?.payerName) {
+    if (cost.payerName === SELF_NAME_TOKEN || isSelfReference(cost.payerName)) {
+      const self = resolveSelfMember(members, actor);
+      if (self) {
+        sets.push("payer_id = ?");
+        binds.push(self.id);
+        changes.push(`người trả → ${self.name}`);
+      } else {
+        warnNote = "⚠️ Bạn chưa /alias nên chưa gán được người trả là bạn.";
+      }
+    } else {
+      const payer = resolveMemberByName(members, cost.payerName, aliases);
+      if (payer) {
+        sets.push("payer_id = ?");
+        binds.push(payer.id);
+        changes.push(`người trả → ${payer.name}`);
+      } else {
+        warnNote = `⚠️ Không tìm thấy người trả "${cost.payerName}" trong nhóm ${groupName}.`;
+      }
+    }
+  }
+
+  if (cost?.consumerNames?.length) {
+    const ids: string[] = [];
+    const unresolved: string[] = [];
+    for (const name of cost.consumerNames) {
+      const m = resolveMemberByName(members, name, aliases);
+      if (m) {
+        if (!ids.includes(m.id)) ids.push(m.id);
+      } else {
+        unresolved.push(name);
+      }
+    }
+    if (ids.length) {
+      sets.push("consumer_ids = ?", "consumer_id = ?");
+      binds.push(JSON.stringify(ids), ids[0]);
+      const namesResolved = ids.map((id) => members.find((m) => m.id === id)?.name).filter((n): n is string => !!n);
+      changes.push(`chia cho ${namesResolved.join(", ")}`);
+    }
+    if (unresolved.length) warnNote = `⚠️ Không khớp được người chia: ${unresolved.join(", ")}.`;
+  }
+
+  if (!sets.length) {
+    const hint = warnNote ? `\n${warnNote}` : "";
+    return {
+      ok: false,
+      reply: `Bạn muốn sửa gì ở khoản "${target.label}"? Ví dụ: "khoản ${target.label} để Nam trả", "đổi ${target.label} thành 80k", hoặc "xóa khoản ${target.label}".${hint}`,
+    };
+  }
+
+  await env.DB.prepare(`UPDATE costs SET ${sets.join(", ")} WHERE id = ?`).bind(...binds, target.id).run();
+  const recalcError = await recalcSessionPayments(env, session.id);
+  const lines = [
+    `🧾 Đã sửa khoản "${target.label}" — ${changes.join("; ")}.`,
+    `Tổng buổi này: ${await total()}`,
+  ];
+  if (warnNote) lines.push(warnNote);
+  if (recalcError) lines.push(`⚠️ Chưa chia lại được tiền (${recalcError}) — kiểm tra trên web nhé.`);
+  else lines.push('Gõ "ai nợ ai" để xem công nợ mới.');
   return { ok: true, reply: lines.join("\n") };
 }
 
@@ -1960,9 +2238,11 @@ async function replyCreateSession(
 
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
+  // Buổi do bot tạo: cho phép cả nhóm chỉnh sửa (allow_all_edit = 1) — khác buổi
+  // tạo trên web (chỉ người tạo/quản lý sửa được).
   await env.DB.prepare(
-    `INSERT INTO sessions (id, group_id, created_by, date, start_time, venue, location, note, status, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, NULL, ?, 'upcoming', ?)`
+    `INSERT INTO sessions (id, group_id, created_by, date, start_time, venue, location, note, status, allow_all_edit, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, NULL, ?, 'upcoming', 1, ?)`
   )
     .bind(id, groupId, actor?.userId ?? null, sessionDate, startTime, venue, draft?.note ?? null, now)
     .run();
@@ -2102,6 +2382,133 @@ async function addNamesToSession(
   return { added, already, ambiguous, notFound };
 }
 
+// "vãng lai" / "khách" = người KHÔNG có trong nhóm → tạo thành viên vãng lai mới
+// cho buổi, tuyệt đối không match với thành viên sẵn có (tránh nhầm "Bảo" → "Châu Bảo").
+function mentionsWalkin(text: string): boolean {
+  return /\b(vang lai|vlai|khach)\b/.test(normalizeName(text));
+}
+
+// Tách tên vãng lai + người bảo lãnh (ref) từ câu kiểu
+// "thêm Bảo là vãng lai, người bảo lãnh là Phát" / "thêm khách Bảo, Phát bảo lãnh".
+function parseWalkinAdd(text: string): { names: string[]; refName?: string } {
+  let s = ` ${text} `.replace(/\//g, " ");
+  let refName: string | undefined;
+
+  // "(người) bảo lãnh (là) X"  hoặc  "X bảo lãnh"
+  const refAfter = s.match(/(?:người|nguoi)?\s*(?:bảo lãnh|bao lanh|bảo trợ|bao tro|ref)\s*(?:là|la|:)?\s*([^,.;:]+)/i);
+  const refBefore = s.match(/[,.;:]\s*([^,.;:]+?)\s+(?:bảo lãnh|bao lanh|bảo trợ|bao tro)\b/i);
+  const refRaw = refAfter?.[1]?.trim() || refBefore?.[1]?.trim() || "";
+  if (refRaw) refName = cleanupAddNameCandidate(refRaw) ?? undefined;
+
+  // Xoá hẳn mệnh đề bảo lãnh để phần còn lại chỉ còn tên vãng lai.
+  s = s.replace(/[,.;:]?\s*(?:người|nguoi)?\s*(?:bảo lãnh|bao lanh|bảo trợ|bao tro|ref)\s*(?:là|la|:)?\s*[^,.;:]*/gi, " ");
+  s = s.replace(/[,.;:]\s*[^,.;:]+?\s+(?:bảo lãnh|bao lanh|bảo trợ|bao tro)\b/gi, " ");
+  // Bỏ từ lệnh và từ khoá vãng lai/khách.
+  s = s.replace(/(^|\s)[/]?(?:thêm|them|add|cho|đưa|dua)\b/gi, " ");
+  s = s.replace(/\b(?:là|la|làm|lam)\s+(?:vãng lai|vang lai|vlai|khách|khach)\b/gi, " ");
+  s = s.replace(/\b(?:khách\s+)?(?:vãng lai|vang lai|vlai)\b/gi, " ");
+  s = s.replace(/\bkhách\b/gi, " ");
+
+  const refNorm = refName ? normalizeName(refName) : "";
+  const names = [
+    ...new Set(
+      splitNameCandidates(s)
+        .map(cleanupAddNameCandidate)
+        .filter((x): x is string => Boolean(x) && x !== SELF_NAME_TOKEN)
+    ),
+  ].filter((n) => normalizeName(n) !== refNorm);
+
+  return { names, refName };
+}
+
+async function replyAddWalkin(
+  env: Env,
+  groupId: string,
+  groupName: string,
+  session: SessionRow,
+  text: string,
+  actor?: BotActor,
+  aliases?: Map<string, string>
+): Promise<BotReply> {
+  const { names, refName } = parseWalkinAdd(text);
+  if (!names.length) {
+    return {
+      ok: false,
+      reply: 'Bạn muốn thêm vãng lai tên gì? Ví dụ: "thêm Bảo là vãng lai, Phát bảo lãnh".',
+    };
+  }
+
+  // Người bảo lãnh phải là thành viên thật (không phải vãng lai) trong nhóm.
+  const members =
+    (await env.DB.prepare(
+      "SELECT id, name FROM members WHERE group_id = ? AND is_active = 1 AND is_walkin = 0"
+    )
+      .bind(groupId)
+      .all<{ id: string; name: string }>()).results ?? [];
+
+  let ref: { id: string; name: string } | null = null;
+  if (refName) {
+    const matches = matchMembersByName(members, refName, aliases);
+    if (matches.length > 1) {
+      return { ok: false, reply: `Người bảo lãnh "${refName}" trùng tên, bạn ghi rõ hơn giúp mình nhé.` };
+    }
+    if (matches.length === 0) {
+      return { ok: false, reply: `Không tìm thấy người bảo lãnh "${refName}" trong nhóm ${groupName}.` };
+    }
+    ref = matches[0];
+  }
+
+  // Vãng lai đã có sẵn trong buổi (theo tên) → không tạo trùng.
+  const existingWalkins =
+    (await env.DB.prepare(
+      `SELECT m.name FROM members m
+       JOIN session_members sm ON sm.member_id = m.id AND sm.attended = 1
+       WHERE m.session_id = ? AND m.is_walkin = 1`
+    )
+      .bind(session.id)
+      .all<{ name: string }>()).results ?? [];
+  const existingSet = new Set(existingWalkins.map((w) => normalizeName(w.name)));
+
+  const now = new Date().toISOString();
+  const added: string[] = [];
+  const already: string[] = [];
+  const stmts: D1PreparedStatement[] = [];
+  for (const name of names) {
+    if (existingSet.has(normalizeName(name))) {
+      already.push(name);
+      continue;
+    }
+    existingSet.add(normalizeName(name));
+    const memberId = crypto.randomUUID();
+    stmts.push(
+      env.DB.prepare(
+        "INSERT INTO members (id, group_id, user_id, name, phone, avatar_color, is_active, is_walkin, ref_member_id, session_id, created_at) VALUES (?, ?, NULL, ?, NULL, ?, 1, 1, ?, ?, ?)"
+      ).bind(memberId, groupId, name, colorForUser(memberId), ref?.id ?? null, session.id, now)
+    );
+    stmts.push(
+      env.DB.prepare("INSERT OR IGNORE INTO session_members (session_id, member_id, attended) VALUES (?, ?, 1)").bind(
+        session.id,
+        memberId
+      )
+    );
+    added.push(name);
+  }
+
+  if (stmts.length) {
+    stmts.push(env.DB.prepare("DELETE FROM payments WHERE session_id = ? AND paid = 0").bind(session.id));
+    await env.DB.batch(stmts);
+    await recalcSessionPayments(env, session.id);
+  }
+
+  const lines = [`🏸 ${sessionSummaryLine(session)}`];
+  if (added.length) {
+    const refSuffix = ref ? ` (bảo lãnh: ${ref.name})` : "";
+    lines.push(`✅ Đã thêm vãng lai: ${added.join(", ")}${refSuffix}`);
+  }
+  if (already.length) lines.push(`ℹ️ Vãng lai đã có sẵn: ${already.join(", ")}`);
+  return { ok: true, reply: lines.join("\n") };
+}
+
 async function replyAddMembers(
   env: Env,
   groupId: string,
@@ -2113,7 +2520,8 @@ async function replyAddMembers(
   text?: string,
   context?: BotContextMessage[]
 ): Promise<BotReply> {
-  if (!names.length) {
+  const isWalkin = text ? mentionsWalkin(text) : false;
+  if (!names.length && !isWalkin) {
     return { ok: false, reply: 'Bạn muốn thêm ai? Ví dụ: "thêm An vào buổi".' };
   }
 
@@ -2125,6 +2533,11 @@ async function replyAddMembers(
   }
 
   if (await sessionHasPaidTransfer(env, session.id)) return { ok: false, reply: PAID_LOCK_REPLY };
+
+  // "vãng lai/khách" → tạo người mới cho buổi, không match thành viên sẵn có.
+  if (isWalkin) {
+    return replyAddWalkin(env, groupId, groupName, session, text!, actor, aliases);
+  }
 
   const outcome = await addNamesToSession(env, groupId, session.id, names, actor, aliases);
   const header = `🏸 ${sessionSummaryLine(session)}`;
@@ -2155,10 +2568,13 @@ async function replyRemoveMembers(
 
   if (await sessionHasPaidTransfer(env, session.id)) return { ok: false, reply: PAID_LOCK_REPLY };
 
+  // Gồm cả vãng lai của buổi này để rút được người vừa thêm dạng vãng lai.
   const members =
-    (await env.DB.prepare("SELECT id, name FROM members WHERE group_id = ? AND is_active = 1 AND is_walkin = 0")
-      .bind(groupId)
-      .all<{ id: string; name: string }>()).results ?? [];
+    (await env.DB.prepare(
+      "SELECT id, name, is_walkin FROM members WHERE group_id = ? AND is_active = 1 AND (is_walkin = 0 OR session_id = ?)"
+    )
+      .bind(groupId, session.id)
+      .all<{ id: string; name: string; is_walkin: number }>()).results ?? [];
   const attendingRows =
     (await env.DB.prepare("SELECT member_id FROM session_members WHERE session_id = ? AND attended = 1")
       .bind(session.id)
@@ -2170,13 +2586,15 @@ async function replyRemoveMembers(
   const ambiguous: string[] = [];
   const notFound: string[] = [];
   const toDelete: string[] = [];
+  const walkinsToDelete: string[] = [];
 
-  const queueRemove = (member: { id: string; name: string }) => {
+  const queueRemove = (member: { id: string; name: string; is_walkin?: number }) => {
     if (!attending.has(member.id)) {
       notIn.push(member.name);
       return;
     }
     toDelete.push(member.id);
+    if (member.is_walkin) walkinsToDelete.push(member.id);
     removed.push(member.name);
     attending.delete(member.id);
   };
@@ -2204,6 +2622,12 @@ async function replyRemoveMembers(
     const stmts = toDelete.map((memberId) =>
       env.DB.prepare("DELETE FROM session_members WHERE session_id = ? AND member_id = ?").bind(session.id, memberId)
     );
+    // Vãng lai chỉ thuộc về buổi → xoá luôn bản ghi member (giống thao tác trên web).
+    for (const walkinId of walkinsToDelete) {
+      stmts.push(
+        env.DB.prepare("DELETE FROM members WHERE id = ? AND is_walkin = 1 AND session_id = ?").bind(walkinId, session.id)
+      );
+    }
     stmts.push(env.DB.prepare("DELETE FROM payments WHERE session_id = ? AND paid = 0").bind(session.id));
     await env.DB.batch(stmts);
     // Chia lại tiền với danh sách mới; buổi trống người thì thôi (payments chưa trả đã xoá).
