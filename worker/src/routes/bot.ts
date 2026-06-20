@@ -1849,7 +1849,11 @@ async function replyAddCost(
   selector?: SessionDraft,
   aliases?: Map<string, string>
 ): Promise<BotReply> {
-  const amount = cost?.amount ?? parseMoneyVn(text);
+  // Bắt buộc tin nhắn hiện tại phải có số tiền (chữ số hoặc "nghìn/triệu/trăm")
+  // — tránh AI bịa số tiền từ ngữ cảnh trước (vd "cầu t trả" không có tiền mà
+  // vẫn ghi nhầm 50k của câu trước).
+  const hasMoneyInText = /\d/.test(text) || /\b(nghin|ngan|trieu|tram|chuc)\b/.test(normalizeName(text));
+  const amount = hasMoneyInText ? cost?.amount ?? parseMoneyVn(text) : undefined;
   if (!amount || amount < 1000) {
     return { ok: false, reply: 'Mình chưa rõ số tiền. Ví dụ: "tiền sân 240k" hoặc "3 ống cầu 270k Nam trả".' };
   }
@@ -1873,8 +1877,20 @@ async function replyAddCost(
 
   // Người trả: nhắc tên → match; "tôi trả" → alias người gửi; không nói gì → coi như người gửi ứng.
   let payer: { id: string; name: string } | null = null;
-  if (cost?.payerName && cost.payerName !== SELF_NAME_TOKEN && !isSelfReference(cost.payerName)) {
-    payer = resolveMemberByName(members, cost.payerName, aliases);
+  let payerFallbackNote = "";
+  const namedPayer =
+    cost?.payerName && cost.payerName !== SELF_NAME_TOKEN && !isSelfReference(cost.payerName) ? cost.payerName : null;
+  if (namedPayer) {
+    payer = resolveMemberByName(members, namedPayer, aliases);
+    // Nêu tên nhưng không khớp (vd người ngoài nhóm) → tạm gán người gửi để vẫn
+    // chia được tiền (shared cost cần có người ứng), kèm cảnh báo sửa lại trên web.
+    if (!payer) {
+      const self = resolveSelfMember(members, actor);
+      if (self) {
+        payer = self;
+        payerFallbackNote = `⚠️ Không tìm thấy "${namedPayer}" trong nhóm — tạm ghi ${self.name} trả, sửa lại trên web nếu cần.`;
+      }
+    }
   } else {
     payer = resolveSelfMember(members, actor);
   }
@@ -1926,7 +1942,9 @@ async function replyAddCost(
     `• ${label}${quantity > 1 ? ` x${quantity}` : ""}: ${formatMoney(amount)} (${payer ? `${payer.name} trả` : "chưa rõ ai trả"}, ${scope})`,
     `Tổng buổi này: ${formatMoney(Number(totalRow?.total) || 0)}`,
   ];
-  if (!payer) {
+  if (payerFallbackNote) {
+    lines.push(payerFallbackNote);
+  } else if (!payer) {
     lines.push('⚠️ Chưa xác định được người trả — gán lại trên web, hoặc /alias rồi nhắn kiểu "tiền sân 240k tôi trả".');
   }
   if (unresolvedConsumers.length) {
