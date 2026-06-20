@@ -326,6 +326,11 @@ function cleanupVenue(value: string): string {
   return value
     .replace(/\s+(?:vào|vao|lúc|luc)\b.*$/i, "")
     .replace(/\s+(?:ngày|ngay|hôm|hom|mai|thứ|thu)\b.*$/i, "")
+    // Bỏ phần giờ dính đuôi tên sân: "đông hòa 17h", "Q7 19:30", "thủ đức 7 giờ tối"
+    .replace(
+      /\s+(?:lúc|luc|vào|vao)?\s*\d{1,2}\s*(?:h|giờ|gio|:)\s*\d{0,2}\s*(?:sáng|sang|chiều|chieu|tối|toi|trưa|trua|am|pm)?\s*$/i,
+      ""
+    )
     .replace(/\b(?:nhé|nhe|nha|ạ|a)\b/gi, " ")
     .replace(/^[\s,.;:!?]+|[\s,.;:!?]+$/g, "")
     .replace(/\s+/g, " ")
@@ -1132,10 +1137,10 @@ async function matchSessionsBySelector(
     where.push("s.start_time = ?");
     binds.push(selector.startTime);
   }
-  if (selector.venue) {
-    where.push("s.venue LIKE ?");
-    binds.push(`%${selector.venue}%`);
-  }
+  // Venue lọc ở JS (không dùng SQL LIKE): SQLite chỉ case-fold ASCII nên
+  // "đông hòa" không khớp "Đông Hòa". So sánh sau khi bỏ dấu + lowercase.
+  // Lấy dư rồi cắt để vẫn còn đủ kết quả sau khi lọc venue.
+  const fetchLimit = selector.venue ? limit + 20 : limit;
 
   const result = await env.DB.prepare(
     `SELECT s.id, s.name, s.date, s.start_time, s.end_time, s.venue, s.location, s.note, s.status,
@@ -1143,11 +1148,18 @@ async function matchSessionsBySelector(
      FROM sessions s
      WHERE ${where.join(" AND ")}
      ORDER BY CASE WHEN s.status = 'upcoming' THEN 0 ELSE 1 END, s.date ASC, s.start_time ASC
-     LIMIT ${limit}`
+     LIMIT ${fetchLimit}`
   )
     .bind(...binds)
     .all<SessionRow>();
-  return result.results ?? [];
+  let rows = result.results ?? [];
+  if (selector.venue) {
+    const q = normalizeName(selector.venue);
+    rows = rows.filter(
+      (r) => normalizeName(r.venue).includes(q) || normalizeName(sessionTitle(r)).includes(q)
+    );
+  }
+  return rows.slice(0, limit);
 }
 
 async function resolveSessionForAction(
@@ -1159,9 +1171,14 @@ async function resolveSessionForAction(
   if (!hasSessionSelector(selector)) {
     return { session: await soonestUpcoming(env, groupId) };
   }
-  const rows = await matchSessionsBySelector(env, groupId, selector!, upcomingOnly);
-  if (rows.length > 1) return { session: null, choices: rows };
-  return { session: rows[0] ?? null };
+  // Nới lỏng dần (bỏ giờ rồi bỏ sân, giữ ngày làm mỏ neo) như các luồng khác,
+  // tránh trượt khớp khi NLU nhét thừa giờ/sân. 1 kết quả thì dùng, >1 thì hỏi lại.
+  for (const sel of loosenSelector(selector!)) {
+    const rows = await matchSessionsBySelector(env, groupId, sel, upcomingOnly);
+    if (rows.length === 1) return { session: rows[0] };
+    if (rows.length > 1) return { session: null, choices: rows };
+  }
+  return { session: null };
 }
 
 function ambiguousSessionsReply(choices: SessionRow[]): BotReply {
