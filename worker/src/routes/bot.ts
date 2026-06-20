@@ -170,6 +170,50 @@ function sessionSummaryLine(s: SessionRow) {
   return `${formatDate(s.date)} • ${sessionTimeRange(s)} • ${sessionTitle(s)}`;
 }
 
+async function getAttendeeNames(env: Env, sessionId: string): Promise<string[]> {
+  const result = await env.DB
+    .prepare(
+      `SELECT m.name FROM session_members sm
+       JOIN members m ON m.id = sm.member_id
+       WHERE sm.session_id = ? AND sm.attended = 1
+       ORDER BY m.is_walkin ASC, m.name COLLATE NOCASE`
+    )
+    .bind(sessionId)
+    .all<{ name: string }>();
+  return (result.results ?? []).map((r) => r.name);
+}
+
+// Hiển thị buổi kèm danh sách người tham gia (giống giao diện trên web/app) —
+// truy vấn buổi là show luôn ai đi, không cần hỏi thêm.
+async function formatSessionDetailed(env: Env, s: SessionRow): Promise<string> {
+  const lines = [`🏸 ${formatDate(s.date)} • ${sessionTimeRange(s)} • ${sessionTitle(s)}`];
+  if (s.venue && s.venue !== sessionTitle(s)) lines.push(`Sân: ${s.venue}`);
+  if (s.location) lines.push(`📍 ${s.location}`);
+  const status = s.status && s.status !== "upcoming" ? ` • ${statusLabel(s.status)}` : "";
+  const names = await getAttendeeNames(env, s.id);
+  if (names.length) {
+    lines.push(`👥 ${names.length} người tham gia${status}:`);
+    for (const name of names) lines.push(`• ${name}`);
+  } else {
+    lines.push(`👥 ${s.attendee_count ?? 0} người${status}`);
+  }
+  if (s.note) lines.push(`📝 ${s.note}`);
+  return lines.join("\n");
+}
+
+// Khoá can thiệp khi đã chia tiền VÀ có ít nhất 1 người chuyển xong (paid = 1 / "Đã xong").
+// Chỉ chia tiền mà chưa ai chuyển thì vẫn cho bot chỉnh để linh động.
+async function sessionHasPaidTransfer(env: Env, sessionId: string): Promise<boolean> {
+  const row = await env.DB
+    .prepare("SELECT 1 AS n FROM payments WHERE session_id = ? AND paid = 1 LIMIT 1")
+    .bind(sessionId)
+    .first<{ n: number }>();
+  return Boolean(row);
+}
+
+const PAID_LOCK_REPLY =
+  "Buổi này đã có người chuyển tiền (trạng thái Đã xong) nên mình không chỉnh được nữa — cần thay đổi thì thao tác trên web nhé.";
+
 function formatMoney(amount: number) {
   return new Intl.NumberFormat("vi-VN", {
     style: "currency",
@@ -181,7 +225,7 @@ function formatMoney(amount: number) {
 function helpText() {
   return [
     "🤖 TingTing bot — các lệnh:",
-    "• /buoi — buổi sắp tới của nhóm",
+    "• /play — buổi sắp tới của nhóm",
     '• "buổi hôm nay" / "buổi tuần này" / "buổi kế tiếp" — lọc theo thời gian',
     '• "các buổi gần đây" — lịch sử gần đây',
     '• "thành viên" — danh sách thành viên nhóm',
@@ -444,7 +488,7 @@ function extractRemoveNames(text: string): string[] {
 
 function hasSessionContext(t: string): boolean {
   return (
-    /^\/buoi\b/.test(t) ||
+    /^\/(play|buoi)\b/.test(t) ||
     /\b(buoi|keo|lich|choi|cau long|san|tap)\b/.test(t) ||
     /\b(di danh|danh cau|danh long|quanh cau|quanh long|danh o|di cau|di san|di long)\b/.test(t)
   );
@@ -452,7 +496,7 @@ function hasSessionContext(t: string): boolean {
 
 function asksForSchedule(t: string): boolean {
   return (
-    /^\/buoi\b/.test(t) ||
+    /^\/(play|buoi)\b/.test(t) ||
     /\b(lich|lich choi|lich danh|lich quanh|co lich|xem lich|hom nay|tuan nay|sap toi|sap dien ra|ke tiep|tiep theo|gan nhat)\b/.test(t) ||
     /\b(khi nao|may gio|gio nao|thoi gian|dia diem|o dau|san nao|co keo|keo nao|co buoi|buoi nao)\b/.test(t)
   );
@@ -495,7 +539,7 @@ function detectIntentByRegex(text: string): Intent | null {
   if (sessionContext && /tuan nay|trong tuan|this week/.test(t)) return "week";
   if (sessionContext && /ke tiep|tiep theo|buoi toi|gan nhat|\bnext\b/.test(t)) return "next";
   if (sessionContext && /gan day|lich su|da choi|truoc day|tat ca|\ball\b|\brecent\b/.test(t)) return "recent";
-  if (/^\/buoi\b/.test(t) || (sessionContext && (scheduleQuestion || /sap toi|sap dien ra|lich choi|upcoming/.test(t)))) {
+  if (/^\/(play|buoi)\b/.test(t) || (sessionContext && (scheduleQuestion || /sap toi|sap dien ra|lich choi|upcoming/.test(t)))) {
     return "upcoming";
   }
   return null;
@@ -818,8 +862,8 @@ async function resolveIntent(env: Env, text: string, actor?: BotActor, context?:
   if (/^\/(them|add)\b/.test(t)) {
     return { intent: "add_member", names: normalizeAddNames(text), session: parseSessionReference(text, context) };
   }
-  if (/^\/buoi\b/.test(t) && !text.replace(/^\/buoi\b/i, "").trim()) {
-    return { intent: "upcoming", names: [] }; // chỉ gõ "/buoi"
+  if (/^\/(play|buoi)\b/.test(t) && !text.replace(/^\/(play|buoi)\b/i, "").trim()) {
+    return { intent: "upcoming", names: [] }; // chỉ gõ "/play" (hoặc "/buoi" cũ)
   }
 
   // AI là bộ phân loại chính — regex ép trước AI từng gây nhầm với câu nhiều thông tin
@@ -890,7 +934,7 @@ async function resolveIntent(env: Env, text: string, actor?: BotActor, context?:
     };
   }
 
-  const cleaned = text.replace(/^\/buoi\b/i, "").trim();
+  const cleaned = text.replace(/^\/(play|buoi)\b/i, "").trim();
   if (!cleaned) return { intent: "upcoming", names: [] };
 
   return { intent: "chat", names: [] };
@@ -1386,7 +1430,7 @@ async function replySessions(
   let rows: SessionRow[];
   let header: string;
 
-  // "/buổi ngày mai", "/buổi ở thủ đức" — có bộ lọc cụ thể thì ưu tiên nó.
+  // "/play ngày mai", "/play ở thủ đức" — có bộ lọc cụ thể thì ưu tiên nó.
   if (selector?.date || selector?.venue) {
     rows = await querySessions(env, groupId, {
       date: selector.date,
@@ -1398,7 +1442,8 @@ async function replySessions(
     if (selector.venue) parts.push(`tại ${selector.venue}`);
     header = `📅 Buổi ${parts.join(" ")} của ${groupName}`;
     if (rows.length === 0) return { ok: true, reply: `${header}\nKhông có buổi nào.` };
-    return { ok: true, reply: `${header}\n\n${rows.map(formatSession).join("\n\n")}` };
+    const blocks = await Promise.all(rows.map((row) => formatSessionDetailed(env, row)));
+    return { ok: true, reply: `${header}\n\n${blocks.join("\n\n")}` };
   }
 
   if (intent === "today") {
@@ -1426,7 +1471,8 @@ async function replySessions(
     return { ok: true, reply: `${header}\n${none}` };
   }
 
-  return { ok: true, reply: `${header}\n\n${rows.map(formatSession).join("\n\n")}` };
+  const blocks = await Promise.all(rows.map((row) => formatSessionDetailed(env, row)));
+  return { ok: true, reply: `${header}\n\n${blocks.join("\n\n")}` };
 }
 
 async function replyMembers(env: Env, groupId: string, groupName: string): Promise<BotReply> {
@@ -1669,6 +1715,8 @@ async function replyAddCost(
     session = await findSessionForAddCost(env, groupId);
   }
   if (!session) return { ok: true, reply: `${groupName}: chưa có buổi nào để ghi chi phí.` };
+
+  if (await sessionHasPaidTransfer(env, session.id)) return { ok: false, reply: PAID_LOCK_REPLY };
 
   const members =
     (await env.DB.prepare("SELECT id, name FROM members WHERE group_id = ? AND is_active = 1 AND is_walkin = 0")
@@ -1955,6 +2003,8 @@ async function replyAddMembers(
     return { ok: true, reply: `${groupName}: chưa có buổi sắp tới${hint} để thêm người.` };
   }
 
+  if (await sessionHasPaidTransfer(env, session.id)) return { ok: false, reply: PAID_LOCK_REPLY };
+
   const outcome = await addNamesToSession(env, groupId, session.id, names, actor, aliases);
   const header = `🏸 ${sessionSummaryLine(session)}`;
   return { ok: true, reply: `${header}${formatAddOutcome(outcome)}` };
@@ -1979,6 +2029,8 @@ async function replyRemoveMembers(
     const hint = hasSessionSelector(selector) ? " phù hợp" : "";
     return { ok: true, reply: `${groupName}: chưa có buổi sắp tới${hint} để rút người.` };
   }
+
+  if (await sessionHasPaidTransfer(env, session.id)) return { ok: false, reply: PAID_LOCK_REPLY };
 
   const members =
     (await env.DB.prepare("SELECT id, name FROM members WHERE group_id = ? AND is_active = 1 AND is_walkin = 0")
@@ -2123,6 +2175,8 @@ async function replyUpdateSession(
   if (!session) {
     return { ok: true, reply: `${groupName}: chưa có buổi sắp tới phù hợp để sửa.` };
   }
+
+  if (await sessionHasPaidTransfer(env, session.id)) return { ok: false, reply: PAID_LOCK_REPLY };
 
   const sets: string[] = [];
   const binds: unknown[] = [];
@@ -2341,7 +2395,7 @@ async function handleConnect(env: Env, threadId: string, text: string): Promise<
 
   return {
     ok: true,
-    reply: `✅ Đã liên kết nhóm chat này với «${group.name}». Gõ /buoi để xem buổi sắp tới, hoặc /help để xem hướng dẫn.`,
+    reply: `✅ Đã liên kết nhóm chat này với «${group.name}». Gõ /play để xem buổi sắp tới, hoặc /help để xem hướng dẫn.`,
   };
 }
 
