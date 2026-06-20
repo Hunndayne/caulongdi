@@ -326,6 +326,11 @@ function cleanupVenue(value: string): string {
   return value
     .replace(/\s+(?:vào|vao|lúc|luc)\b.*$/i, "")
     .replace(/\s+(?:ngày|ngay|hôm|hom|mai|thứ|thu)\b.*$/i, "")
+    // Bỏ phần giờ dính đuôi tên sân: "đông hòa 17h", "Q7 19:30", "thủ đức 7 giờ tối"
+    .replace(
+      /\s+(?:lúc|luc|vào|vao)?\s*\d{1,2}\s*(?:h|giờ|gio|:)\s*\d{0,2}\s*(?:sáng|sang|chiều|chieu|tối|toi|trưa|trua|am|pm)?\s*$/i,
+      ""
+    )
     .replace(/\b(?:nhé|nhe|nha|ạ|a)\b/gi, " ")
     .replace(/^[\s,.;:!?]+|[\s,.;:!?]+$/g, "")
     .replace(/\s+/g, " ")
@@ -1132,10 +1137,10 @@ async function matchSessionsBySelector(
     where.push("s.start_time = ?");
     binds.push(selector.startTime);
   }
-  if (selector.venue) {
-    where.push("s.venue LIKE ?");
-    binds.push(`%${selector.venue}%`);
-  }
+  // Venue lọc ở JS (không dùng SQL LIKE): SQLite chỉ case-fold ASCII nên
+  // "đông hòa" không khớp "Đông Hòa". So sánh sau khi bỏ dấu + lowercase.
+  // Lấy dư rồi cắt để vẫn còn đủ kết quả sau khi lọc venue.
+  const fetchLimit = selector.venue ? limit + 20 : limit;
 
   const result = await env.DB.prepare(
     `SELECT s.id, s.name, s.date, s.start_time, s.end_time, s.venue, s.location, s.note, s.status,
@@ -1143,25 +1148,117 @@ async function matchSessionsBySelector(
      FROM sessions s
      WHERE ${where.join(" AND ")}
      ORDER BY CASE WHEN s.status = 'upcoming' THEN 0 ELSE 1 END, s.date ASC, s.start_time ASC
-     LIMIT ${limit}`
+     LIMIT ${fetchLimit}`
   )
     .bind(...binds)
     .all<SessionRow>();
-  return result.results ?? [];
+  let rows = result.results ?? [];
+  if (selector.venue) {
+    const q = normalizeName(selector.venue);
+    rows = rows.filter(
+      (r) => normalizeName(r.venue).includes(q) || normalizeName(sessionTitle(r)).includes(q)
+    );
+  }
+  return rows.slice(0, limit);
+}
+
+// Fallback "nhờ LLM chọn buổi": khi khớp theo selector (date/giờ/sân) thất bại,
+// đưa DANH SÁCH buổi có sẵn cho DeepSeek tự chọn buổi khớp nhất với câu người dùng.
+// LLM chỉ CHỌN trong danh sách (trả về id), không tự sinh truy vấn → an toàn, không bịa.
+async function pickSessionWithAI(
+  env: Env,
+  text: string,
+  candidates: SessionRow[],
+  context?: BotContextMessage[]
+): Promise<SessionRow | null> {
+  if (candidates.length === 0) return null;
+  if (candidates.length === 1) return candidates[0];
+  const apiKey = env.DEEPSEEK_API_KEY?.trim();
+  if (!apiKey) return null;
+
+  const baseUrl = (env.DEEPSEEK_BASE_URL?.trim() || DEFAULT_DEEPSEEK_BASE_URL).replace(/\/+$/, "");
+  const model = env.DEEPSEEK_MODEL?.trim() || DEFAULT_DEEPSEEK_MODEL;
+  const byId = new Map(candidates.map((s) => [s.id, s]));
+  const list = candidates
+    .map(
+      (s) =>
+        `- id=${s.id} | ${formatDate(s.date)} ${sessionTimeRange(s)} | sân ${s.venue}${
+          s.name ? ` | ${s.name}` : ""
+        } | ${statusLabel(s.status)}`
+    )
+    .join("\n");
+  const system = [
+    `Hôm nay là ${vnToday()} (giờ Việt Nam).`,
+    "Người dùng đang nói tới MỘT buổi cầu lông trong DANH SÁCH cho sẵn. Hãy chọn đúng buổi đó.",
+    "So khớp theo ngày, giờ, tên sân trong câu của người dùng (bỏ dấu, không phân biệt hoa thường).",
+    'CHỈ trả về JSON: {"id": "<id buổi khớp nhất>"} hoặc {"id": null} nếu không buổi nào khớp rõ ràng hoặc còn mơ hồ.',
+    "Tuyệt đối chỉ dùng id có trong danh sách, không bịa id mới.",
+  ].join(" ");
+  const contextBlock = contextForPrompt(context);
+
+  try {
+    const resp = await fetch(`${baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: "system", content: system },
+          {
+            role: "user",
+            content: `${contextBlock ? `Ngữ cảnh gần đây:\n${contextBlock}\n\n` : ""}Danh sách buổi:\n${list}\n\nCâu của người dùng: ${text}`,
+          },
+        ],
+        temperature: 0,
+        max_tokens: 80,
+        response_format: { type: "json_object" },
+        stream: false,
+      }),
+    });
+    if (!resp.ok) {
+      console.error("[bot-pick] deepseek http", resp.status, await resp.text().catch(() => ""));
+      return null;
+    }
+    const data = (await resp.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    const content = data?.choices?.[0]?.message?.content ?? "";
+    const obj = JSON.parse(content) as { id?: unknown };
+    const id = typeof obj?.id === "string" ? obj.id.trim() : "";
+    return id ? byId.get(id) ?? null : null;
+  } catch (error) {
+    console.error("[bot-pick]", error);
+    return null;
+  }
 }
 
 async function resolveSessionForAction(
   env: Env,
   groupId: string,
   selector: SessionDraft | undefined,
-  upcomingOnly: boolean
+  upcomingOnly: boolean,
+  text?: string,
+  context?: BotContextMessage[]
 ): Promise<SessionResolution> {
   if (!hasSessionSelector(selector)) {
     return { session: await soonestUpcoming(env, groupId) };
   }
-  const rows = await matchSessionsBySelector(env, groupId, selector!, upcomingOnly);
-  if (rows.length > 1) return { session: null, choices: rows };
-  return { session: rows[0] ?? null };
+  // Nới lỏng dần (bỏ giờ rồi bỏ sân, giữ ngày làm mỏ neo) như các luồng khác,
+  // tránh trượt khớp khi NLU nhét thừa giờ/sân. 1 kết quả thì dùng, >1 thì hỏi lại.
+  for (const sel of loosenSelector(selector!)) {
+    const rows = await matchSessionsBySelector(env, groupId, sel, upcomingOnly);
+    if (rows.length === 1) return { session: rows[0] };
+    if (rows.length > 1) return { session: null, choices: rows };
+  }
+  // Khớp deterministic thất bại → nhờ LLM chọn buổi trong danh sách sắp tới.
+  if (text) {
+    const candidates = await querySessions(env, groupId, {
+      onlyUpcoming: upcomingOnly,
+      recent: !upcomingOnly,
+      limit: 12,
+    });
+    const picked = await pickSessionWithAI(env, text, candidates, context);
+    if (picked) return { session: picked };
+  }
+  return { session: null };
 }
 
 function ambiguousSessionsReply(choices: SessionRow[]): BotReply {
@@ -1208,7 +1305,8 @@ async function findSessionForCosts(
   env: Env,
   groupId: string,
   text: string,
-  selector?: SessionDraft
+  selector?: SessionDraft,
+  context?: BotContextMessage[]
 ): Promise<SessionRow | null> {
   if (wantsUpcomingSession(text) && !hasSessionSelector(selector)) return soonestUpcoming(env, groupId);
 
@@ -1217,6 +1315,10 @@ async function findSessionForCosts(
       const row = await querySessionRow(env, groupId, sel, "DESC");
       if (row) return row;
     }
+    // Không khớp selector → nhờ LLM chọn buổi trong danh sách gần đây.
+    const candidates = await querySessions(env, groupId, { recent: true, limit: 12 });
+    const picked = await pickSessionWithAI(env, text, candidates, context);
+    if (picked) return picked;
     return null;
   }
 
@@ -1300,11 +1402,23 @@ function* loosenSelector(selector: SessionDraft): Generator<SessionDraft> {
   }
 }
 
-async function findSessionForAttendees(env: Env, groupId: string, selector?: SessionDraft): Promise<SessionRow | null> {
+async function findSessionForAttendees(
+  env: Env,
+  groupId: string,
+  selector?: SessionDraft,
+  text?: string,
+  context?: BotContextMessage[]
+): Promise<SessionRow | null> {
   if (!hasSessionSelector(selector)) return soonestUpcoming(env, groupId);
   for (const sel of loosenSelector(selector!)) {
     const row = await querySessionRow(env, groupId, sel, "ASC");
     if (row) return row;
+  }
+  // Không khớp selector → nhờ LLM chọn buổi trong danh sách gần đây.
+  if (text) {
+    const candidates = await querySessions(env, groupId, { recent: true, limit: 12 });
+    const picked = await pickSessionWithAI(env, text, candidates, context);
+    if (picked) return picked;
   }
   return null;
 }
@@ -1349,11 +1463,11 @@ async function handleQuery(
     case "list_members":
       return replyMembers(env, groupId, groupName);
     case "list_attendees":
-      return replyAttendees(env, groupId, groupName, parsed.session);
+      return replyAttendees(env, groupId, groupName, parsed.session, text, context);
     case "add_member":
-      return replyAddMembers(env, groupId, groupName, parsed.names, actor, parsed.session, aliases);
+      return replyAddMembers(env, groupId, groupName, parsed.names, actor, parsed.session, aliases, text, context);
     case "remove_member":
-      return replyRemoveMembers(env, groupId, groupName, parsed.names, actor, parsed.session, aliases);
+      return replyRemoveMembers(env, groupId, groupName, parsed.names, actor, parsed.session, aliases, text, context);
     case "create_session":
       return replyCreateSession(env, groupId, groupName, parsed.session, actor, parsed.names, aliases);
     case "update_session":
@@ -1363,7 +1477,7 @@ async function handleQuery(
     case "stats":
       return replyStats(env, groupId, groupName, text);
     case "costs":
-      return replyCosts(env, groupId, groupName, text, parsed.session);
+      return replyCosts(env, groupId, groupName, text, parsed.session, context);
     case "add_cost":
       return replyAddCost(env, groupId, groupName, text, actor, parsed.cost, parsed.session, aliases);
     case "mark_paid":
@@ -1395,11 +1509,11 @@ export async function handleGroupBotQuery(
     case "list_members":
       return replyMembers(env, groupId, groupName);
     case "list_attendees":
-      return replyAttendees(env, groupId, groupName, parsed.session);
+      return replyAttendees(env, groupId, groupName, parsed.session, text, context);
     case "add_member":
-      return replyAddMembers(env, groupId, groupName, parsed.names, actor, parsed.session);
+      return replyAddMembers(env, groupId, groupName, parsed.names, actor, parsed.session, undefined, text, context);
     case "remove_member":
-      return replyRemoveMembers(env, groupId, groupName, parsed.names, actor, parsed.session);
+      return replyRemoveMembers(env, groupId, groupName, parsed.names, actor, parsed.session, undefined, text, context);
     case "create_session":
       return replyCreateSession(env, groupId, groupName, parsed.session, actor, parsed.names);
     case "update_session":
@@ -1409,7 +1523,7 @@ export async function handleGroupBotQuery(
     case "stats":
       return replyStats(env, groupId, groupName, text);
     case "costs":
-      return replyCosts(env, groupId, groupName, text, parsed.session);
+      return replyCosts(env, groupId, groupName, text, parsed.session, context);
     case "add_cost":
       return replyAddCost(env, groupId, groupName, text, actor, parsed.cost, parsed.session);
     case "mark_paid":
@@ -1492,9 +1606,11 @@ async function replyAttendees(
   env: Env,
   groupId: string,
   groupName: string,
-  selector?: SessionDraft
+  selector?: SessionDraft,
+  text?: string,
+  context?: BotContextMessage[]
 ): Promise<BotReply> {
-  const session = await findSessionForAttendees(env, groupId, selector);
+  const session = await findSessionForAttendees(env, groupId, selector, text, context);
   if (!session) {
     const suffix = hasSessionSelector(selector) ? "phù hợp" : "sắp tới";
     return { ok: true, reply: `${groupName}: chưa có buổi ${suffix} nào.` };
@@ -1546,9 +1662,10 @@ async function replyCosts(
   groupId: string,
   groupName: string,
   text: string,
-  selector?: SessionDraft
+  selector?: SessionDraft,
+  context?: BotContextMessage[]
 ): Promise<BotReply> {
-  const session = await findSessionForCosts(env, groupId, text, selector);
+  const session = await findSessionForCosts(env, groupId, text, selector, context);
   if (!session) return { ok: true, reply: `${groupName}: chưa tìm thấy buổi để xem chi phí.` };
 
   const [costRows, paymentRows, memberRows] = await Promise.all([
@@ -1992,13 +2109,15 @@ async function replyAddMembers(
   names: string[],
   actor?: BotActor,
   selector?: SessionDraft,
-  aliases?: Map<string, string>
+  aliases?: Map<string, string>,
+  text?: string,
+  context?: BotContextMessage[]
 ): Promise<BotReply> {
   if (!names.length) {
     return { ok: false, reply: 'Bạn muốn thêm ai? Ví dụ: "thêm An vào buổi".' };
   }
 
-  const { session, choices } = await resolveSessionForAction(env, groupId, selector, true);
+  const { session, choices } = await resolveSessionForAction(env, groupId, selector, true, text, context);
   if (choices) return ambiguousSessionsReply(choices);
   if (!session) {
     const hint = hasSessionSelector(selector) ? " phù hợp" : "";
@@ -2019,13 +2138,15 @@ async function replyRemoveMembers(
   names: string[],
   actor?: BotActor,
   selector?: SessionDraft,
-  aliases?: Map<string, string>
+  aliases?: Map<string, string>,
+  text?: string,
+  context?: BotContextMessage[]
 ): Promise<BotReply> {
   if (!names.length) {
     return { ok: false, reply: 'Bạn muốn rút ai khỏi buổi? Ví dụ: "bớt tôi ra" hoặc "Nam không đi nữa".' };
   }
 
-  const { session, choices } = await resolveSessionForAction(env, groupId, selector, true);
+  const { session, choices } = await resolveSessionForAction(env, groupId, selector, true, text, context);
   if (choices) return ambiguousSessionsReply(choices);
   if (!session) {
     const hint = hasSessionSelector(selector) ? " phù hợp" : "";
