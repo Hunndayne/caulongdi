@@ -1738,7 +1738,12 @@ sessions.delete("/:id", async (c) => {
   const lockedResponse = await blockIfSessionHasConfirmedPayments(c, id);
   if (lockedResponse) return lockedResponse;
   // Vãng lai ephemeral của buổi: dọn trước khi xoá buổi (FK members trỏ về groups, không cascade theo session)
-  await c.env.DB.prepare("DELETE FROM members WHERE session_id = ? AND is_walkin = 1").bind(id).run();
+  // Bọc try-catch phòng khi migration patch-walkin chưa chạy trên môi trường đó
+  try {
+    await c.env.DB.prepare("DELETE FROM members WHERE session_id = ? AND is_walkin = 1").bind(id).run();
+  } catch {
+    // ignore — columns may not exist yet on older DB instances
+  }
   await c.env.DB.prepare("DELETE FROM sessions WHERE id = ?").bind(id).run();
   return c.json({ success: true });
 });
