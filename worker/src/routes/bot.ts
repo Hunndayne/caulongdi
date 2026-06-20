@@ -2133,6 +2133,133 @@ async function addNamesToSession(
   return { added, already, ambiguous, notFound };
 }
 
+// "vãng lai" / "khách" = người KHÔNG có trong nhóm → tạo thành viên vãng lai mới
+// cho buổi, tuyệt đối không match với thành viên sẵn có (tránh nhầm "Bảo" → "Châu Bảo").
+function mentionsWalkin(text: string): boolean {
+  return /\b(vang lai|vlai|khach)\b/.test(normalizeName(text));
+}
+
+// Tách tên vãng lai + người bảo lãnh (ref) từ câu kiểu
+// "thêm Bảo là vãng lai, người bảo lãnh là Phát" / "thêm khách Bảo, Phát bảo lãnh".
+function parseWalkinAdd(text: string): { names: string[]; refName?: string } {
+  let s = ` ${text} `.replace(/\//g, " ");
+  let refName: string | undefined;
+
+  // "(người) bảo lãnh (là) X"  hoặc  "X bảo lãnh"
+  const refAfter = s.match(/(?:người|nguoi)?\s*(?:bảo lãnh|bao lanh|bảo trợ|bao tro|ref)\s*(?:là|la|:)?\s*([^,.;:]+)/i);
+  const refBefore = s.match(/[,.;:]\s*([^,.;:]+?)\s+(?:bảo lãnh|bao lanh|bảo trợ|bao tro)\b/i);
+  const refRaw = refAfter?.[1]?.trim() || refBefore?.[1]?.trim() || "";
+  if (refRaw) refName = cleanupAddNameCandidate(refRaw) ?? undefined;
+
+  // Xoá hẳn mệnh đề bảo lãnh để phần còn lại chỉ còn tên vãng lai.
+  s = s.replace(/[,.;:]?\s*(?:người|nguoi)?\s*(?:bảo lãnh|bao lanh|bảo trợ|bao tro|ref)\s*(?:là|la|:)?\s*[^,.;:]*/gi, " ");
+  s = s.replace(/[,.;:]\s*[^,.;:]+?\s+(?:bảo lãnh|bao lanh|bảo trợ|bao tro)\b/gi, " ");
+  // Bỏ từ lệnh và từ khoá vãng lai/khách.
+  s = s.replace(/(^|\s)[/]?(?:thêm|them|add|cho|đưa|dua)\b/gi, " ");
+  s = s.replace(/\b(?:là|la|làm|lam)\s+(?:vãng lai|vang lai|vlai|khách|khach)\b/gi, " ");
+  s = s.replace(/\b(?:khách\s+)?(?:vãng lai|vang lai|vlai)\b/gi, " ");
+  s = s.replace(/\bkhách\b/gi, " ");
+
+  const refNorm = refName ? normalizeName(refName) : "";
+  const names = [
+    ...new Set(
+      splitNameCandidates(s)
+        .map(cleanupAddNameCandidate)
+        .filter((x): x is string => Boolean(x) && x !== SELF_NAME_TOKEN)
+    ),
+  ].filter((n) => normalizeName(n) !== refNorm);
+
+  return { names, refName };
+}
+
+async function replyAddWalkin(
+  env: Env,
+  groupId: string,
+  groupName: string,
+  session: SessionRow,
+  text: string,
+  actor?: BotActor,
+  aliases?: Map<string, string>
+): Promise<BotReply> {
+  const { names, refName } = parseWalkinAdd(text);
+  if (!names.length) {
+    return {
+      ok: false,
+      reply: 'Bạn muốn thêm vãng lai tên gì? Ví dụ: "thêm Bảo là vãng lai, Phát bảo lãnh".',
+    };
+  }
+
+  // Người bảo lãnh phải là thành viên thật (không phải vãng lai) trong nhóm.
+  const members =
+    (await env.DB.prepare(
+      "SELECT id, name FROM members WHERE group_id = ? AND is_active = 1 AND is_walkin = 0"
+    )
+      .bind(groupId)
+      .all<{ id: string; name: string }>()).results ?? [];
+
+  let ref: { id: string; name: string } | null = null;
+  if (refName) {
+    const matches = matchMembersByName(members, refName, aliases);
+    if (matches.length > 1) {
+      return { ok: false, reply: `Người bảo lãnh "${refName}" trùng tên, bạn ghi rõ hơn giúp mình nhé.` };
+    }
+    if (matches.length === 0) {
+      return { ok: false, reply: `Không tìm thấy người bảo lãnh "${refName}" trong nhóm ${groupName}.` };
+    }
+    ref = matches[0];
+  }
+
+  // Vãng lai đã có sẵn trong buổi (theo tên) → không tạo trùng.
+  const existingWalkins =
+    (await env.DB.prepare(
+      `SELECT m.name FROM members m
+       JOIN session_members sm ON sm.member_id = m.id AND sm.attended = 1
+       WHERE m.session_id = ? AND m.is_walkin = 1`
+    )
+      .bind(session.id)
+      .all<{ name: string }>()).results ?? [];
+  const existingSet = new Set(existingWalkins.map((w) => normalizeName(w.name)));
+
+  const now = new Date().toISOString();
+  const added: string[] = [];
+  const already: string[] = [];
+  const stmts: D1PreparedStatement[] = [];
+  for (const name of names) {
+    if (existingSet.has(normalizeName(name))) {
+      already.push(name);
+      continue;
+    }
+    existingSet.add(normalizeName(name));
+    const memberId = crypto.randomUUID();
+    stmts.push(
+      env.DB.prepare(
+        "INSERT INTO members (id, group_id, user_id, name, phone, avatar_color, is_active, is_walkin, ref_member_id, session_id, created_at) VALUES (?, ?, NULL, ?, NULL, ?, 1, 1, ?, ?, ?)"
+      ).bind(memberId, groupId, name, colorForUser(memberId), ref?.id ?? null, session.id, now)
+    );
+    stmts.push(
+      env.DB.prepare("INSERT OR IGNORE INTO session_members (session_id, member_id, attended) VALUES (?, ?, 1)").bind(
+        session.id,
+        memberId
+      )
+    );
+    added.push(name);
+  }
+
+  if (stmts.length) {
+    stmts.push(env.DB.prepare("DELETE FROM payments WHERE session_id = ? AND paid = 0").bind(session.id));
+    await env.DB.batch(stmts);
+    await recalcSessionPayments(env, session.id);
+  }
+
+  const lines = [`🏸 ${sessionSummaryLine(session)}`];
+  if (added.length) {
+    const refSuffix = ref ? ` (bảo lãnh: ${ref.name})` : "";
+    lines.push(`✅ Đã thêm vãng lai: ${added.join(", ")}${refSuffix}`);
+  }
+  if (already.length) lines.push(`ℹ️ Vãng lai đã có sẵn: ${already.join(", ")}`);
+  return { ok: true, reply: lines.join("\n") };
+}
+
 async function replyAddMembers(
   env: Env,
   groupId: string,
@@ -2144,7 +2271,8 @@ async function replyAddMembers(
   text?: string,
   context?: BotContextMessage[]
 ): Promise<BotReply> {
-  if (!names.length) {
+  const isWalkin = text ? mentionsWalkin(text) : false;
+  if (!names.length && !isWalkin) {
     return { ok: false, reply: 'Bạn muốn thêm ai? Ví dụ: "thêm An vào buổi".' };
   }
 
@@ -2156,6 +2284,11 @@ async function replyAddMembers(
   }
 
   if (await sessionHasPaidTransfer(env, session.id)) return { ok: false, reply: PAID_LOCK_REPLY };
+
+  // "vãng lai/khách" → tạo người mới cho buổi, không match thành viên sẵn có.
+  if (isWalkin) {
+    return replyAddWalkin(env, groupId, groupName, session, text!, actor, aliases);
+  }
 
   const outcome = await addNamesToSession(env, groupId, session.id, names, actor, aliases);
   const header = `🏸 ${sessionSummaryLine(session)}`;
@@ -2186,10 +2319,13 @@ async function replyRemoveMembers(
 
   if (await sessionHasPaidTransfer(env, session.id)) return { ok: false, reply: PAID_LOCK_REPLY };
 
+  // Gồm cả vãng lai của buổi này để rút được người vừa thêm dạng vãng lai.
   const members =
-    (await env.DB.prepare("SELECT id, name FROM members WHERE group_id = ? AND is_active = 1 AND is_walkin = 0")
-      .bind(groupId)
-      .all<{ id: string; name: string }>()).results ?? [];
+    (await env.DB.prepare(
+      "SELECT id, name, is_walkin FROM members WHERE group_id = ? AND is_active = 1 AND (is_walkin = 0 OR session_id = ?)"
+    )
+      .bind(groupId, session.id)
+      .all<{ id: string; name: string; is_walkin: number }>()).results ?? [];
   const attendingRows =
     (await env.DB.prepare("SELECT member_id FROM session_members WHERE session_id = ? AND attended = 1")
       .bind(session.id)
@@ -2201,13 +2337,15 @@ async function replyRemoveMembers(
   const ambiguous: string[] = [];
   const notFound: string[] = [];
   const toDelete: string[] = [];
+  const walkinsToDelete: string[] = [];
 
-  const queueRemove = (member: { id: string; name: string }) => {
+  const queueRemove = (member: { id: string; name: string; is_walkin?: number }) => {
     if (!attending.has(member.id)) {
       notIn.push(member.name);
       return;
     }
     toDelete.push(member.id);
+    if (member.is_walkin) walkinsToDelete.push(member.id);
     removed.push(member.name);
     attending.delete(member.id);
   };
@@ -2235,6 +2373,12 @@ async function replyRemoveMembers(
     const stmts = toDelete.map((memberId) =>
       env.DB.prepare("DELETE FROM session_members WHERE session_id = ? AND member_id = ?").bind(session.id, memberId)
     );
+    // Vãng lai chỉ thuộc về buổi → xoá luôn bản ghi member (giống thao tác trên web).
+    for (const walkinId of walkinsToDelete) {
+      stmts.push(
+        env.DB.prepare("DELETE FROM members WHERE id = ? AND is_walkin = 1 AND session_id = ?").bind(walkinId, session.id)
+      );
+    }
     stmts.push(env.DB.prepare("DELETE FROM payments WHERE session_id = ? AND paid = 0").bind(session.id));
     await env.DB.batch(stmts);
     // Chia lại tiền với danh sách mới; buổi trống người thì thôi (payments chưa trả đã xoá).
