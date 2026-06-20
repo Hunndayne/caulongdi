@@ -119,6 +119,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   status TEXT NOT NULL DEFAULT 'upcoming',
   payment_recipient TEXT,
   force_payment_recipient INTEGER NOT NULL DEFAULT 0,
+  allow_all_edit INTEGER NOT NULL DEFAULT 0,
   managers TEXT,
   walkin_debt_mode TEXT NOT NULL DEFAULT 'self',
   created_at TEXT NOT NULL,

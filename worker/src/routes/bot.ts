@@ -1989,9 +1989,11 @@ async function replyCreateSession(
 
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
+  // Buổi do bot tạo: cho phép cả nhóm chỉnh sửa (allow_all_edit = 1) — khác buổi
+  // tạo trên web (chỉ người tạo/quản lý sửa được).
   await env.DB.prepare(
-    `INSERT INTO sessions (id, group_id, created_by, date, start_time, venue, location, note, status, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, NULL, ?, 'upcoming', ?)`
+    `INSERT INTO sessions (id, group_id, created_by, date, start_time, venue, location, note, status, allow_all_edit, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, NULL, ?, 'upcoming', 1, ?)`
   )
     .bind(id, groupId, actor?.userId ?? null, sessionDate, startTime, venue, draft?.note ?? null, now)
     .run();
