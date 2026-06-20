@@ -419,6 +419,21 @@ function isSelfReference(value: string): boolean {
   return /^(toi|minh|tui|em|anh|chi|tao|me|t)$/.test(normalizeName(value));
 }
 
+// Từ đệm/đại từ chỉ định bám đuôi tên ("An Thái ấy", "Nam kia") — chỉ gồm các
+// hư từ gần như không bao giờ là âm tiết tên người (tránh "đó/đấy/này/thế" vì
+// trùng họ/tên thật như Đỗ, Thế). Chỉ cắt ở ĐUÔI và khi còn >1 token.
+const TRAILING_NAME_FILLERS = new Set([
+  "ay", "kia", "nhi", "nhe", "nha", "nhen", "luon", "thoi", "oi", "a", "vay", "ne",
+]);
+
+function stripTrailingNameFillers(value: string): string {
+  const tokens = value.split(/\s+/).filter(Boolean);
+  while (tokens.length > 1 && TRAILING_NAME_FILLERS.has(normalizeName(tokens[tokens.length - 1]))) {
+    tokens.pop();
+  }
+  return tokens.join(" ");
+}
+
 function cleanupAddNameCandidate(raw: string): string | null {
   if (raw.trim() === SELF_NAME_TOKEN) return SELF_NAME_TOKEN;
   let s = extractAddTargetSegment(raw);
@@ -426,6 +441,7 @@ function cleanupAddNameCandidate(raw: string): string | null {
   s = s.replace(/\s+(?:lịch|lich|buổi|buoi)\b.*$/i, "");
   s = s.replace(/\b(?:nhé|nhe|nha|giúp|giup|hộ|ho|với|voi|ạ|a)\b/gi, " ");
   s = s.replace(/^[\s,.;:!?]+|[\s,.;:!?]+$/g, "").replace(/\s+/g, " ").trim();
+  s = stripTrailingNameFillers(s);
 
   if (!s) return null;
   if (isSelfReference(s)) return SELF_NAME_TOKEN;
@@ -1782,6 +1798,19 @@ function matchMembersByName(
   if (!q) return [];
   let matches = members.filter((m) => normalizeName(m.name) === q);
   if (!matches.length) matches = members.filter((m) => normalizeName(m.name).includes(q));
+  // q dài hơn tên thành viên (còn dính từ đệm lạ, vd "An Thái ấy") → khớp khi
+  // câu CHỨA đủ các âm tiết của tên; ưu tiên tên dài/cụ thể nhất để khỏi nhầm "An".
+  if (!matches.length) {
+    const qTokens = new Set(q.split(" ").filter(Boolean));
+    const subset = members.filter((m) => {
+      const tokens = normalizeName(m.name).split(" ").filter(Boolean);
+      return tokens.length > 0 && tokens.every((t) => qTokens.has(t));
+    });
+    if (subset.length) {
+      const maxLen = Math.max(...subset.map((m) => normalizeName(m.name).split(" ").filter(Boolean).length));
+      matches = subset.filter((m) => normalizeName(m.name).split(" ").filter(Boolean).length === maxLen);
+    }
+  }
   if (!matches.length && aliases?.has(q)) {
     const aliased = members.find((m) => m.id === aliases.get(q));
     if (aliased) matches = [aliased];
