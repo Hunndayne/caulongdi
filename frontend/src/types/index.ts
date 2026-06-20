@@ -103,6 +103,9 @@ export interface Member {
   phone?: string;
   avatar_color: string;
   is_active: number;
+  is_walkin?: number;
+  ref_member_id?: string | null;
+  session_id?: string | null;
   created_at: string;
   user_email?: string;
   user_bank_bin?: string;
@@ -125,6 +128,7 @@ export interface Session {
   payment_recipient?: string | null;
   force_payment_recipient?: number;
   managers?: string | null;
+  walkin_debt_mode?: "self" | "ref";
   allow_all_edit?: number;
   created_at: string;
   attendee_count?: number;

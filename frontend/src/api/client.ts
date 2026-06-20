@@ -74,6 +74,8 @@ export const api = {
   // Session members & costs
   addSessionMember: (id: string, memberId: string) =>
     request<{ success: boolean }>(`/api/sessions/${id}/members/${memberId}`, { method: "PUT" }),
+  addWalkin: (id: string, data: { name?: string; refMemberId: string }) =>
+    request<Member>(`/api/sessions/${id}/walkins`, { method: "POST", body: JSON.stringify(data) }),
   removeSessionMember: (id: string, memberId: string) =>
     request<{ success: boolean }>(`/api/sessions/${id}/members/${memberId}`, { method: "DELETE" }),
   addCost: (sessionId: string, data: Partial<Cost>) =>

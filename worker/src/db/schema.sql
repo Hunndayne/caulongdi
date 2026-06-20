@@ -97,6 +97,9 @@ CREATE TABLE IF NOT EXISTS members (
   phone TEXT,
   avatar_color TEXT NOT NULL DEFAULT '#22c55e',
   is_active INTEGER NOT NULL DEFAULT 1,
+  is_walkin INTEGER NOT NULL DEFAULT 0,
+  ref_member_id TEXT,
+  session_id TEXT,
   created_at TEXT NOT NULL,
   FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
@@ -117,6 +120,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   payment_recipient TEXT,
   force_payment_recipient INTEGER NOT NULL DEFAULT 0,
   managers TEXT,
+  walkin_debt_mode TEXT NOT NULL DEFAULT 'self',
   created_at TEXT NOT NULL,
   FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE SET NULL,
   FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
@@ -203,6 +207,7 @@ CREATE INDEX IF NOT EXISTS idx_group_members_user_id ON group_members(user_id);
 CREATE INDEX IF NOT EXISTS idx_group_invites_user_id ON group_invites(invited_user_id);
 CREATE INDEX IF NOT EXISTS idx_group_invites_group_id ON group_invites(group_id);
 CREATE INDEX IF NOT EXISTS idx_members_group_id ON members(group_id);
+CREATE INDEX IF NOT EXISTS idx_members_session_walkin ON members(session_id, is_walkin);
 CREATE INDEX IF NOT EXISTS idx_sessions_group_id ON sessions(group_id);
 CREATE INDEX IF NOT EXISTS idx_ai_usage_daily_date ON ai_usage_daily(usage_date);
 CREATE INDEX IF NOT EXISTS idx_chat_messages_group_created ON chat_messages(group_id, created_at);

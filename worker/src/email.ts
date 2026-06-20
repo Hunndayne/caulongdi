@@ -64,6 +64,21 @@ type PaymentMarkedPaidNotificationInput = {
   markedAt?: string | null;
 };
 
+type WalkinQrNotificationInput = {
+  refName: string;
+  refEmail: string;
+  venue: string;
+  date: string;
+  startTime: string;
+  sessionId: string;
+  walkins: {
+    walkinName: string;
+    amount: number;
+    recipientName: string;
+    qrImageUrl?: string | null;
+  }[];
+};
+
 type GroupInviteNotificationInput = {
   groupName: string;
   groupDescription?: string | null;
@@ -613,6 +628,53 @@ export async function sendPaymentMarkedPaidNotification(env: Env, input: Payment
       ctaHref: sessionUrl,
       ctaLabel: "Xác nhận đã nhận",
       footerNote: "Chỉ xác nhận khi bạn đã thật sự nhận được tiền.",
+    }),
+  });
+}
+
+export async function sendWalkinQrNotification(env: Env, input: WalkinQrNotificationInput) {
+  if (input.walkins.length === 0) return;
+
+  const sessionUrl = normalizeUrl(env.FRONTEND_URL, `/sessions/${input.sessionId}`);
+  const total = input.walkins.reduce((sum, item) => sum + item.amount, 0);
+  const time = `${formatDate(input.date)} lúc ${input.startTime}`;
+
+  await sendMail(env, {
+    to: input.refEmail,
+    subject: `QR thanh toán cho khách vãng lai bạn bảo lãnh (${input.venue})`,
+    text: [
+      `Chào ${input.refName},`,
+      "",
+      `Buổi chơi ${input.venue} ngày ${time} đã được tính tiền. Bạn đang bảo lãnh các khách vãng lai sau:`,
+      "",
+      ...input.walkins.map((item) => `- ${item.walkinName}: ${formatCurrency(item.amount)} (chuyển cho ${item.recipientName})`),
+      "",
+      `Tổng cộng: ${formatCurrency(total)}`,
+      "",
+      "Mã QR cho từng khách xem trong email bản HTML hoặc mở app để chuyển/đối chiếu.",
+      `Xem chi tiết: ${sessionUrl}`,
+    ].join("\n"),
+    html: renderEmailShell({
+      preheader: `Tổng ${formatCurrency(total)} cho khách vãng lai bạn bảo lãnh tại ${input.venue}.`,
+      title: "QR thanh toán cho khách vãng lai",
+      intro: `Buổi chơi ${input.venue} ngày ${time} đã được tính tiền. Bạn đang bảo lãnh các khách vãng lai dưới đây — dùng mã QR để chuyển khoản hộ hoặc đối chiếu khi thu tiền.`,
+      facts: [
+        { label: "Số khách", value: String(input.walkins.length) },
+        { label: "Tổng cộng", value: formatCurrency(total) },
+      ],
+      htmlBlocks: input.walkins.map((item) => `
+        <div style="margin-top: 16px; padding: 16px; border-radius: 14px; background: #f9fafb; text-align: center;">
+          <div style="margin: 0 0 4px; color: #111827; font-size: 15px; font-weight: 700;">${escapeHtml(item.walkinName)}</div>
+          <div style="margin: 0 0 4px; color: #16a34a; font-size: 16px; font-weight: 700;">${escapeHtml(formatCurrency(item.amount))}</div>
+          <div style="margin: 0 0 12px; color: #6b7280; font-size: 13px;">Chuyển cho ${escapeHtml(item.recipientName)}</div>
+          ${item.qrImageUrl
+            ? `<img src="${escapeHtml(item.qrImageUrl)}" alt="QR ${escapeHtml(item.walkinName)}" width="200" height="200" style="display: inline-block; border-radius: 12px; border: 1px solid #e5e7eb;" />`
+            : `<div style="color: #ef4444; font-size: 13px;">Người nhận chưa có STK để tạo QR.</div>`}
+        </div>
+      `),
+      ctaHref: sessionUrl,
+      ctaLabel: "Mở buổi chơi",
+      footerNote: "Bạn (người bảo lãnh) hoặc quản lý buổi có thể đánh dấu khách vãng lai đã trả trong app.",
     }),
   });
 }

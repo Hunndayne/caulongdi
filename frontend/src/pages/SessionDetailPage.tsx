@@ -382,6 +382,10 @@ export default function SessionDetailPage() {
   const [autoConfirm, setAutoConfirm] = useState(false);
   const [bankDialogPayment, setBankDialogPayment] = useState<PaymentQrData | null>(null);
   const [bankOpenNotice, setBankOpenNotice] = useState("");
+  const [showWalkinDialog, setShowWalkinDialog] = useState(false);
+  const [walkinName, setWalkinName] = useState("");
+  const [walkinRefId, setWalkinRefId] = useState("");
+  const [addingWalkin, setAddingWalkin] = useState(false);
   const costImportInputRef = useRef<HTMLInputElement | null>(null);
   const receiptInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -489,6 +493,16 @@ export default function SessionDetailPage() {
   }
 
   const membersWithBank = Array.from(memberById.values()).filter(hasBankInfo);
+
+  // Vãn lai chỉ nằm trong s.members (không có trong danh sách Hội). Gộp vào danh sách điểm danh.
+  const sessionWalkins = s.members.filter((member) => member.is_walkin);
+  const baseAttendanceList = s.group_id && members.filter((member) => member.is_active).length > 0
+    ? members.filter((member) => member.is_active)
+    : s.members.filter((member) => !member.is_walkin);
+  const attendanceList = [...baseAttendanceList, ...sessionWalkins];
+  // Ref hợp lệ: người tham gia, có tài khoản, không phải vãn lai.
+  const walkinRefOptions = s.members.filter((member) => !member.is_walkin && member.user_id);
+
   const fallbackRecipientMember = recipientId ? memberById.get(recipientId) ?? null : null;
   const fallbackRecipientUsesTimoWebhook = isTimoWebhookRecipient(fallbackRecipientMember);
   const effectiveAutoConfirm = fallbackRecipientUsesTimoWebhook || autoConfirm;
@@ -555,6 +569,36 @@ export default function SessionDetailPage() {
       } else {
         await api.addSessionMember(s.id, memberId);
       }
+      await refresh(s.id);
+    } catch (error: any) {
+      alert(error.message);
+    }
+  };
+
+  const handleAddWalkin = async () => {
+    if (!canManageSession || !id) return;
+    if (!walkinRefId) {
+      alert("Cần chọn người bảo lãnh (ref) cho vãn lai.");
+      return;
+    }
+    setAddingWalkin(true);
+    try {
+      await api.addWalkin(id, { name: walkinName.trim() || undefined, refMemberId: walkinRefId });
+      setShowWalkinDialog(false);
+      setWalkinName("");
+      setWalkinRefId("");
+      await refresh(s.id);
+    } catch (error: any) {
+      alert(error.message);
+    } finally {
+      setAddingWalkin(false);
+    }
+  };
+
+  const handleSetWalkinDebtMode = async (mode: "self" | "ref") => {
+    if (!canManageSession || !id) return;
+    try {
+      await api.updateSession(id, { walkin_debt_mode: mode } as any);
       await refresh(s.id);
     } catch (error: any) {
       alert(error.message);
@@ -1220,6 +1264,13 @@ export default function SessionDetailPage() {
   const canTogglePaymentRow = (payment: Payment, debtor: Member | null, recipient: Member | null) => {
     if (payment.paid) return false;
     if (!currentUserId) return false;
+    if (debtor?.is_walkin) {
+      // Vãn lai không tự thao tác: ref bảo lãnh "đánh dấu đã trả"; recipient/quản lý xác nhận.
+      const refMember = debtor.ref_member_id ? memberById.get(debtor.ref_member_id) : null;
+      if (canManageSession || recipient?.user_id === currentUserId) return true;
+      if (refMember?.user_id === currentUserId) return payment.payer_marked_paid !== 1;
+      return false;
+    }
     if (debtor?.user_id === currentUserId) return payment.payer_marked_paid !== 1;
     if (recipient?.user_id === currentUserId) return true;
     return false;
@@ -1227,7 +1278,11 @@ export default function SessionDetailPage() {
 
   const getPaymentActionLabel = (payment: Payment, debtor: Member | null, recipient: Member | null) => {
     const isRecipientUser = Boolean(currentUserId && recipient?.user_id === currentUserId && debtor?.user_id !== currentUserId);
-    const isDebtorUser = Boolean(currentUserId && debtor?.user_id === currentUserId);
+    const refMember = debtor?.is_walkin && debtor.ref_member_id ? memberById.get(debtor.ref_member_id) : null;
+    const isDebtorUser = Boolean(currentUserId && (
+      debtor?.user_id === currentUserId ||
+      (debtor?.is_walkin && (refMember?.user_id === currentUserId || canManageSession))
+    ));
     if (payment.paid) return isRecipientUser ? "Đã nhận ✓" : "Đã xong ✓";
     if (isRecipientUser) return payment.payer_marked_paid ? "Xác nhận đã nhận" : "Đánh dấu đã nhận";
     if (isDebtorUser) return payment.payer_marked_paid ? "Chờ xác nhận" : "Đánh dấu đã trả";
@@ -1442,6 +1497,22 @@ export default function SessionDetailPage() {
                 )}
               </div>
 
+              <div className="space-y-1.5">
+                <label className="block text-xs font-medium text-gray-700">Công nợ vãn lai</label>
+                <select
+                  value={currentSession?.walkin_debt_mode ?? "self"}
+                  onChange={(event) => handleSetWalkinDebtMode(event.target.value as "self" | "ref")}
+                  disabled={managingSettings}
+                  className="w-full rounded-lg border border-gray-300 px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 disabled:bg-gray-100"
+                >
+                  <option value="self">Vãn lai tự nợ (ref nhận QR qua email)</option>
+                  <option value="ref">Ref gánh gộp nợ của vãn lai</option>
+                </select>
+                <p className="text-xs text-gray-400">
+                  Đổi chế độ sẽ tính lại công nợ chưa xác nhận của buổi.
+                </p>
+              </div>
+
               {managersList.length > 0 && (
                 <div>
                   <div className="mb-1 text-xs text-gray-500">Đồng quản lý:</div>
@@ -1564,11 +1635,21 @@ export default function SessionDetailPage() {
         <div>
           <div className="mb-3 flex items-center justify-between">
             <span className="text-sm text-gray-500">{checkedInIds.size} người tham gia</span>
+            {canManageSession && (
+              <Button size="sm" variant="outline" onClick={() => setShowWalkinDialog(true)}>
+                <Plus size={14} className="mr-1" />
+                Thêm vãn lai
+              </Button>
+            )}
           </div>
           <div className="space-y-2">
-            {(s.group_id && members.filter((member) => member.is_active).length > 0 ? members.filter((member) => member.is_active) : s.members).map((member) => {
+            {attendanceList.map((member) => {
               const checked = checkedInIds.has(member.id);
+              const isWalkin = Boolean(member.is_walkin);
               const leaveLocked = checked && attendanceLeaveLocked;
+              const refName = isWalkin && member.ref_member_id
+                ? memberById.get(member.ref_member_id)?.name ?? "?"
+                : null;
               return (
                 <button
                   key={member.id}
@@ -1577,7 +1658,14 @@ export default function SessionDetailPage() {
                   className={`flex w-full items-center gap-3 rounded-xl border p-3 transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${checked ? "border-green-200 bg-green-50" : "border-gray-100 bg-white"}`}
                 >
                   <Avatar name={member.name} color={member.avatar_color} size="sm" />
-                  <span className="flex-1 text-left font-medium text-gray-900">{member.name}</span>
+                  <span className="flex-1 text-left">
+                    <span className="font-medium text-gray-900">{member.name}</span>
+                    {isWalkin && (
+                      <span className="ml-2 inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-700">
+                        Vãn lai{refName ? ` · ref: ${refName}` : ""}
+                      </span>
+                    )}
+                  </span>
                   <div className={`flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full border-2 ${checked ? "border-green-600 bg-green-600" : "border-gray-300"}`}>
                     {checked && <Check size={12} className="text-white" />}
                   </div>
@@ -1928,7 +2016,8 @@ export default function SessionDetailPage() {
                 const qrRecipient = recipientHasBank
                   ? recipient
                   : (fallbackRecipientMember && fallbackRecipientMember.id !== payment.member_id ? fallbackRecipientMember : null);
-                const canViewQr = Boolean(currentUserId && debtor?.user_id === currentUserId);
+                // Vãn lai không đăng nhập được nên mọi người tham gia đều thấy QR để chuyển hộ.
+                const canViewQr = Boolean(currentUserId && (debtor?.user_id === currentUserId || debtor?.is_walkin));
                 const qrData = canViewQr && debtor && qrRecipient ? buildQrData(payment.id, debtor, qrRecipient, payment.amount_owed) : null;
                 const fallbackNotice = !recipientHasBank && qrRecipient && recipient
                   ? `Người ứng tiền chưa cập nhật STK, tạm chuyển qua ${qrRecipient.name}.`
@@ -2059,6 +2148,58 @@ export default function SessionDetailPage() {
           </div>
         </div>
       )}
+
+      <Dialog
+        open={showWalkinDialog}
+        onClose={() => {
+          if (!addingWalkin) setShowWalkinDialog(false);
+        }}
+        title="Thêm vãn lai"
+        className="sm:max-w-md"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-gray-500">
+            Vãn lai chỉ tham gia buổi này, không vào Hội. Cần một người bảo lãnh (ref) có tài khoản —
+            mã QR sẽ được gửi email cho người này.
+          </p>
+          <div>
+            <label className="mb-1 block text-sm font-medium text-gray-700">Tên (để trống = tự đánh số)</label>
+            <Input
+              value={walkinName}
+              onChange={(event) => setWalkinName(event.target.value)}
+              placeholder="VD: Vãn lai 1"
+              disabled={addingWalkin}
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-sm font-medium text-gray-700">Người bảo lãnh (ref)</label>
+            <select
+              value={walkinRefId}
+              onChange={(event) => setWalkinRefId(event.target.value)}
+              disabled={addingWalkin}
+              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 disabled:bg-gray-100"
+            >
+              <option value="">-- Chọn người bảo lãnh --</option>
+              {walkinRefOptions.map((member) => (
+                <option key={member.id} value={member.id}>{member.name}</option>
+              ))}
+            </select>
+            {walkinRefOptions.length === 0 && (
+              <p className="mt-1 text-xs text-amber-600">
+                Chưa có người tham gia nào có tài khoản để làm ref. Hãy điểm danh một thành viên có tài khoản trước.
+              </p>
+            )}
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setShowWalkinDialog(false)} disabled={addingWalkin}>
+              Hủy
+            </Button>
+            <Button onClick={handleAddWalkin} disabled={addingWalkin || !walkinRefId}>
+              {addingWalkin ? "Đang thêm..." : "Thêm vãn lai"}
+            </Button>
+          </div>
+        </div>
+      </Dialog>
 
       <Dialog
         open={Boolean(receiptDraft)}

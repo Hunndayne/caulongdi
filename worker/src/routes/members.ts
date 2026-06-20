@@ -58,7 +58,7 @@ members.get("/", async (c) => {
 
       const rows = await c.env.DB.prepare(`
         ${memberSelect}
-        WHERE m.group_id = ?
+        WHERE m.group_id = ? AND m.is_walkin = 0
         ORDER BY m.is_active DESC, m.name ASC
       `)
         .bind(groupId)
@@ -105,6 +105,7 @@ members.get("/", async (c) => {
     if (c.get("userRole") === "admin") {
       const rows = await c.env.DB.prepare(`
         ${memberSelect}
+        WHERE m.is_walkin = 0
         ORDER BY m.is_active DESC, m.name ASC
       `).all();
       return c.json(rows.results);
@@ -112,12 +113,15 @@ members.get("/", async (c) => {
 
     const rows = await c.env.DB.prepare(`
       ${memberSelect}
-      WHERE m.group_id IS NULL
-         OR m.group_id IN (
-           SELECT gm.group_id
-           FROM group_members gm
-           WHERE gm.user_id = ?
-         )
+      WHERE m.is_walkin = 0
+        AND (
+          m.group_id IS NULL
+          OR m.group_id IN (
+            SELECT gm.group_id
+            FROM group_members gm
+            WHERE gm.user_id = ?
+          )
+        )
       ORDER BY m.is_active DESC, m.name ASC
     `)
       .bind(c.get("userId"))
@@ -127,6 +131,7 @@ members.get("/", async (c) => {
     if (isMissingGroupSchema(error)) {
       const rows = await c.env.DB.prepare(`
         ${memberSelect}
+        WHERE m.is_walkin = 0
         ORDER BY m.is_active DESC, m.name ASC
       `).all();
       return c.json(rows.results);

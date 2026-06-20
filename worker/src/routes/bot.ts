@@ -1431,7 +1431,7 @@ async function replySessions(
 
 async function replyMembers(env: Env, groupId: string, groupName: string): Promise<BotReply> {
   const result = await env.DB
-    .prepare("SELECT name FROM members WHERE group_id = ? AND is_active = 1 ORDER BY name COLLATE NOCASE")
+    .prepare("SELECT name FROM members WHERE group_id = ? AND is_active = 1 AND is_walkin = 0 ORDER BY name COLLATE NOCASE")
     .bind(groupId)
     .all<{ name: string }>();
   const members = result.results ?? [];
@@ -1671,7 +1671,7 @@ async function replyAddCost(
   if (!session) return { ok: true, reply: `${groupName}: chưa có buổi nào để ghi chi phí.` };
 
   const members =
-    (await env.DB.prepare("SELECT id, name FROM members WHERE group_id = ? AND is_active = 1")
+    (await env.DB.prepare("SELECT id, name FROM members WHERE group_id = ? AND is_active = 1 AND is_walkin = 0")
       .bind(groupId)
       .all<{ id: string; name: string }>()).results ?? [];
 
@@ -1850,7 +1850,7 @@ async function addNamesToSession(
     names.includes(SELF_NAME_TOKEN) && actor?.userId ? await getOrCreateMemberForUser(env, groupId, actor.userId) : null;
 
   const members =
-    (await env.DB.prepare("SELECT id, name FROM members WHERE group_id = ? AND is_active = 1")
+    (await env.DB.prepare("SELECT id, name FROM members WHERE group_id = ? AND is_active = 1 AND is_walkin = 0")
       .bind(groupId)
       .all<{ id: string; name: string }>()).results ?? [];
   const attendingRows =
@@ -1981,7 +1981,7 @@ async function replyRemoveMembers(
   }
 
   const members =
-    (await env.DB.prepare("SELECT id, name FROM members WHERE group_id = ? AND is_active = 1")
+    (await env.DB.prepare("SELECT id, name FROM members WHERE group_id = ? AND is_active = 1 AND is_walkin = 0")
       .bind(groupId)
       .all<{ id: string; name: string }>()).results ?? [];
   const attendingRows =
@@ -2264,7 +2264,7 @@ async function handleAlias(env: Env, threadId: string, senderName: string | null
   }
 
   const members =
-    (await env.DB.prepare("SELECT id, name FROM members WHERE group_id = ? AND is_active = 1")
+    (await env.DB.prepare("SELECT id, name FROM members WHERE group_id = ? AND is_active = 1 AND is_walkin = 0")
       .bind(link.group_id)
       .all<{ id: string; name: string }>()).results ?? [];
   const q = normalizeName(arg);

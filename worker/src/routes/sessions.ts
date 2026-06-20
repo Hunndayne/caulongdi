@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { sendNewSessionNotification, sendPaymentDueNotification } from "../email";
+import { sendNewSessionNotification, sendPaymentDueNotification, sendWalkinQrNotification } from "../email";
 import { enqueueNewSessionAnnounce } from "../botOutbox";
 import { Env } from "../types";
 import { nanoid } from "../utils";
@@ -7,6 +7,17 @@ import { nanoid } from "../utils";
 const sessions = new Hono<{ Bindings: Env; Variables: { userId: string; userRole: string } }>();
 
 const MEMBER_COLORS = ["#22c55e", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4"];
+
+// Bỏ dấu tiếng Việt cho nội dung chuyển khoản QR (app ngân hàng hợp nhất ASCII tốt hơn).
+function stripDiacritics(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/đ/g, "d")
+    .replace(/Đ/g, "D")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
 type SessionBody = {
   name?: string;
@@ -25,6 +36,8 @@ type SessionBody = {
   payment_recipient?: string | null;
   allow_all_edit?: number;
   force_payment_recipient?: number;
+  walkin_debt_mode?: string;
+  walkinDebtMode?: string;
 };
 
 type SessionRow = {
@@ -1678,9 +1691,17 @@ sessions.put("/:id", async (c) => {
     if (lockedResponse) return lockedResponse;
   }
 
+  const walkinDebtModeInput = body.walkinDebtMode ?? body.walkin_debt_mode;
+  const normalizedWalkinDebtMode = walkinDebtModeInput === undefined
+    ? undefined
+    : (walkinDebtModeInput === "ref" ? "ref" : "self");
+  const existingWalkinDebtMode = ((existing as any).walkin_debt_mode as string | null) ?? "self";
+  const walkinDebtModeChanged = normalizedWalkinDebtMode !== undefined
+    && normalizedWalkinDebtMode !== existingWalkinDebtMode;
+
   await c.env.DB.prepare(`
     UPDATE sessions
-    SET name = ?, date = ?, start_time = ?, end_time = ?, venue = ?, location = ?, note = ?, status = ?, payment_recipient = ?, allow_all_edit = ?, force_payment_recipient = ?
+    SET name = ?, date = ?, start_time = ?, end_time = ?, venue = ?, location = ?, note = ?, status = ?, payment_recipient = ?, allow_all_edit = ?, force_payment_recipient = ?, walkin_debt_mode = ?
     WHERE id = ?
   `)
     .bind(
@@ -1695,12 +1716,14 @@ sessions.put("/:id", async (c) => {
       paymentRecipient !== undefined ? paymentRecipient || null : (existing as any).payment_recipient ?? null,
       body.allow_all_edit !== undefined ? body.allow_all_edit : ((existing as any).allow_all_edit ?? 0),
       body.force_payment_recipient !== undefined ? body.force_payment_recipient : ((existing as any).force_payment_recipient ?? 0),
+      normalizedWalkinDebtMode ?? existingWalkinDebtMode,
       id
     )
     .run();
 
-  if (paymentRecipientChanged) {
-    await c.env.DB.prepare("DELETE FROM payments WHERE session_id = ?").bind(id).run();
+  if (paymentRecipientChanged || walkinDebtModeChanged) {
+    // Đổi người nhận hoặc đổi chế độ công nợ vãn lai -> bỏ công nợ chưa xác nhận để tính lại
+    await c.env.DB.prepare("DELETE FROM payments WHERE session_id = ?" + (walkinDebtModeChanged && !paymentRecipientChanged ? " AND paid = 0" : "")).bind(id).run();
   }
 
   const row = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first();
@@ -1714,6 +1737,8 @@ sessions.delete("/:id", async (c) => {
   if (!(await canManageSessionStrict(c, existing))) return c.json({ error: "Forbidden" }, 403);
   const lockedResponse = await blockIfSessionHasConfirmedPayments(c, id);
   if (lockedResponse) return lockedResponse;
+  // Vãn lai ephemeral của buổi: dọn trước khi xoá buổi (FK members trỏ về groups, không cascade theo session)
+  await c.env.DB.prepare("DELETE FROM members WHERE session_id = ? AND is_walkin = 1").bind(id).run();
   await c.env.DB.prepare("DELETE FROM sessions WHERE id = ?").bind(id).run();
   return c.json({ success: true });
 });
@@ -1981,7 +2006,59 @@ sessions.delete("/:id/members/:memberId", async (c) => {
     .run();
   await c.env.DB.prepare("DELETE FROM payments WHERE session_id = ? AND paid = 0").bind(id).run();
 
+  // Vãn lai là ephemeral: gỡ điểm danh = xoá luôn (FK cascade dọn payments/session_members còn lại)
+  await c.env.DB.prepare("DELETE FROM members WHERE id = ? AND is_walkin = 1 AND session_id = ?")
+    .bind(memberId, id)
+    .run();
+
   return c.json({ success: true });
+});
+
+// Tạo vãn lai (walk-in guest) cho buổi: không vào Hội, bắt buộc có người ref bảo lãnh.
+sessions.post("/:id/walkins", async (c) => {
+  const { id } = c.req.param();
+  const session = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first<SessionRow>();
+  if (!session) return c.json({ error: "Not found" }, 404);
+  if (!(await canManageSession(c, session))) return c.json({ error: "Forbidden" }, 403);
+
+  const body = await c.req.json<{ name?: string; refMemberId?: string }>();
+  const refMemberId = body.refMemberId?.trim();
+  if (!refMemberId) return c.json({ error: "Cần chọn người ref (người bảo lãnh)" }, 400);
+
+  // Ref phải là thành viên thật, có tài khoản (để nhận email QR + thao tác trong app).
+  const ref = await c.env.DB.prepare("SELECT id, user_id, is_walkin FROM members WHERE id = ?")
+    .bind(refMemberId)
+    .first<{ id: string; user_id: string | null; is_walkin: number }>();
+  if (!ref) return c.json({ error: "Người ref không tồn tại" }, 404);
+  if (ref.is_walkin) return c.json({ error: "Người ref không thể là vãn lai" }, 400);
+  if (!ref.user_id) return c.json({ error: "Người ref phải có tài khoản trong app" }, 400);
+
+  let name = body.name?.trim();
+  if (!name) {
+    const countRow = await c.env.DB.prepare("SELECT COUNT(*) as cnt FROM members WHERE session_id = ? AND is_walkin = 1")
+      .bind(id)
+      .first<{ cnt: number }>();
+    name = `Vãn lai ${(countRow?.cnt ?? 0) + 1}`;
+  }
+
+  const memberId = nanoid();
+  const now = new Date().toISOString();
+  const avatarColor = MEMBER_COLORS[Math.floor(Math.random() * MEMBER_COLORS.length)];
+
+  await c.env.DB.prepare(
+    "INSERT INTO members (id, group_id, user_id, name, phone, avatar_color, is_active, is_walkin, ref_member_id, session_id, created_at) VALUES (?, ?, NULL, ?, NULL, ?, 1, 1, ?, ?, ?)"
+  )
+    .bind(memberId, session.group_id ?? null, name, avatarColor, refMemberId, id, now)
+    .run();
+
+  // Tự điểm danh + bỏ công nợ chưa xác nhận để tính lại
+  await c.env.DB.prepare("INSERT OR IGNORE INTO session_members (session_id, member_id, attended) VALUES (?, ?, 1)")
+    .bind(id, memberId)
+    .run();
+  await c.env.DB.prepare("DELETE FROM payments WHERE session_id = ? AND paid = 0").bind(id).run();
+
+  const row = await c.env.DB.prepare("SELECT * FROM members WHERE id = ?").bind(memberId).first();
+  return c.json(row, 201);
 });
 
 sessions.get("/:id/receipt/usage", async (c) => {
@@ -2294,10 +2371,26 @@ export async function recalcSessionPayments(env: Env, sessionId: string): Promis
     return "Cần chọn người nhận chung trước khi bật chế độ này";
   }
 
+  // Vãn lai: 'self' = vãn lai tự nợ; 'ref' = dồn nợ của vãn lai sang người ref bảo lãnh.
+  const walkinDebtMode = ((session as any).walkin_debt_mode as string | null) === "ref" ? "ref" : "self";
+  const walkinRows = await env.DB.prepare(
+    "SELECT id, ref_member_id FROM members WHERE session_id = ? AND is_walkin = 1"
+  ).bind(sessionId).all<{ id: string; ref_member_id: string | null }>();
+  const walkinRefMap = new Map<string, string>();
+  if (walkinDebtMode === "ref") {
+    for (const walkin of walkinRows.results) {
+      if (walkin.ref_member_id && eligibleMemberSet.has(walkin.ref_member_id)) {
+        walkinRefMap.set(walkin.id, walkin.ref_member_id);
+      }
+    }
+  }
+  const resolveDebtor = (memberId: string) => walkinRefMap.get(memberId) ?? memberId;
+
   const paymentMap = new Map<string, number>();
   const addPayment = (memberId: string | null | undefined, recipientMemberId: string | null | undefined, amount: number) => {
-    if (!memberId || !recipientMemberId || memberId === recipientMemberId || amount <= 0) return;
-    const key = `${memberId}:${recipientMemberId}`;
+    const debtor = memberId ? resolveDebtor(memberId) : memberId;
+    if (!debtor || !recipientMemberId || debtor === recipientMemberId || amount <= 0) return;
+    const key = `${debtor}:${recipientMemberId}`;
     paymentMap.set(key, (paymentMap.get(key) ?? 0) + amount);
   };
 
@@ -2447,6 +2540,77 @@ sessions.post("/:id/recalculate", async (c) => {
         sessionId: id,
         lines: payload.lines,
       }), `payment-due:${debtorEmail}`);
+    }
+  }
+
+  // Vãn lai (mode 'self'): gửi QR cho người ref bảo lãnh.
+  if (isStrictManager) {
+    const walkinRows = await c.env.DB.prepare(`
+      SELECT
+        walkin.name AS walkin_name,
+        ref_user.email AS ref_email,
+        ref_member.name AS ref_name,
+        p.amount_owed AS amount,
+        recipient_member.name AS recipient_name,
+        ru.bank_bin AS recipient_bank_bin,
+        ru.bank_account_number AS recipient_acc,
+        ru.bank_account_name AS recipient_acc_name
+      FROM payments p
+      JOIN members walkin ON walkin.id = p.member_id AND walkin.is_walkin = 1
+      JOIN members ref_member ON ref_member.id = walkin.ref_member_id
+      JOIN users ref_user ON ref_user.id = ref_member.user_id
+      LEFT JOIN members recipient_member ON recipient_member.id = p.recipient_member_id
+      LEFT JOIN users ru ON ru.id = recipient_member.user_id
+      WHERE p.session_id = ?
+        AND p.amount_owed > 0
+        AND ref_user.email IS NOT NULL
+    `)
+      .bind(id)
+      .all<{
+        walkin_name: string;
+        ref_email: string;
+        ref_name: string;
+        amount: number;
+        recipient_name: string | null;
+        recipient_bank_bin: string | null;
+        recipient_acc: string | null;
+        recipient_acc_name: string | null;
+      }>();
+
+    if (walkinRows.results.length > 0) {
+      const venue = String((session as any).venue ?? "");
+      const groupedWalkins = new Map<string, { refName: string; walkins: { walkinName: string; amount: number; recipientName: string; qrImageUrl?: string | null }[] }>();
+
+      for (const row of walkinRows.results) {
+        const email = row.ref_email?.trim();
+        if (!email) continue;
+        const amount = Math.round(row.amount);
+        let qrImageUrl: string | null = null;
+        if (row.recipient_bank_bin && row.recipient_acc && row.recipient_acc_name && amount > 0) {
+          const note = stripDiacritics(`TT ${row.walkin_name} ${venue}`).slice(0, 50);
+          qrImageUrl = `https://img.vietqr.io/image/${row.recipient_bank_bin}-${row.recipient_acc}-compact.png?amount=${amount}&addInfo=${encodeURIComponent(note)}&accountName=${encodeURIComponent(row.recipient_acc_name)}`;
+        }
+        const existing = groupedWalkins.get(email) ?? { refName: row.ref_name, walkins: [] };
+        existing.walkins.push({
+          walkinName: row.walkin_name,
+          amount,
+          recipientName: row.recipient_name?.trim() || "người nhận",
+          qrImageUrl,
+        });
+        groupedWalkins.set(email, existing);
+      }
+
+      for (const [refEmail, payload] of groupedWalkins.entries()) {
+        queueTask(c, sendWalkinQrNotification(c.env, {
+          refEmail,
+          refName: payload.refName,
+          venue,
+          date: String((session as any).date ?? ""),
+          startTime: String((session as any).start_time ?? ""),
+          sessionId: id,
+          walkins: payload.walkins,
+        }), `walkin-qr:${refEmail}`);
+      }
     }
   }
 

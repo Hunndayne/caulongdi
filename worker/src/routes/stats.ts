@@ -53,6 +53,7 @@ async function getGroupMemberStats(c: any, groupId: string) {
       SELECT m.id, m.group_id, m.user_id, m.name, m.avatar_color
       FROM members m
       WHERE m.is_active = 1
+        AND m.is_walkin = 0
         AND m.group_id = ?
     ),
     attendance AS (
@@ -105,6 +106,7 @@ async function getJoinedGroupMemberStats(c: any) {
         ON viewer_gm.group_id = m.group_id
        AND viewer_gm.user_id = ?
       WHERE m.is_active = 1
+        AND m.is_walkin = 0
     ),
     member_groups AS (
       SELECT

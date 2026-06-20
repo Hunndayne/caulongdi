@@ -40,7 +40,9 @@
     "db:patch:bot-links": "wrangler d1 execute caulong --local --file=src/db/patch-bot-links.sql",
     "db:patch:bot-links:prod": "wrangler d1 execute caulong --remote --file=src/db/patch-bot-links.sql",
     "db:patch:chat": "wrangler d1 execute caulong --local --file=src/db/patch-chat-messages.sql",
-    "db:patch:chat:prod": "wrangler d1 execute caulong --remote --file=src/db/patch-chat-messages.sql"
+    "db:patch:chat:prod": "wrangler d1 execute caulong --remote --file=src/db/patch-chat-messages.sql",
+    "db:patch:walkin": "wrangler d1 execute caulong --local --file=src/db/patch-walkin.sql",
+    "db:patch:walkin:prod": "wrangler d1 execute caulong --remote --file=src/db/patch-walkin.sql"
   },
   "dependencies": {
     "better-auth": "^1.2.7",
