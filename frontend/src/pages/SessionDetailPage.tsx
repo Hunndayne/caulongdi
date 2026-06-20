@@ -494,13 +494,13 @@ export default function SessionDetailPage() {
 
   const membersWithBank = Array.from(memberById.values()).filter(hasBankInfo);
 
-  // Vãn lai chỉ nằm trong s.members (không có trong danh sách Hội). Gộp vào danh sách điểm danh.
+  // Vãng lai chỉ nằm trong s.members (không có trong danh sách Hội). Gộp vào danh sách điểm danh.
   const sessionWalkins = s.members.filter((member) => member.is_walkin);
   const baseAttendanceList = s.group_id && members.filter((member) => member.is_active).length > 0
     ? members.filter((member) => member.is_active)
     : s.members.filter((member) => !member.is_walkin);
   const attendanceList = [...baseAttendanceList, ...sessionWalkins];
-  // Ref hợp lệ: người tham gia, có tài khoản, không phải vãn lai.
+  // Ref hợp lệ: người tham gia, có tài khoản, không phải vãng lai.
   const walkinRefOptions = s.members.filter((member) => !member.is_walkin && member.user_id);
 
   const fallbackRecipientMember = recipientId ? memberById.get(recipientId) ?? null : null;
@@ -578,7 +578,7 @@ export default function SessionDetailPage() {
   const handleAddWalkin = async () => {
     if (!canManageSession || !id) return;
     if (!walkinRefId) {
-      alert("Cần chọn người bảo lãnh (ref) cho vãn lai.");
+      alert("Cần chọn người bảo lãnh (ref) cho vãng lai.");
       return;
     }
     setAddingWalkin(true);
@@ -1265,7 +1265,7 @@ export default function SessionDetailPage() {
     if (payment.paid) return false;
     if (!currentUserId) return false;
     if (debtor?.is_walkin) {
-      // Vãn lai không tự thao tác: ref bảo lãnh "đánh dấu đã trả"; recipient/quản lý xác nhận.
+      // Vãng lai không tự thao tác: ref bảo lãnh "đánh dấu đã trả"; recipient/quản lý xác nhận.
       const refMember = debtor.ref_member_id ? memberById.get(debtor.ref_member_id) : null;
       if (canManageSession || recipient?.user_id === currentUserId) return true;
       if (refMember?.user_id === currentUserId) return payment.payer_marked_paid !== 1;
@@ -1498,15 +1498,15 @@ export default function SessionDetailPage() {
               </div>
 
               <div className="space-y-1.5">
-                <label className="block text-xs font-medium text-gray-700">Công nợ vãn lai</label>
+                <label className="block text-xs font-medium text-gray-700">Công nợ vãng lai</label>
                 <select
                   value={currentSession?.walkin_debt_mode ?? "self"}
                   onChange={(event) => handleSetWalkinDebtMode(event.target.value as "self" | "ref")}
                   disabled={managingSettings}
                   className="w-full rounded-lg border border-gray-300 px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 disabled:bg-gray-100"
                 >
-                  <option value="self">Vãn lai tự nợ (ref nhận QR qua email)</option>
-                  <option value="ref">Ref gánh gộp nợ của vãn lai</option>
+                  <option value="self">Vãng lai tự nợ (ref nhận QR qua email)</option>
+                  <option value="ref">Ref gánh gộp nợ của vãng lai</option>
                 </select>
                 <p className="text-xs text-gray-400">
                   Đổi chế độ sẽ tính lại công nợ chưa xác nhận của buổi.
@@ -1638,7 +1638,7 @@ export default function SessionDetailPage() {
             {canManageSession && (
               <Button size="sm" variant="outline" onClick={() => setShowWalkinDialog(true)}>
                 <Plus size={14} className="mr-1" />
-                Thêm vãn lai
+                Thêm vãng lai
               </Button>
             )}
           </div>
@@ -1662,7 +1662,7 @@ export default function SessionDetailPage() {
                     <span className="font-medium text-gray-900">{member.name}</span>
                     {isWalkin && (
                       <span className="ml-2 inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-700">
-                        Vãn lai{refName ? ` · ref: ${refName}` : ""}
+                        Vãng lai{refName ? ` · ref: ${refName}` : ""}
                       </span>
                     )}
                   </span>
@@ -2016,7 +2016,7 @@ export default function SessionDetailPage() {
                 const qrRecipient = recipientHasBank
                   ? recipient
                   : (fallbackRecipientMember && fallbackRecipientMember.id !== payment.member_id ? fallbackRecipientMember : null);
-                // Vãn lai không đăng nhập được nên mọi người tham gia đều thấy QR để chuyển hộ.
+                // Vãng lai không đăng nhập được nên mọi người tham gia đều thấy QR để chuyển hộ.
                 const canViewQr = Boolean(currentUserId && (debtor?.user_id === currentUserId || debtor?.is_walkin));
                 const qrData = canViewQr && debtor && qrRecipient ? buildQrData(payment.id, debtor, qrRecipient, payment.amount_owed) : null;
                 const fallbackNotice = !recipientHasBank && qrRecipient && recipient
@@ -2154,12 +2154,12 @@ export default function SessionDetailPage() {
         onClose={() => {
           if (!addingWalkin) setShowWalkinDialog(false);
         }}
-        title="Thêm vãn lai"
+        title="Thêm vãng lai"
         className="sm:max-w-md"
       >
         <div className="space-y-4">
           <p className="text-sm text-gray-500">
-            Vãn lai chỉ tham gia buổi này, không vào Hội. Cần một người bảo lãnh (ref) có tài khoản —
+            Vãng lai chỉ tham gia buổi này, không vào Hội. Cần một người bảo lãnh (ref) có tài khoản —
             mã QR sẽ được gửi email cho người này.
           </p>
           <div>
@@ -2167,7 +2167,7 @@ export default function SessionDetailPage() {
             <Input
               value={walkinName}
               onChange={(event) => setWalkinName(event.target.value)}
-              placeholder="VD: Vãn lai 1"
+              placeholder="VD: Vãng lai 1"
               disabled={addingWalkin}
             />
           </div>
@@ -2195,7 +2195,7 @@ export default function SessionDetailPage() {
               Hủy
             </Button>
             <Button onClick={handleAddWalkin} disabled={addingWalkin || !walkinRefId}>
-              {addingWalkin ? "Đang thêm..." : "Thêm vãn lai"}
+              {addingWalkin ? "Đang thêm..." : "Thêm vãng lai"}
             </Button>
           </div>
         </div>

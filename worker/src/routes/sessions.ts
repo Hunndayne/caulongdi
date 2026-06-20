@@ -1722,7 +1722,7 @@ sessions.put("/:id", async (c) => {
     .run();
 
   if (paymentRecipientChanged || walkinDebtModeChanged) {
-    // Đổi người nhận hoặc đổi chế độ công nợ vãn lai -> bỏ công nợ chưa xác nhận để tính lại
+    // Đổi người nhận hoặc đổi chế độ công nợ vãng lai -> bỏ công nợ chưa xác nhận để tính lại
     await c.env.DB.prepare("DELETE FROM payments WHERE session_id = ?" + (walkinDebtModeChanged && !paymentRecipientChanged ? " AND paid = 0" : "")).bind(id).run();
   }
 
@@ -1737,7 +1737,7 @@ sessions.delete("/:id", async (c) => {
   if (!(await canManageSessionStrict(c, existing))) return c.json({ error: "Forbidden" }, 403);
   const lockedResponse = await blockIfSessionHasConfirmedPayments(c, id);
   if (lockedResponse) return lockedResponse;
-  // Vãn lai ephemeral của buổi: dọn trước khi xoá buổi (FK members trỏ về groups, không cascade theo session)
+  // Vãng lai ephemeral của buổi: dọn trước khi xoá buổi (FK members trỏ về groups, không cascade theo session)
   await c.env.DB.prepare("DELETE FROM members WHERE session_id = ? AND is_walkin = 1").bind(id).run();
   await c.env.DB.prepare("DELETE FROM sessions WHERE id = ?").bind(id).run();
   return c.json({ success: true });
@@ -2006,7 +2006,7 @@ sessions.delete("/:id/members/:memberId", async (c) => {
     .run();
   await c.env.DB.prepare("DELETE FROM payments WHERE session_id = ? AND paid = 0").bind(id).run();
 
-  // Vãn lai là ephemeral: gỡ điểm danh = xoá luôn (FK cascade dọn payments/session_members còn lại)
+  // Vãng lai là ephemeral: gỡ điểm danh = xoá luôn (FK cascade dọn payments/session_members còn lại)
   await c.env.DB.prepare("DELETE FROM members WHERE id = ? AND is_walkin = 1 AND session_id = ?")
     .bind(memberId, id)
     .run();
@@ -2014,7 +2014,7 @@ sessions.delete("/:id/members/:memberId", async (c) => {
   return c.json({ success: true });
 });
 
-// Tạo vãn lai (walk-in guest) cho buổi: không vào Hội, bắt buộc có người ref bảo lãnh.
+// Tạo vãng lai (walk-in guest) cho buổi: không vào Hội, bắt buộc có người ref bảo lãnh.
 sessions.post("/:id/walkins", async (c) => {
   const { id } = c.req.param();
   const session = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(id).first<SessionRow>();
@@ -2030,7 +2030,7 @@ sessions.post("/:id/walkins", async (c) => {
     .bind(refMemberId)
     .first<{ id: string; user_id: string | null; is_walkin: number }>();
   if (!ref) return c.json({ error: "Người ref không tồn tại" }, 404);
-  if (ref.is_walkin) return c.json({ error: "Người ref không thể là vãn lai" }, 400);
+  if (ref.is_walkin) return c.json({ error: "Người ref không thể là vãng lai" }, 400);
   if (!ref.user_id) return c.json({ error: "Người ref phải có tài khoản trong app" }, 400);
 
   let name = body.name?.trim();
@@ -2038,7 +2038,7 @@ sessions.post("/:id/walkins", async (c) => {
     const countRow = await c.env.DB.prepare("SELECT COUNT(*) as cnt FROM members WHERE session_id = ? AND is_walkin = 1")
       .bind(id)
       .first<{ cnt: number }>();
-    name = `Vãn lai ${(countRow?.cnt ?? 0) + 1}`;
+    name = `Vãng lai ${(countRow?.cnt ?? 0) + 1}`;
   }
 
   const memberId = nanoid();
@@ -2371,7 +2371,7 @@ export async function recalcSessionPayments(env: Env, sessionId: string): Promis
     return "Cần chọn người nhận chung trước khi bật chế độ này";
   }
 
-  // Vãn lai: 'self' = vãn lai tự nợ; 'ref' = dồn nợ của vãn lai sang người ref bảo lãnh.
+  // Vãng lai: 'self' = vãng lai tự nợ; 'ref' = dồn nợ của vãng lai sang người ref bảo lãnh.
   const walkinDebtMode = ((session as any).walkin_debt_mode as string | null) === "ref" ? "ref" : "self";
   const walkinRows = await env.DB.prepare(
     "SELECT id, ref_member_id FROM members WHERE session_id = ? AND is_walkin = 1"
@@ -2543,7 +2543,7 @@ sessions.post("/:id/recalculate", async (c) => {
     }
   }
 
-  // Vãn lai (mode 'self'): gửi QR cho người ref bảo lãnh.
+  // Vãng lai (mode 'self'): gửi QR cho người ref bảo lãnh.
   if (isStrictManager) {
     const walkinRows = await c.env.DB.prepare(`
       SELECT
