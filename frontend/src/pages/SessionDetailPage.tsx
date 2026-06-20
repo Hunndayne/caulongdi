@@ -1150,8 +1150,12 @@ export default function SessionDetailPage() {
 
   const handleDeleteSession = async () => {
     if (!window.confirm("Xóa buổi chơi này?")) return;
-    await remove(s.id);
-    navigate("/sessions");
+    try {
+      await remove(s.id);
+      navigate("/sessions");
+    } catch (err) {
+      alert(`Xóa thất bại: ${err instanceof Error ? err.message : "Lỗi không xác định"}`);
+    }
   };
 
   const handleMarkComplete = async () => {

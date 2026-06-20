@@ -991,8 +991,10 @@ async function querySessions(env: Env, groupId: string, opts: QueryOpts): Promis
     binds.push(opts.to);
   }
   if (opts.venue) {
-    where.push("lower(s.venue) LIKE ?");
-    binds.push(`%${opts.venue.toLowerCase()}%`);
+    // Không dùng lower() vì SQLite không lowercase ký tự tiếng Việt (Đ/đ, v.v.)
+    // LIKE mặc định của SQLite đã case-insensitive cho ASCII; còn tiếng Việt so dạng gốc.
+    where.push("s.venue LIKE ?");
+    binds.push(`%${opts.venue}%`);
   }
   if (opts.onlyUpcoming) {
     where.push("s.status = 'upcoming'");
@@ -1131,8 +1133,8 @@ async function matchSessionsBySelector(
     binds.push(selector.startTime);
   }
   if (selector.venue) {
-    where.push("lower(s.venue) LIKE ?");
-    binds.push(`%${selector.venue.toLowerCase()}%`);
+    where.push("s.venue LIKE ?");
+    binds.push(`%${selector.venue}%`);
   }
 
   const result = await env.DB.prepare(
@@ -1184,8 +1186,8 @@ async function findUpcomingSession(env: Env, groupId: string, selector?: Session
     binds.push(selector.startTime);
   }
   if (selector?.venue) {
-    where.push("lower(s.venue) LIKE ?");
-    binds.push(`%${selector.venue.toLowerCase()}%`);
+    where.push("s.venue LIKE ?");
+    binds.push(`%${selector.venue}%`);
   }
 
   const result = await env.DB.prepare(
@@ -1258,8 +1260,8 @@ async function querySessionRow(
     binds.push(selector.startTime);
   }
   if (selector.venue) {
-    where.push("lower(s.venue) LIKE ?");
-    binds.push(`%${selector.venue.toLowerCase()}%`);
+    where.push("s.venue LIKE ?");
+    binds.push(`%${selector.venue}%`);
   }
   const result = await env.DB.prepare(
     `SELECT s.id, s.name, s.date, s.start_time, s.end_time, s.venue, s.location, s.note, s.status,
@@ -1825,7 +1827,7 @@ async function replyCreateSession(
     `SELECT s.id, s.name, s.date, s.start_time, s.end_time, s.venue, s.location, s.note, s.status,
       (SELECT COUNT(*) FROM session_members sm WHERE sm.session_id = s.id AND sm.attended = 1) AS attendee_count
      FROM sessions s
-     WHERE s.group_id = ? AND s.date = ? AND s.start_time = ? AND lower(s.venue) = lower(?) AND s.status = 'upcoming'
+     WHERE s.group_id = ? AND s.date = ? AND s.start_time = ? AND s.venue = ? AND s.status = 'upcoming'
      LIMIT 1`
   )
     .bind(groupId, sessionDate, startTime, venue)
