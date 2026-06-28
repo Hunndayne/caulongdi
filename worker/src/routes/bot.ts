@@ -640,13 +640,16 @@ function extractPayerName(text: string): string | undefined {
 // Rút người DÙNG/HƯỞNG khoản chi: "Hậu dùng/ăn/uống ...", "chia cho A, B", "của A B".
 function extractCostConsumers(text: string): string[] {
   const found: string[] = [];
-  const useM = text.match(/([\p{L}]+(?:\s+(?:và|va)\s+[\p{L}]+)*)\s+(?:dùng|dung|ăn|an|uống|uong|xài|xai)\b/iu);
+  // "có A, B và C ăn/dùng" — danh sách giữa "có" và động từ tiêu dùng (ưu tiên).
+  let useM = text.match(/(?:^|\s)(?:có|co)\s+(.+?)\s+(?:dùng|dung|ăn|an|uống|uong|xài|xai)\b/iu);
+  if (!useM) useM = text.match(/([\p{L}]+(?:\s+(?:và|va)\s+[\p{L}]+)*)\s+(?:dùng|dung|ăn|an|uống|uong|xài|xai)\b/iu);
   if (useM) found.push(...splitNameCandidates(useM[1]));
   const forM = text.match(
     /(?:chia\s+cho|của|cua)\s+([\p{L}][\p{L}\s,và]*?)(?=\s+(?:trả|tra|ứng|ung|bao|dùng|dung|ăn|an|\d)|$)/iu
   );
   if (forM) found.push(...splitNameCandidates(forM[1]));
-  return [...new Set(found.map(cleanupAddNameCandidate).filter((x): x is string => Boolean(x) && x !== SELF_NAME_TOKEN))];
+  // Giữ self-token để chỗ resolve gán đúng người gửi; chỉ loại tên rỗng.
+  return [...new Set(found.map((x) => (isSelfReference(x) ? SELF_NAME_TOKEN : cleanupAddNameCandidate(x))).filter((x): x is string => Boolean(x)))];
 }
 
 // Người trả + người hưởng theo marker rõ nghĩa ("trả" / "dùng,ăn,chia cho") —
@@ -931,9 +934,10 @@ function enrichAiIntent(ai: ParsedIntent, text: string, context?: BotContextMess
       cost: {
         ...ai.cost,
         amount: ai.cost?.amount ?? parseMoneyVn(text),
-        // Marker "trả"/"dùng,ăn,chia cho" rõ nghĩa hơn AI khi câu lẫn người trả & người hưởng.
+        // payer: marker "trả/ứng/bao" rõ nghĩa hơn AI (AI hay lẫn người dùng thành người trả).
+        // consumer: ưu tiên AI (tách danh sách "A, B và C" tốt hơn), regex chỉ bù khi AI trống.
         payerName: pc.payerName ?? ai.cost?.payerName,
-        consumerNames: pc.consumerNames ?? ai.cost?.consumerNames,
+        consumerNames: ai.cost?.consumerNames ?? pc.consumerNames,
       },
       session: mergeSession(ai.session, parseSessionReference(text, context)),
     };
@@ -949,7 +953,7 @@ function enrichAiIntent(ai: ParsedIntent, text: string, context?: BotContextMess
         ...ai.cost,
         amount: amountInText ? ai.cost?.amount ?? parseMoneyVn(text) : undefined,
         payerName: pc.payerName ?? ai.cost?.payerName,
-        consumerNames: pc.consumerNames ?? ai.cost?.consumerNames,
+        consumerNames: ai.cost?.consumerNames ?? pc.consumerNames,
       },
       session: mergeSession(ai.session, parseSessionReference(text, context)),
     };
@@ -2018,11 +2022,14 @@ async function replyAddCost(
   const consumerIds: string[] = [];
   const unresolvedConsumers: string[] = [];
   for (const name of cost?.consumerNames ?? []) {
-    const m = resolveMemberByName(members, name, aliases);
+    const m =
+      name === SELF_NAME_TOKEN || isSelfReference(name)
+        ? resolveSelfMember(members, actor)
+        : resolveMemberByName(members, name, aliases);
     if (m) {
       if (!consumerIds.includes(m.id)) consumerIds.push(m.id);
     } else {
-      unresolvedConsumers.push(name);
+      unresolvedConsumers.push(name === SELF_NAME_TOKEN ? "bạn" : name);
     }
   }
   const consumerNamesResolved = consumerIds
@@ -2193,11 +2200,14 @@ async function replyUpdateCost(
     const ids: string[] = [];
     const unresolved: string[] = [];
     for (const name of cost.consumerNames) {
-      const m = resolveMemberByName(members, name, aliases);
+      const m =
+        name === SELF_NAME_TOKEN || isSelfReference(name)
+          ? resolveSelfMember(members, actor)
+          : resolveMemberByName(members, name, aliases);
       if (m) {
         if (!ids.includes(m.id)) ids.push(m.id);
       } else {
-        unresolved.push(name);
+        unresolved.push(name === SELF_NAME_TOKEN ? "bạn" : name);
       }
     }
     if (ids.length) {
