@@ -564,6 +564,13 @@ function isUpdateCostLike(t: string): boolean {
   return false;
 }
 
+// Ghi khoản chi mới: có số tiền + từ chỉ chi tiêu ("tiền sân 80k", "3 ống cầu 270k Nam trả").
+function isAddCostLike(text: string): boolean {
+  if (parseMoneyVn(text) === undefined) return false;
+  const t = removeDiacritics(text.toLowerCase());
+  return /\b(tien|phi|chi phi|khoan|san|nuoc|cau|bong|bill|an|nem|ve|nuoc uong|do an)\b/.test(t);
+}
+
 function detectIntentByRegex(text: string): Intent | null {
   const t = removeDiacritics(text.toLowerCase()).trim();
   const sessionContext = hasSessionContext(t);
@@ -624,19 +631,49 @@ function parseMoneyVn(text: string): number | undefined {
   return undefined;
 }
 
-// Rút tên người trả từ câu sửa cost ("Nam trả", "tôi ứng") — fallback khi không có AI.
-// Chỉ lấy 1 từ ngay trước "trả/ứng/bao"; matchMembersByName đủ linh hoạt để khớp tên dài.
+// Rút tên người TRẢ ("Nam trả", "tôi ứng") — KHÔNG bắt "trả lại cho X" (X mới là
+// người ứng, để AI/chỗ khác lo). Chỉ lấy 1 từ ngay trước "trả/ứng/bao".
+// Từ chung không phải tên, hay đứng ngay trước "trả" ("người trả", "ai trả") —
+// gặp thì coi như regex không chắc, nhường AI quyết payer.
+const PAYER_STOPWORDS = new Set(["nguoi", "ai", "la", "gi", "het", "deu", "cung", "no", "do", "ban"]);
+
 function extractPayerName(text: string): string | undefined {
-  const m = text.match(/([\p{L}]+)\s+(?:trả|tra|ứng|ung|bao)\b/iu);
+  // Không dùng \b sau "trả" — ký tự có dấu (ả) không phải word-char trong JS regex.
+  const m = text.match(/([\p{L}]+)\s+(?:trả|tra|ứng|ung|bao)(?=\s|$|[,.;:!?])(?!\s+(?:lại|lai))/iu);
   if (!m) return undefined;
   if (isSelfReference(m[1])) return SELF_NAME_TOKEN;
+  if (PAYER_STOPWORDS.has(normalizeName(m[1]))) return undefined;
   const cand = cleanupAddNameCandidate(m[1]);
-  return cand ?? undefined;
+  if (!cand) return undefined;
+  if (cand !== SELF_NAME_TOKEN && normalizeName(cand).length < 2) return undefined; // loại "k", đơn vị tiền
+  return cand;
+}
+
+// Rút người DÙNG/HƯỞNG khoản chi: "Hậu dùng/ăn/uống ...", "chia cho A, B", "của A B".
+function extractCostConsumers(text: string): string[] {
+  const found: string[] = [];
+  // "có A, B và C ăn/dùng" — danh sách giữa "có" và động từ tiêu dùng (ưu tiên).
+  let useM = text.match(/(?:^|\s)(?:có|co)\s+(.+?)\s+(?:dùng|dung|ăn|an|uống|uong|xài|xai)\b/iu);
+  if (!useM) useM = text.match(/([\p{L}]+(?:\s+(?:và|va)\s+[\p{L}]+)*)\s+(?:dùng|dung|ăn|an|uống|uong|xài|xai)\b/iu);
+  if (useM) found.push(...splitNameCandidates(useM[1]));
+  const forM = text.match(
+    /(?:chia\s+cho|của|cua)\s+([\p{L}][\p{L}\s,và]*?)(?=\s+(?:trả|tra|ứng|ung|bao|dùng|dung|ăn|an|\d)|$)/iu
+  );
+  if (forM) found.push(...splitNameCandidates(forM[1]));
+  // Giữ self-token để chỗ resolve gán đúng người gửi; chỉ loại tên rỗng.
+  return [...new Set(found.map((x) => (isSelfReference(x) ? SELF_NAME_TOKEN : cleanupAddNameCandidate(x))).filter((x): x is string => Boolean(x)))];
+}
+
+// Người trả + người hưởng theo marker rõ nghĩa ("trả" / "dùng,ăn,chia cho") —
+// tin cậy hơn AI khi câu kiểu "Hậu dùng nem nướng, Vinh trả".
+function parsePayerConsumer(text: string): { payerName?: string; consumerNames?: string[] } {
+  const consumers = extractCostConsumers(text);
+  return { payerName: extractPayerName(text), consumerNames: consumers.length ? consumers : undefined };
 }
 
 // Rút tên khoản chi cần sửa ("khoản cầu", "tiền sân", "đổi tiền nước thành...").
 function extractCostLabel(text: string): string | undefined {
-  const stop = "(?=\\s+(?:để|de|cho|thành|thanh|sang|của|cua|là|la|tôi|toi|trả|tra|ứng|ung|bao|\\d)|$)";
+  const stop = "(?=\\s+(?:để|de|cho|thành|thanh|sang|của|cua|là|la|tôi|toi|trả|tra|ứng|ung|bao|dùng|dung|ăn|an|\\d)|$)";
   let m = text.match(new RegExp(`(?:khoản|khoan|chi phí|chi phi|tiền|tien)\\s+([\\p{L}\\s]+?)${stop}`, "iu"));
   if (!m) {
     m = text.match(
@@ -649,10 +686,12 @@ function extractCostLabel(text: string): string | undefined {
 
 function parseUpdateCostDraft(text: string): CostDraft {
   const hasMoney = /\d/.test(text) || /\b(nghin|ngan|trieu|tram|chuc)\b/.test(normalizeName(text));
+  const pc = parsePayerConsumer(text);
   return {
     label: extractCostLabel(text),
     amount: hasMoney ? parseMoneyVn(text) : undefined,
-    payerName: extractPayerName(text),
+    payerName: pc.payerName,
+    consumerNames: pc.consumerNames,
   };
 }
 
@@ -697,6 +736,7 @@ async function classifyWithAI(
     "Nếu người dùng HỎI chi phí, tổng tiền, bill, hóa đơn, công nợ, ai nợ ai, ai trả ai, chia tiền, mỗi người bao nhiêu thì intent là costs.",
     'Nếu người dùng BÁO/GHI một khoản chi vừa tiêu (có số tiền, vd "tiền sân 240k", "3 ống cầu 270k Nam trả", "nước hết 60k") thì intent là add_cost — phân biệt với costs là câu hỏi.',
     'Nếu người dùng muốn SỬA/ĐỔI/XÓA một khoản chi ĐÃ ghi (đổi người trả, đổi số tiền, đổi người chia, hoặc xóa khoản — vd "khoản cầu để Nam trả", "tiền sân tôi trả", "đổi tiền nước thành 80k", "xóa khoản cầu") thì intent là update_cost. cost.label là tên khoản CẦN SỬA, các trường còn lại (amount/payerName/consumerNames) là GIÁ TRỊ MỚI; KHÔNG điền field nào nếu không đổi nó.',
+    'PHÂN BIỆT người TRẢ với người DÙNG/HƯỞNG: người đứng trước "trả/ứng/bao" là payerName; người đứng trước "dùng/ăn/uống/xài" hoặc sau "chia cho/của" là consumerNames. Vd "Hậu dùng nem nướng, Vinh trả" → label="nem nướng", consumerNames=["Hậu"], payerName="Vinh" (KHÔNG đặt Hậu là payer).',
     'Nếu người dùng muốn ĐÁNH DẤU/XÁC NHẬN đã trả tiền/đã chuyển khoản công nợ ("tôi trả Nam rồi", "đánh dấu đã trả", "Nam chuyển cho tôi rồi") thì intent là mark_paid.',
     "Only classify today/week/upcoming/next/recent/list_attendees when the user clearly asks about badminton sessions, schedule, court, or players; casual chat that happens to mention time words must be unknown.",
     "Bạn phân tích câu của người dùng về lịch chơi cầu lông của một nhóm và TRẢ VỀ JSON.",
@@ -900,9 +940,17 @@ function enrichAiIntent(ai: ParsedIntent, text: string, context?: BotContextMess
   }
 
   if (ai.intent === "add_cost") {
+    const pc = parsePayerConsumer(text);
     return {
       ...ai,
-      cost: { ...ai.cost, amount: ai.cost?.amount ?? parseMoneyVn(text) },
+      cost: {
+        ...ai.cost,
+        amount: ai.cost?.amount ?? parseMoneyVn(text),
+        // payer: marker "trả/ứng/bao" rõ nghĩa hơn AI (AI hay lẫn người dùng thành người trả).
+        // consumer: ưu tiên AI (tách danh sách "A, B và C" tốt hơn), regex chỉ bù khi AI trống.
+        payerName: pc.payerName ?? ai.cost?.payerName,
+        consumerNames: ai.cost?.consumerNames ?? pc.consumerNames,
+      },
       session: mergeSession(ai.session, parseSessionReference(text, context)),
     };
   }
@@ -910,9 +958,15 @@ function enrichAiIntent(ai: ParsedIntent, text: string, context?: BotContextMess
   if (ai.intent === "update_cost") {
     // amount chỉ là giá trị MỚI khi câu thực sự có số tiền (tránh AI suy từ ngữ cảnh).
     const amountInText = /\d/.test(text) || /\b(nghin|ngan|trieu|tram|chuc)\b/.test(normalizeName(text));
+    const pc = parsePayerConsumer(text);
     return {
       ...ai,
-      cost: { ...ai.cost, amount: amountInText ? ai.cost?.amount ?? parseMoneyVn(text) : undefined },
+      cost: {
+        ...ai.cost,
+        amount: amountInText ? ai.cost?.amount ?? parseMoneyVn(text) : undefined,
+        payerName: pc.payerName ?? ai.cost?.payerName,
+        consumerNames: ai.cost?.consumerNames ?? pc.consumerNames,
+      },
       session: mergeSession(ai.session, parseSessionReference(text, context)),
     };
   }
@@ -938,19 +992,39 @@ function isStrongCreateLike(t: string): boolean {
   return /\b(tao|set|lap)\b.*\b(buoi|keo)\b/.test(t) || /\b(buoi|keo)\s+moi\b/.test(t);
 }
 
-async function resolveIntent(env: Env, text: string, actor?: BotActor, context?: BotContextMessage[]): Promise<ParsedIntent> {
+// Lệnh "/thêm | /add | /play" — fallback regex khi AI nói "chat" hoặc không gọi được.
+// (Không còn chạy TRƯỚC AI nữa: "/thêm tiền sân 80k" là ghi chi phí chứ không phải thêm người,
+//  nên để AI phân loại trước, đây chỉ là lưới an toàn.)
+function slashCommandIntent(text: string, context?: BotContextMessage[]): ParsedIntent | null {
   const t = removeDiacritics(text.toLowerCase()).trim();
-
-  // Lệnh "/" tường minh — quyết ngay, không cần AI.
   if (/^\/(them|add)\b/.test(t)) {
+    if (isUpdateCostLike(t)) {
+      return { intent: "update_cost", names: [], cost: parseUpdateCostDraft(text), session: parseSessionReference(text, context) };
+    }
+    if (isAddCostLike(text)) {
+      return {
+        intent: "add_cost",
+        names: [],
+        cost: { amount: parseMoneyVn(text), ...parsePayerConsumer(text) },
+        session: parseSessionReference(text, context),
+      };
+    }
+    if (isCreateSessionLike(t)) {
+      return { intent: "create_session", names: parseCreateParticipants(text), session: parseCreateSessionDraft(text) };
+    }
     return { intent: "add_member", names: normalizeAddNames(text), session: parseSessionReference(text, context) };
   }
   if (/^\/(play|buoi)\b/.test(t) && !text.replace(/^\/(play|buoi)\b/i, "").trim()) {
-    return { intent: "upcoming", names: [] }; // chỉ gõ "/play" (hoặc "/buoi" cũ)
+    return { intent: "upcoming", names: [] };
   }
+  return null;
+}
 
-  // AI là bộ phân loại chính — regex ép trước AI từng gây nhầm với câu nhiều thông tin
-  // ("ai tạo buổi hôm qua vậy?" bị ép thành create_session).
+async function resolveIntent(env: Env, text: string, actor?: BotActor, context?: BotContextMessage[]): Promise<ParsedIntent> {
+  const t = removeDiacritics(text.toLowerCase()).trim();
+
+  // LLM là bộ phân loại CHÍNH — LUÔN chạy trước (kể cả lệnh "/thêm ..."), vì regex không
+  // phải lúc nào cũng đúng. Regex chỉ là lưới an toàn khi AI nói "chat" hoặc không gọi được.
   let ai: ParsedIntent | null = null;
   if (env.DEEPSEEK_API_KEY?.trim()) {
     try {
@@ -960,21 +1034,29 @@ async function resolveIntent(env: Env, text: string, actor?: BotActor, context?:
     }
   }
 
-  if (ai) {
-    if (ai.intent !== "chat") {
-      // "add_cost" mà câu KHÔNG có số tiền → thực chất là sửa khoản đã ghi (đổi người trả...).
-      if (ai.intent === "add_cost") {
-        const hasMoney = /\d/.test(t) || /\b(nghin|ngan|trieu|tram|chuc)\b/.test(t);
-        if (!hasMoney) return enrichAiIntent({ ...ai, intent: "update_cost" }, text, context);
-      }
-      return enrichAiIntent(ai, text, context);
+  if (ai && ai.intent !== "chat") {
+    const hasMoney = /\d/.test(t) || /\b(nghin|ngan|trieu|tram|chuc)\b/.test(t);
+    // Sửa vài nhầm lẫn hay gặp quanh "thêm/chi phí":
+    if (ai.intent === "add_member") {
+      if (isUpdateCostLike(t)) return enrichAiIntent({ ...ai, intent: "update_cost" }, text, context);
+      if (isAddCostLike(text)) return enrichAiIntent({ ...ai, intent: "add_cost" }, text, context);
     }
+    // "add_cost" mà câu KHÔNG có số tiền → thực chất là sửa khoản đã ghi (đổi người trả...).
+    if (ai.intent === "add_cost" && !hasMoney) return enrichAiIntent({ ...ai, intent: "update_cost" }, text, context);
+    return enrichAiIntent(ai, text, context);
+  }
 
-    // AI bảo "chat" nhưng câu khớp mẫu lệnh rất rõ → vá lại bằng regex hẹp.
+  // ===== Lưới an toàn regex (AI nói "chat" hoặc không gọi được AI) =====
+  // Lệnh "/" tường minh xử lý trước.
+  const slash = slashCommandIntent(text, context);
+  if (slash) return slash;
+
+  if (ai) {
+    // AI đã phán "chat" cho câu KHÔNG phải lệnh "/" → chỉ vá khi khớp mẫu rất rõ,
+    // tôn trọng phán đoán "chat" của AI cho phần còn lại.
     if (isCancelConfirmation(text, context)) {
       return { intent: "cancel_session", names: [] };
     }
-    // "đánh dấu đã trả", "tôi chuyển rồi" (không kèm số tiền = không phải ghi chi phí)
     if (
       /\b(danh dau|xac nhan)\b.*\b(tra|thanh toan|chuyen)\b/.test(t) ||
       (/\b(da tra|tra het|tra du|da chuyen( khoan)?|chuyen roi)\b/.test(t) && parseMoneyVn(text) === undefined)
@@ -998,20 +1080,23 @@ async function resolveIntent(env: Env, text: string, actor?: BotActor, context?:
         session:
           byRegex === "list_attendees" || byRegex === "costs"
             ? parseSessionReference(text, context)
-            : { date: parseCreateDate(text) }, // "buổi ngày mai" — chỉ lấy ngày nói rõ trong câu
+            : { date: parseCreateDate(text) },
       };
     }
     return { intent: "chat", names: [] };
   }
 
-  // Không gọi được AI (thiếu key / lỗi mạng) → pipeline regex như trước.
-  // Sửa/xóa khoản đã ghi — ưu tiên trước add_cost (vd "đổi tiền nước thành 80k").
+  // Không gọi được AI (thiếu key / lỗi mạng) → pipeline regex rộng.
   if (isUpdateCostLike(t)) {
     return { intent: "update_cost", names: [], cost: parseUpdateCostDraft(text), session: parseSessionReference(text, context) };
   }
-  // Câu có số tiền + từ chi tiêu mà không phải câu hỏi → ghi chi phí.
-  if (parseMoneyVn(text) !== undefined && /\b(tien|phi|san|nuoc|cau|bill)\b/.test(t) && !asksForCosts(t)) {
-    return { intent: "add_cost", names: [], cost: { amount: parseMoneyVn(text) }, session: parseSessionReference(text, context) };
+  if (isAddCostLike(text) && !asksForCosts(t)) {
+    return {
+      intent: "add_cost",
+      names: [],
+      cost: { amount: parseMoneyVn(text), ...parsePayerConsumer(text) },
+      session: parseSessionReference(text, context),
+    };
   }
   if (isCreateSessionLike(t)) {
     return { intent: "create_session", names: parseCreateParticipants(text), session: parseCreateSessionDraft(text) };
@@ -1980,11 +2065,14 @@ async function replyAddCost(
   const consumerIds: string[] = [];
   const unresolvedConsumers: string[] = [];
   for (const name of cost?.consumerNames ?? []) {
-    const m = resolveMemberByName(members, name, aliases);
+    const m =
+      name === SELF_NAME_TOKEN || isSelfReference(name)
+        ? resolveSelfMember(members, actor)
+        : resolveMemberByName(members, name, aliases);
     if (m) {
       if (!consumerIds.includes(m.id)) consumerIds.push(m.id);
     } else {
-      unresolvedConsumers.push(name);
+      unresolvedConsumers.push(name === SELF_NAME_TOKEN ? "bạn" : name);
     }
   }
   const consumerNamesResolved = consumerIds
@@ -2155,11 +2243,14 @@ async function replyUpdateCost(
     const ids: string[] = [];
     const unresolved: string[] = [];
     for (const name of cost.consumerNames) {
-      const m = resolveMemberByName(members, name, aliases);
+      const m =
+        name === SELF_NAME_TOKEN || isSelfReference(name)
+          ? resolveSelfMember(members, actor)
+          : resolveMemberByName(members, name, aliases);
       if (m) {
         if (!ids.includes(m.id)) ids.push(m.id);
       } else {
-        unresolved.push(name);
+        unresolved.push(name === SELF_NAME_TOKEN ? "bạn" : name);
       }
     }
     if (ids.length) {
