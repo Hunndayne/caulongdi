@@ -564,6 +564,13 @@ function isUpdateCostLike(t: string): boolean {
   return false;
 }
 
+// Ghi khoản chi mới: có số tiền + từ chỉ chi tiêu ("tiền sân 80k", "3 ống cầu 270k Nam trả").
+function isAddCostLike(text: string): boolean {
+  if (parseMoneyVn(text) === undefined) return false;
+  const t = removeDiacritics(text.toLowerCase());
+  return /\b(tien|phi|chi phi|khoan|san|nuoc|cau|bong|bill|an|nem|ve|nuoc uong|do an)\b/.test(t);
+}
+
 function detectIntentByRegex(text: string): Intent | null {
   const t = removeDiacritics(text.toLowerCase()).trim();
   const sessionContext = hasSessionContext(t);
@@ -980,19 +987,39 @@ function isStrongCreateLike(t: string): boolean {
   return /\b(tao|set|lap)\b.*\b(buoi|keo)\b/.test(t) || /\b(buoi|keo)\s+moi\b/.test(t);
 }
 
-async function resolveIntent(env: Env, text: string, actor?: BotActor, context?: BotContextMessage[]): Promise<ParsedIntent> {
+// Lệnh "/thêm | /add | /play" — fallback regex khi AI nói "chat" hoặc không gọi được.
+// (Không còn chạy TRƯỚC AI nữa: "/thêm tiền sân 80k" là ghi chi phí chứ không phải thêm người,
+//  nên để AI phân loại trước, đây chỉ là lưới an toàn.)
+function slashCommandIntent(text: string, context?: BotContextMessage[]): ParsedIntent | null {
   const t = removeDiacritics(text.toLowerCase()).trim();
-
-  // Lệnh "/" tường minh — quyết ngay, không cần AI.
   if (/^\/(them|add)\b/.test(t)) {
+    if (isUpdateCostLike(t)) {
+      return { intent: "update_cost", names: [], cost: parseUpdateCostDraft(text), session: parseSessionReference(text, context) };
+    }
+    if (isAddCostLike(text)) {
+      return {
+        intent: "add_cost",
+        names: [],
+        cost: { amount: parseMoneyVn(text), ...parsePayerConsumer(text) },
+        session: parseSessionReference(text, context),
+      };
+    }
+    if (isCreateSessionLike(t)) {
+      return { intent: "create_session", names: parseCreateParticipants(text), session: parseCreateSessionDraft(text) };
+    }
     return { intent: "add_member", names: normalizeAddNames(text), session: parseSessionReference(text, context) };
   }
   if (/^\/(play|buoi)\b/.test(t) && !text.replace(/^\/(play|buoi)\b/i, "").trim()) {
-    return { intent: "upcoming", names: [] }; // chỉ gõ "/play" (hoặc "/buoi" cũ)
+    return { intent: "upcoming", names: [] };
   }
+  return null;
+}
 
-  // AI là bộ phân loại chính — regex ép trước AI từng gây nhầm với câu nhiều thông tin
-  // ("ai tạo buổi hôm qua vậy?" bị ép thành create_session).
+async function resolveIntent(env: Env, text: string, actor?: BotActor, context?: BotContextMessage[]): Promise<ParsedIntent> {
+  const t = removeDiacritics(text.toLowerCase()).trim();
+
+  // LLM là bộ phân loại CHÍNH — LUÔN chạy trước (kể cả lệnh "/thêm ..."), vì regex không
+  // phải lúc nào cũng đúng. Regex chỉ là lưới an toàn khi AI nói "chat" hoặc không gọi được.
   let ai: ParsedIntent | null = null;
   if (env.DEEPSEEK_API_KEY?.trim()) {
     try {
@@ -1002,21 +1029,29 @@ async function resolveIntent(env: Env, text: string, actor?: BotActor, context?:
     }
   }
 
-  if (ai) {
-    if (ai.intent !== "chat") {
-      // "add_cost" mà câu KHÔNG có số tiền → thực chất là sửa khoản đã ghi (đổi người trả...).
-      if (ai.intent === "add_cost") {
-        const hasMoney = /\d/.test(t) || /\b(nghin|ngan|trieu|tram|chuc)\b/.test(t);
-        if (!hasMoney) return enrichAiIntent({ ...ai, intent: "update_cost" }, text, context);
-      }
-      return enrichAiIntent(ai, text, context);
+  if (ai && ai.intent !== "chat") {
+    const hasMoney = /\d/.test(t) || /\b(nghin|ngan|trieu|tram|chuc)\b/.test(t);
+    // Sửa vài nhầm lẫn hay gặp quanh "thêm/chi phí":
+    if (ai.intent === "add_member") {
+      if (isUpdateCostLike(t)) return enrichAiIntent({ ...ai, intent: "update_cost" }, text, context);
+      if (isAddCostLike(text)) return enrichAiIntent({ ...ai, intent: "add_cost" }, text, context);
     }
+    // "add_cost" mà câu KHÔNG có số tiền → thực chất là sửa khoản đã ghi (đổi người trả...).
+    if (ai.intent === "add_cost" && !hasMoney) return enrichAiIntent({ ...ai, intent: "update_cost" }, text, context);
+    return enrichAiIntent(ai, text, context);
+  }
 
-    // AI bảo "chat" nhưng câu khớp mẫu lệnh rất rõ → vá lại bằng regex hẹp.
+  // ===== Lưới an toàn regex (AI nói "chat" hoặc không gọi được AI) =====
+  // Lệnh "/" tường minh xử lý trước.
+  const slash = slashCommandIntent(text, context);
+  if (slash) return slash;
+
+  if (ai) {
+    // AI đã phán "chat" cho câu KHÔNG phải lệnh "/" → chỉ vá khi khớp mẫu rất rõ,
+    // tôn trọng phán đoán "chat" của AI cho phần còn lại.
     if (isCancelConfirmation(text, context)) {
       return { intent: "cancel_session", names: [] };
     }
-    // "đánh dấu đã trả", "tôi chuyển rồi" (không kèm số tiền = không phải ghi chi phí)
     if (
       /\b(danh dau|xac nhan)\b.*\b(tra|thanh toan|chuyen)\b/.test(t) ||
       (/\b(da tra|tra het|tra du|da chuyen( khoan)?|chuyen roi)\b/.test(t) && parseMoneyVn(text) === undefined)
@@ -1040,20 +1075,23 @@ async function resolveIntent(env: Env, text: string, actor?: BotActor, context?:
         session:
           byRegex === "list_attendees" || byRegex === "costs"
             ? parseSessionReference(text, context)
-            : { date: parseCreateDate(text) }, // "buổi ngày mai" — chỉ lấy ngày nói rõ trong câu
+            : { date: parseCreateDate(text) },
       };
     }
     return { intent: "chat", names: [] };
   }
 
-  // Không gọi được AI (thiếu key / lỗi mạng) → pipeline regex như trước.
-  // Sửa/xóa khoản đã ghi — ưu tiên trước add_cost (vd "đổi tiền nước thành 80k").
+  // Không gọi được AI (thiếu key / lỗi mạng) → pipeline regex rộng.
   if (isUpdateCostLike(t)) {
     return { intent: "update_cost", names: [], cost: parseUpdateCostDraft(text), session: parseSessionReference(text, context) };
   }
-  // Câu có số tiền + từ chi tiêu mà không phải câu hỏi → ghi chi phí.
-  if (parseMoneyVn(text) !== undefined && /\b(tien|phi|san|nuoc|cau|bill)\b/.test(t) && !asksForCosts(t)) {
-    return { intent: "add_cost", names: [], cost: { amount: parseMoneyVn(text) }, session: parseSessionReference(text, context) };
+  if (isAddCostLike(text) && !asksForCosts(t)) {
+    return {
+      intent: "add_cost",
+      names: [],
+      cost: { amount: parseMoneyVn(text), ...parsePayerConsumer(text) },
+      session: parseSessionReference(text, context),
+    };
   }
   if (isCreateSessionLike(t)) {
     return { intent: "create_session", names: parseCreateParticipants(text), session: parseCreateSessionDraft(text) };
