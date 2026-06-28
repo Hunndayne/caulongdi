@@ -624,19 +624,41 @@ function parseMoneyVn(text: string): number | undefined {
   return undefined;
 }
 
-// Rút tên người trả từ câu sửa cost ("Nam trả", "tôi ứng") — fallback khi không có AI.
-// Chỉ lấy 1 từ ngay trước "trả/ứng/bao"; matchMembersByName đủ linh hoạt để khớp tên dài.
+// Rút tên người TRẢ ("Nam trả", "tôi ứng") — KHÔNG bắt "trả lại cho X" (X mới là
+// người ứng, để AI/chỗ khác lo). Chỉ lấy 1 từ ngay trước "trả/ứng/bao".
 function extractPayerName(text: string): string | undefined {
-  const m = text.match(/([\p{L}]+)\s+(?:trả|tra|ứng|ung|bao)\b/iu);
+  // Không dùng \b sau "trả" — ký tự có dấu (ả) không phải word-char trong JS regex.
+  const m = text.match(/([\p{L}]+)\s+(?:trả|tra|ứng|ung|bao)(?=\s|$|[,.;:!?])(?!\s+(?:lại|lai))/iu);
   if (!m) return undefined;
   if (isSelfReference(m[1])) return SELF_NAME_TOKEN;
   const cand = cleanupAddNameCandidate(m[1]);
-  return cand ?? undefined;
+  if (!cand) return undefined;
+  if (cand !== SELF_NAME_TOKEN && normalizeName(cand).length < 2) return undefined; // loại "k", đơn vị tiền
+  return cand;
+}
+
+// Rút người DÙNG/HƯỞNG khoản chi: "Hậu dùng/ăn/uống ...", "chia cho A, B", "của A B".
+function extractCostConsumers(text: string): string[] {
+  const found: string[] = [];
+  const useM = text.match(/([\p{L}]+(?:\s+(?:và|va)\s+[\p{L}]+)*)\s+(?:dùng|dung|ăn|an|uống|uong|xài|xai)\b/iu);
+  if (useM) found.push(...splitNameCandidates(useM[1]));
+  const forM = text.match(
+    /(?:chia\s+cho|của|cua)\s+([\p{L}][\p{L}\s,và]*?)(?=\s+(?:trả|tra|ứng|ung|bao|dùng|dung|ăn|an|\d)|$)/iu
+  );
+  if (forM) found.push(...splitNameCandidates(forM[1]));
+  return [...new Set(found.map(cleanupAddNameCandidate).filter((x): x is string => Boolean(x) && x !== SELF_NAME_TOKEN))];
+}
+
+// Người trả + người hưởng theo marker rõ nghĩa ("trả" / "dùng,ăn,chia cho") —
+// tin cậy hơn AI khi câu kiểu "Hậu dùng nem nướng, Vinh trả".
+function parsePayerConsumer(text: string): { payerName?: string; consumerNames?: string[] } {
+  const consumers = extractCostConsumers(text);
+  return { payerName: extractPayerName(text), consumerNames: consumers.length ? consumers : undefined };
 }
 
 // Rút tên khoản chi cần sửa ("khoản cầu", "tiền sân", "đổi tiền nước thành...").
 function extractCostLabel(text: string): string | undefined {
-  const stop = "(?=\\s+(?:để|de|cho|thành|thanh|sang|của|cua|là|la|tôi|toi|trả|tra|ứng|ung|bao|\\d)|$)";
+  const stop = "(?=\\s+(?:để|de|cho|thành|thanh|sang|của|cua|là|la|tôi|toi|trả|tra|ứng|ung|bao|dùng|dung|ăn|an|\\d)|$)";
   let m = text.match(new RegExp(`(?:khoản|khoan|chi phí|chi phi|tiền|tien)\\s+([\\p{L}\\s]+?)${stop}`, "iu"));
   if (!m) {
     m = text.match(
@@ -649,10 +671,12 @@ function extractCostLabel(text: string): string | undefined {
 
 function parseUpdateCostDraft(text: string): CostDraft {
   const hasMoney = /\d/.test(text) || /\b(nghin|ngan|trieu|tram|chuc)\b/.test(normalizeName(text));
+  const pc = parsePayerConsumer(text);
   return {
     label: extractCostLabel(text),
     amount: hasMoney ? parseMoneyVn(text) : undefined,
-    payerName: extractPayerName(text),
+    payerName: pc.payerName,
+    consumerNames: pc.consumerNames,
   };
 }
 
@@ -697,6 +721,7 @@ async function classifyWithAI(
     "Nếu người dùng HỎI chi phí, tổng tiền, bill, hóa đơn, công nợ, ai nợ ai, ai trả ai, chia tiền, mỗi người bao nhiêu thì intent là costs.",
     'Nếu người dùng BÁO/GHI một khoản chi vừa tiêu (có số tiền, vd "tiền sân 240k", "3 ống cầu 270k Nam trả", "nước hết 60k") thì intent là add_cost — phân biệt với costs là câu hỏi.',
     'Nếu người dùng muốn SỬA/ĐỔI/XÓA một khoản chi ĐÃ ghi (đổi người trả, đổi số tiền, đổi người chia, hoặc xóa khoản — vd "khoản cầu để Nam trả", "tiền sân tôi trả", "đổi tiền nước thành 80k", "xóa khoản cầu") thì intent là update_cost. cost.label là tên khoản CẦN SỬA, các trường còn lại (amount/payerName/consumerNames) là GIÁ TRỊ MỚI; KHÔNG điền field nào nếu không đổi nó.',
+    'PHÂN BIỆT người TRẢ với người DÙNG/HƯỞNG: người đứng trước "trả/ứng/bao" là payerName; người đứng trước "dùng/ăn/uống/xài" hoặc sau "chia cho/của" là consumerNames. Vd "Hậu dùng nem nướng, Vinh trả" → label="nem nướng", consumerNames=["Hậu"], payerName="Vinh" (KHÔNG đặt Hậu là payer).',
     'Nếu người dùng muốn ĐÁNH DẤU/XÁC NHẬN đã trả tiền/đã chuyển khoản công nợ ("tôi trả Nam rồi", "đánh dấu đã trả", "Nam chuyển cho tôi rồi") thì intent là mark_paid.',
     "Only classify today/week/upcoming/next/recent/list_attendees when the user clearly asks about badminton sessions, schedule, court, or players; casual chat that happens to mention time words must be unknown.",
     "Bạn phân tích câu của người dùng về lịch chơi cầu lông của một nhóm và TRẢ VỀ JSON.",
@@ -900,9 +925,16 @@ function enrichAiIntent(ai: ParsedIntent, text: string, context?: BotContextMess
   }
 
   if (ai.intent === "add_cost") {
+    const pc = parsePayerConsumer(text);
     return {
       ...ai,
-      cost: { ...ai.cost, amount: ai.cost?.amount ?? parseMoneyVn(text) },
+      cost: {
+        ...ai.cost,
+        amount: ai.cost?.amount ?? parseMoneyVn(text),
+        // Marker "trả"/"dùng,ăn,chia cho" rõ nghĩa hơn AI khi câu lẫn người trả & người hưởng.
+        payerName: pc.payerName ?? ai.cost?.payerName,
+        consumerNames: pc.consumerNames ?? ai.cost?.consumerNames,
+      },
       session: mergeSession(ai.session, parseSessionReference(text, context)),
     };
   }
@@ -910,9 +942,15 @@ function enrichAiIntent(ai: ParsedIntent, text: string, context?: BotContextMess
   if (ai.intent === "update_cost") {
     // amount chỉ là giá trị MỚI khi câu thực sự có số tiền (tránh AI suy từ ngữ cảnh).
     const amountInText = /\d/.test(text) || /\b(nghin|ngan|trieu|tram|chuc)\b/.test(normalizeName(text));
+    const pc = parsePayerConsumer(text);
     return {
       ...ai,
-      cost: { ...ai.cost, amount: amountInText ? ai.cost?.amount ?? parseMoneyVn(text) : undefined },
+      cost: {
+        ...ai.cost,
+        amount: amountInText ? ai.cost?.amount ?? parseMoneyVn(text) : undefined,
+        payerName: pc.payerName ?? ai.cost?.payerName,
+        consumerNames: pc.consumerNames ?? ai.cost?.consumerNames,
+      },
       session: mergeSession(ai.session, parseSessionReference(text, context)),
     };
   }
