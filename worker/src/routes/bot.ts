@@ -633,11 +633,16 @@ function parseMoneyVn(text: string): number | undefined {
 
 // Rút tên người TRẢ ("Nam trả", "tôi ứng") — KHÔNG bắt "trả lại cho X" (X mới là
 // người ứng, để AI/chỗ khác lo). Chỉ lấy 1 từ ngay trước "trả/ứng/bao".
+// Từ chung không phải tên, hay đứng ngay trước "trả" ("người trả", "ai trả") —
+// gặp thì coi như regex không chắc, nhường AI quyết payer.
+const PAYER_STOPWORDS = new Set(["nguoi", "ai", "la", "gi", "het", "deu", "cung", "no", "do", "ban"]);
+
 function extractPayerName(text: string): string | undefined {
   // Không dùng \b sau "trả" — ký tự có dấu (ả) không phải word-char trong JS regex.
   const m = text.match(/([\p{L}]+)\s+(?:trả|tra|ứng|ung|bao)(?=\s|$|[,.;:!?])(?!\s+(?:lại|lai))/iu);
   if (!m) return undefined;
   if (isSelfReference(m[1])) return SELF_NAME_TOKEN;
+  if (PAYER_STOPWORDS.has(normalizeName(m[1]))) return undefined;
   const cand = cleanupAddNameCandidate(m[1]);
   if (!cand) return undefined;
   if (cand !== SELF_NAME_TOKEN && normalizeName(cand).length < 2) return undefined; // loại "k", đơn vị tiền
