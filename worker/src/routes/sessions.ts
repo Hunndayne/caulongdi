@@ -1736,7 +1736,7 @@ sessions.delete("/:id", async (c) => {
   if (!existing) return c.json({ error: "Not found" }, 404);
   if (!(await canManageSessionStrict(c, existing))) return c.json({ error: "Forbidden" }, 403);
   const lockedResponse = await blockIfSessionHasConfirmedPayments(c, id);
-  if (lockedResponse) return lockedResponse;
+  if (lockedResponse && c.get("userRole") !== "admin") return lockedResponse;
   // Vãng lai ephemeral của buổi: dọn trước khi xoá buổi (FK members trỏ về groups, không cascade theo session)
   // Bọc try-catch phòng khi migration patch-walkin chưa chạy trên môi trường đó
   try {
