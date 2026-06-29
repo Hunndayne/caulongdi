@@ -158,8 +158,9 @@ function sessionTimeRange(s: SessionRow) {
 }
 
 function formatSession(s: SessionRow) {
-  const lines = [`🏸 ${formatDate(s.date)} • ${sessionTimeRange(s)} • ${sessionTitle(s)}`];
-  if (s.venue && s.venue !== sessionTitle(s)) lines.push(`Sân: ${s.venue}`);
+  const lines = [`🏸 ${formatDate(s.date)} • ${s.start_time} • ${s.venue}`];
+  if (s.name?.trim()) lines.push(`📋 ${s.name.trim()}`);
+  if (s.end_time) lines.push(`⏰ Kết thúc: ${s.end_time}`);
   if (s.location) lines.push(`📍 ${s.location}`);
   const status = s.status && s.status !== "upcoming" ? ` • ${statusLabel(s.status)}` : "";
   lines.push(`👥 ${s.attendee_count} người${status}`);
@@ -187,8 +188,9 @@ async function getAttendeeNames(env: Env, sessionId: string): Promise<string[]> 
 // Hiển thị buổi kèm danh sách người tham gia (giống giao diện trên web/app) —
 // truy vấn buổi là show luôn ai đi, không cần hỏi thêm.
 async function formatSessionDetailed(env: Env, s: SessionRow): Promise<string> {
-  const lines = [`🏸 ${formatDate(s.date)} • ${sessionTimeRange(s)} • ${sessionTitle(s)}`];
-  if (s.venue && s.venue !== sessionTitle(s)) lines.push(`Sân: ${s.venue}`);
+  const lines = [`🏸 ${formatDate(s.date)} • ${s.start_time} • ${s.venue}`];
+  if (s.name?.trim()) lines.push(`📋 ${s.name.trim()}`);
+  if (s.end_time) lines.push(`⏰ Kết thúc: ${s.end_time}`);
   if (s.location) lines.push(`📍 ${s.location}`);
   const status = s.status && s.status !== "upcoming" ? ` • ${statusLabel(s.status)}` : "";
   const names = await getAttendeeNames(env, s.id);
