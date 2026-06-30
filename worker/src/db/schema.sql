@@ -214,3 +214,13 @@ CREATE INDEX IF NOT EXISTS idx_ai_usage_daily_date ON ai_usage_daily(usage_date)
 CREATE INDEX IF NOT EXISTS idx_chat_messages_group_created ON chat_messages(group_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_bot_link_codes_group ON bot_link_codes(group_id);
 CREATE INDEX IF NOT EXISTS idx_bot_link_codes_expires ON bot_link_codes(expires_at);
+
+CREATE TABLE IF NOT EXISTS group_chat_summaries (
+  group_id       TEXT PRIMARY KEY,
+  summary        TEXT NOT NULL DEFAULT '',
+  member_styles  TEXT NOT NULL DEFAULT '{}',
+  last_message_id TEXT,
+  message_count  INTEGER NOT NULL DEFAULT 0,
+  generated_at   TEXT NOT NULL,
+  FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
+);

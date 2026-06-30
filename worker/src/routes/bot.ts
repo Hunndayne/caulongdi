@@ -62,6 +62,7 @@ type BotContextMessage = {
   role: "user" | "assistant";
   text: string;
   createdAt?: string;
+  userName?: string;
 };
 
 type SessionRow = {
@@ -248,18 +249,27 @@ function helpText() {
   ].join("\n");
 }
 
-function contextForPrompt(context?: BotContextMessage[]) {
-  const items = (context ?? []).slice(-MAX_CONTEXT_MESSAGES_FOR_AI);
-  if (!items.length) return "";
+function contextForPrompt(context?: BotContextMessage[], groupSummary?: string) {
+  const parts: string[] = [];
 
-  return items
-    .map((item) => {
-      const who = item.role === "assistant" ? "Ting AI" : "Người dùng";
-      const text = item.text.replace(/^\/ting\s*/i, "").replace(/\s+/g, " ").trim().slice(0, 500);
-      return `${who}: ${text}`;
-    })
-    .filter(Boolean)
-    .join("\n");
+  if (groupSummary) {
+    parts.push(`[Tóm tắt nhóm]\n${groupSummary}`);
+  }
+
+  const items = (context ?? []).slice(-MAX_CONTEXT_MESSAGES_FOR_AI);
+  if (items.length) {
+    const messages = items
+      .map((item) => {
+        const who = item.role === "assistant" ? "Ting AI" : (item.userName || "Người dùng");
+        const text = item.text.replace(/^\/ting\s*/i, "").replace(/\s+/g, " ").trim().slice(0, 500);
+        return `${who}: ${text}`;
+      })
+      .filter(Boolean)
+      .join("\n");
+    parts.push(messages);
+  }
+
+  return parts.join("\n\n");
 }
 
 // --- Nhận diện ý định ---
@@ -865,7 +875,8 @@ async function replyNaturalChat(
   groupName: string,
   text: string,
   actor?: BotActor,
-  context?: BotContextMessage[]
+  context?: BotContextMessage[],
+  groupSummary?: string
 ): Promise<BotReply> {
   const apiKey = env.DEEPSEEK_API_KEY?.trim();
   const fallback = naturalChatFallback(groupName, text, actor);
@@ -881,8 +892,9 @@ async function replyNaturalChat(
     "Nếu người dùng hỏi về lịch chơi, thành viên, ai tham gia, chi phí/công nợ, hoặc thêm người vào buổi nhưng bạn không có đủ dữ liệu, hãy hỏi lại ngắn gọn để làm rõ.",
     "Không tự bịa dữ liệu lịch, công nợ, thành viên nếu không được cung cấp trong tin nhắn.",
     "TUYỆT ĐỐI KHÔNG nói rằng bạn ĐÃ thực hiện/cập nhật/ghi nhận/đánh dấu bất kỳ hành động nào — bạn không có khả năng thao tác dữ liệu; nếu người dùng yêu cầu một thao tác, hãy nói bạn chưa hỗ trợ và hướng dẫn làm trên web TingTing.",
+    "Nếu biết phong cách từng thành viên (trong tóm tắt nhóm), hãy điều chỉnh tone trả lời cho phù hợp: người hay gõ ngắn thì trả lời ngắn, người thích hỏi kỹ thì giải thích thêm.",
   ].join(" ");
-  const contextBlock = contextForPrompt(context);
+  const contextBlock = contextForPrompt(context, groupSummary);
 
   const resp = await fetch(`${baseUrl}/chat/completions`, {
     method: "POST",
@@ -1675,7 +1687,8 @@ export async function handleGroupBotQuery(
   groupId: string,
   text: string,
   actor?: BotActor,
-  context?: BotContextMessage[]
+  context?: BotContextMessage[],
+  groupSummary?: string
 ): Promise<BotReply> {
   const group = await env.DB.prepare("SELECT name FROM groups WHERE id = ?")
     .bind(groupId)
@@ -1712,7 +1725,7 @@ export async function handleGroupBotQuery(
     case "mark_paid":
       return replyMarkPaid(env, groupId, groupName, text, parsed.session);
     case "chat":
-      return replyNaturalChat(env, groupName, text, actor, context);
+      return replyNaturalChat(env, groupName, text, actor, context, groupSummary);
     default:
       return replySessions(env, groupId, groupName, parsed.intent, parsed.session);
   }
