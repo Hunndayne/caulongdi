@@ -12,6 +12,10 @@ const bot = new Hono<{ Bindings: Env; Variables: { userId: string; userRole: str
 const DEFAULT_DEEPSEEK_MODEL = "deepseek-chat";
 const DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com";
 const MAX_SESSIONS_IN_REPLY = 8;
+const BOT_THREAD_CONTEXT_LIMIT = 20;
+const BOT_THREAD_CONTEXT_WINDOW_MINUTES = 60;
+const BOT_THREAD_SUMMARY_THRESHOLD = 15;
+const BOT_THREAD_SUMMARY_BATCH = 60;
 
 type Intent =
   | "help"
@@ -1614,12 +1618,216 @@ async function findSessionForAttendees(
   return null;
 }
 
+// --- Lưu & đọc lịch sử tin Messenger từ D1 ---
+
+async function storeThreadMessage(
+  db: D1Database,
+  threadId: string,
+  groupId: string | null,
+  senderName: string | null,
+  role: "user" | "assistant",
+  body: string
+): Promise<string> {
+  const id = crypto.randomUUID();
+  const createdAt = new Date().toISOString();
+  await db
+    .prepare(
+      `INSERT INTO bot_thread_messages (id, thread_id, group_id, sender_name, role, body, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    )
+    .bind(id, threadId, groupId, senderName, role, body.slice(0, 2000), createdAt)
+    .run();
+  return id;
+}
+
+async function getThreadContextFromDB(
+  db: D1Database,
+  threadId: string,
+  before: string
+): Promise<BotContextMessage[]> {
+  const since = new Date(Date.parse(before) - BOT_THREAD_CONTEXT_WINDOW_MINUTES * 60 * 1000).toISOString();
+  const rows = await db
+    .prepare(
+      `SELECT sender_name, role, body, created_at
+       FROM bot_thread_messages
+       WHERE thread_id = ?
+         AND created_at >= ?
+         AND created_at < ?
+       ORDER BY created_at DESC
+       LIMIT ?`
+    )
+    .bind(threadId, since, before, BOT_THREAD_CONTEXT_LIMIT)
+    .all<{ sender_name: string | null; role: string; body: string; created_at: string }>();
+
+  return (rows.results ?? []).reverse().map((r) => ({
+    role: r.role === "assistant" ? "assistant" as const : "user" as const,
+    text: r.body,
+    createdAt: r.created_at,
+    userName: r.role === "assistant" ? "Ting AI" : (r.sender_name || undefined),
+  }));
+}
+
+// Đọc summary nhóm từ DB (dùng chung với web chat).
+async function getGroupSummaryText(db: D1Database, groupId: string): Promise<string | undefined> {
+  const row = await db
+    .prepare("SELECT summary, member_styles FROM group_chat_summaries WHERE group_id = ?")
+    .bind(groupId)
+    .first<{ summary: string; member_styles: string }>();
+
+  if (!row || !row.summary) return undefined;
+
+  const parts: string[] = [`Tóm tắt nhóm: ${row.summary}`];
+  try {
+    const styles = JSON.parse(row.member_styles) as Record<string, { name?: unknown; style?: unknown }>;
+    const lines = Object.values(styles)
+      .filter((v) => typeof v?.name === "string" && typeof v?.style === "string")
+      .map((v) => `• ${v.name}: ${v.style}`)
+      .join("\n");
+    if (lines) parts.push(`Phong cách thành viên:\n${lines}`);
+  } catch {}
+
+  return parts.join("\n");
+}
+
+// Tổng hợp lịch sử chat Messenger → cập nhật group_chat_summaries.
+async function maybeUpdateGroupSummaryFromThread(
+  env: Env,
+  threadId: string,
+  groupId: string,
+  latestMsgId: string
+): Promise<void> {
+  try {
+    // Đếm tin mới kể từ lần tổng hợp cuối.
+    const currentSummary = await env.DB
+      .prepare("SELECT last_message_id FROM group_chat_summaries WHERE group_id = ?")
+      .bind(groupId)
+      .first<{ last_message_id: string | null }>();
+
+    let newCount = 0;
+    if (!currentSummary?.last_message_id) {
+      const total = await env.DB
+        .prepare("SELECT COUNT(*) as cnt FROM bot_thread_messages WHERE thread_id = ?")
+        .bind(threadId)
+        .first<{ cnt: number }>();
+      newCount = total?.cnt ?? 0;
+    } else {
+      const pivot = await env.DB
+        .prepare("SELECT created_at FROM bot_thread_messages WHERE id = ?")
+        .bind(currentSummary.last_message_id)
+        .first<{ created_at: string }>();
+      if (pivot) {
+        const count = await env.DB
+          .prepare("SELECT COUNT(*) as cnt FROM bot_thread_messages WHERE thread_id = ? AND created_at > ?")
+          .bind(threadId, pivot.created_at)
+          .first<{ cnt: number }>();
+        newCount = count?.cnt ?? 0;
+      }
+    }
+
+    if (newCount < BOT_THREAD_SUMMARY_THRESHOLD) return;
+
+    const rows = await env.DB
+      .prepare(
+        `SELECT sender_name, role, body
+         FROM bot_thread_messages
+         WHERE thread_id = ?
+         ORDER BY created_at DESC
+         LIMIT ?`
+      )
+      .bind(threadId, BOT_THREAD_SUMMARY_BATCH)
+      .all<{ sender_name: string | null; role: string; body: string }>();
+
+    const messages = (rows.results ?? []).reverse();
+    if (messages.length === 0) return;
+
+    const apiKey = env.DEEPSEEK_API_KEY?.trim();
+    if (!apiKey) return;
+
+    const baseUrl = (env.DEEPSEEK_BASE_URL?.trim() || DEFAULT_DEEPSEEK_BASE_URL).replace(/\/+$/, "");
+    const model = env.DEEPSEEK_MODEL?.trim() || DEFAULT_DEEPSEEK_MODEL;
+
+    const chatLog = messages
+      .filter((m) => m.role !== "assistant")
+      .map((m) => `${m.sender_name || "Thành viên"}: ${m.body.slice(0, 200)}`)
+      .join("\n");
+
+    if (!chatLog.trim()) return;
+
+    const system = [
+      "Bạn phân tích đoạn chat nhóm cầu lông tiếng Việt và trả về JSON.",
+      "Nhiệm vụ: (1) Tóm tắt ngắn gọn các chủ đề, sự kiện nổi bật gần đây (tối đa 2 câu).",
+      "(2) Nhận xét phong cách nhắn tin của từng thành viên dựa trên chat (1-2 câu ngắn mỗi người).",
+      'Trả về JSON: {"summary": "...", "memberStyles": {"<senderName>": {"name": "...", "style": "..."}}}.',
+      "memberStyles: khóa là tên người gửi (sender_name), style là mô tả phong cách ngắn.",
+      "Chỉ nhận xét thành viên có ít nhất 3 tin. summary bằng tiếng Việt.",
+    ].join(" ");
+
+    const resp = await fetch(`${baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: `Đoạn chat:\n${chatLog}` },
+        ],
+        temperature: 0.3,
+        max_tokens: 600,
+        response_format: { type: "json_object" },
+        stream: false,
+      }),
+    });
+
+    if (!resp.ok) {
+      console.error("[thread-summary] deepseek http", resp.status);
+      return;
+    }
+
+    const data = (await resp.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    const content = data?.choices?.[0]?.message?.content ?? "";
+    const obj = JSON.parse(content) as { summary?: unknown; memberStyles?: unknown };
+
+    const memberStyles: Record<string, { name: string; style: string }> = {};
+    if (obj.memberStyles && typeof obj.memberStyles === "object" && !Array.isArray(obj.memberStyles)) {
+      for (const [key, val] of Object.entries(obj.memberStyles as Record<string, unknown>)) {
+        if (val && typeof val === "object") {
+          const v = val as { name?: unknown; style?: unknown };
+          if (typeof v.name === "string" && typeof v.style === "string") {
+            memberStyles[key] = { name: v.name.trim(), style: v.style.trim().slice(0, 150) };
+          }
+        }
+      }
+    }
+
+    const summary = typeof obj.summary === "string" ? obj.summary.trim().slice(0, 400) : "";
+    const now = new Date().toISOString();
+
+    await env.DB
+      .prepare(
+        `INSERT INTO group_chat_summaries
+           (group_id, summary, member_styles, last_message_id, message_count, generated_at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(group_id) DO UPDATE SET
+           summary = excluded.summary,
+           member_styles = excluded.member_styles,
+           last_message_id = excluded.last_message_id,
+           message_count = excluded.message_count,
+           generated_at = excluded.generated_at`
+      )
+      .bind(groupId, summary, JSON.stringify(memberStyles), latestMsgId, messages.length, now)
+      .run();
+  } catch (error) {
+    console.error("[thread-summary] update failed", error);
+  }
+}
+
 async function handleQuery(
   env: Env,
   threadId: string,
   text: string,
   actor?: BotActor,
-  context?: BotContextMessage[]
+  context?: BotContextMessage[],
+  groupSummary?: string
 ): Promise<BotReply> {
   const link = await env.DB.prepare("SELECT group_id FROM bot_thread_links WHERE thread_id = ?")
     .bind(threadId)
@@ -1676,7 +1884,7 @@ async function handleQuery(
     case "mark_paid":
       return replyMarkPaid(env, groupId, groupName, text, parsed.session);
     case "chat":
-      return replyNaturalChat(env, groupName, text, actor, context);
+      return replyNaturalChat(env, groupName, text, actor, context, groupSummary);
     default:
       return replySessions(env, groupId, groupName, parsed.intent, parsed.session);
   }
@@ -3122,12 +3330,12 @@ bot.post("/message", async (c) => {
   if (!threadId) return c.json({ error: "threadId required" }, 400);
   if (!text) return c.json({ ok: true, reply: "" });
 
-  // Bot Python gửi kèm các tin gần nhất trong chat — để hiểu "buổi đó", "kèo vừa rồi"...
-  const context: BotContextMessage[] = (Array.isArray(body.context) ? body.context : [])
+  // Context Python gửi kèm (từ DOM Playwright) — fallback khi DB chưa có lịch sử.
+  const pythonContext: BotContextMessage[] = (Array.isArray(body.context) ? body.context : [])
     .filter((m) => m && typeof m.text === "string" && m.text.trim())
     .slice(-MAX_CONTEXT_MESSAGES_FOR_AI)
     .map((m) => ({
-      role: m.role === "assistant" ? "assistant" : "user",
+      role: m.role === "assistant" ? "assistant" as const : "user" as const,
       text: String(m.text).trim().slice(0, 500),
     }));
 
@@ -3141,15 +3349,45 @@ bot.post("/message", async (c) => {
   }
   if (lower === "/help" || lower.startsWith("/help ")) return c.json({ ok: true, reply: helpText() });
 
-  return c.json(
-    await handleQuery(
-      c.env,
-      threadId,
-      text,
-      { name: body.senderName?.trim() || null },
-      context.length ? context : undefined
-    )
+  // Resolve group_id từ thread link (dùng cho lưu trữ + summary).
+  const link = await c.env.DB
+    .prepare("SELECT group_id FROM bot_thread_links WHERE thread_id = ?")
+    .bind(threadId)
+    .first<{ group_id: string }>();
+  const groupId = link?.group_id ?? null;
+
+  // Lưu tin người dùng vào D1.
+  const senderName = body.senderName?.trim() || null;
+  const now = new Date().toISOString();
+  const userMsgId = await storeThreadMessage(c.env.DB, threadId, groupId, senderName, "user", text);
+
+  // Build context: ưu tiên từ D1 (có tên từng người), fallback Python context.
+  const dbContext = await getThreadContextFromDB(c.env.DB, threadId, now);
+  const context = dbContext.length >= 3 ? dbContext : pythonContext;
+
+  // Lấy summary nhóm (nếu thread đã liên kết với nhóm).
+  const groupSummary = groupId ? await getGroupSummaryText(c.env.DB, groupId) : undefined;
+
+  const result = await handleQuery(
+    c.env,
+    threadId,
+    text,
+    { name: senderName },
+    context.length ? context : undefined,
+    groupSummary
   );
+
+  // Lưu reply của bot vào D1.
+  if (result.reply) {
+    const botMsgId = await storeThreadMessage(c.env.DB, threadId, groupId, null, "assistant", result.reply);
+
+    // Cập nhật summary bất đồng bộ khi đủ tin mới.
+    if (groupId) {
+      c.executionCtx.waitUntil(maybeUpdateGroupSummaryFromThread(c.env, threadId, groupId, botMsgId));
+    }
+  }
+
+  return c.json(result);
 });
 
 export default bot;
