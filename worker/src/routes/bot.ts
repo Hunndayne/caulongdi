@@ -1041,6 +1041,12 @@ function slashCommandIntent(text: string, context?: BotContextMessage[]): Parsed
 async function resolveIntent(env: Env, text: string, actor?: BotActor, context?: BotContextMessage[]): Promise<ParsedIntent> {
   const t = removeDiacritics(text.toLowerCase()).trim();
 
+  // Các lệnh slash rõ nghĩa: regex đủ chắc, không cần AI (tránh AI phân loại nhầm).
+  // "/play" và "/buoi" thuần (không tham số) → upcoming; "/help" đã xử lý ở tầng trên.
+  if (/^\/(play|buoi)$/i.test(text.trim())) {
+    return { intent: "upcoming", names: [] };
+  }
+
   // LLM là bộ phân loại CHÍNH — LUÔN chạy trước (kể cả lệnh "/thêm ..."), vì regex không
   // phải lúc nào cũng đúng. Regex chỉ là lưới an toàn khi AI nói "chat" hoặc không gọi được.
   let ai: ParsedIntent | null = null;
@@ -1054,6 +1060,10 @@ async function resolveIntent(env: Env, text: string, actor?: BotActor, context?:
 
   if (ai && ai.intent !== "chat") {
     const hasMoney = /\d/.test(t) || /\b(nghin|ngan|trieu|tram|chuc)\b/.test(t);
+    // AI đôi khi phân loại nhầm "/play" thành "help" — regex chắc hơn ở đây.
+    if (ai.intent === "help" && /^\/(play|buoi)\b/i.test(t)) {
+      return { intent: "upcoming", names: [] };
+    }
     // Sửa vài nhầm lẫn hay gặp quanh "thêm/chi phí":
     if (ai.intent === "add_member") {
       if (isUpdateCostLike(t)) return enrichAiIntent({ ...ai, intent: "update_cost" }, text, context);
