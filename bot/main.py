@@ -23,9 +23,10 @@ import uvicorn
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
+import chat_store
 import config
 from messenger import LoginRequired, MessengerClient, TemporarilyBlocked
-from worker_client import ack_outbox, ask_worker, fetch_outbox_all
+from worker_client import ack_outbox, ask_worker, fetch_outbox_all, summarize_thread
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("bot")
@@ -72,22 +73,31 @@ def _clean_mention(text: str) -> str:
     return stripped
 
 
-_CONTEXT_MESSAGES = 8
+_summarizing: set[str] = set()
 
 
-def _build_context(messages: list[dict], current: dict) -> list[dict]:
-    """Các tin liền trước tin hiện tại, làm ngữ cảnh cho Worker ("buổi đó", "kèo vừa rồi"...)."""
+async def _maybe_summarize(thread_id: str) -> None:
+    """Gửi batch tin lên Worker tóm tắt → lưu D1 → xóa tin cũ trong SQLite cục bộ."""
+    if thread_id in _summarizing:
+        return
+    _summarizing.add(thread_id)
     try:
-        idx = messages.index(current)
-    except ValueError:
-        idx = len(messages)
-    return [
-        {
-            "role": "assistant" if (x.get("sender") or "").strip().lower() in ("bạn", "you") else "user",
-            "text": x["text"],
-        }
-        for x in messages[max(0, idx - _CONTEXT_MESSAGES) : idx]
-    ]
+        total = chat_store.count_messages(thread_id)
+        if total < chat_store.SUMMARY_THRESHOLD:
+            return
+        messages = chat_store.get_batch_for_summary(thread_id)
+        if not messages:
+            return
+        ok = await summarize_thread(thread_id, messages)
+        if ok:
+            pruned = chat_store.prune_old_messages(thread_id)
+            log.info("[%s] Tóm tắt xong, đã xóa %d tin cũ khỏi SQLite cục bộ", thread_id, pruned)
+        else:
+            log.warning("[%s] Tóm tắt thất bại — giữ nguyên tin nhắn cục bộ", thread_id)
+    except Exception:
+        log.exception("[%s] Lỗi khi tóm tắt", thread_id)
+    finally:
+        _summarizing.discard(thread_id)
 
 
 def _msg_key(m: dict) -> str:
@@ -104,12 +114,16 @@ async def _forward_and_reply(client: MessengerClient, thread_id: str, messages: 
     sender = m.get("sender")
     log.info("[%s] Forward từ %s: %r", thread_id, sender or "?", m["text"][:120])
     state["messages_forwarded"] += 1
-    context = _build_context(messages, m)
-    reply = await ask_worker(_clean_mention(m["text"]), sender, context, thread_id)
+    text = _clean_mention(m["text"])
+    chat_store.store_message(thread_id, sender, "user", text)
+    context = chat_store.get_context(thread_id)
+    reply = await ask_worker(text, sender, context, thread_id)
     if reply:
         async with _send_lock:
             await client.send(reply, thread_id)
         state["replies_sent"] += 1
+        chat_store.store_message(thread_id, None, "assistant", reply)
+        asyncio.create_task(_maybe_summarize(thread_id))
         return True
     return False
 
@@ -186,6 +200,7 @@ async def _drain_outbox(client: MessengerClient) -> None:
             continue
         sent_ids.append(item["id"])
         state["replies_sent"] += 1
+        chat_store.store_message(thread_id, None, "assistant", item["text"])
         log.info("[%s] Đã gửi tin outbox %s", thread_id, item["id"])
     # ACK gộp một lần — tiết kiệm request Worker
     await ack_outbox(sent_ids)
@@ -359,6 +374,7 @@ async def watcher() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    chat_store.ensure_tables()
     task = asyncio.create_task(watcher())
     yield
     task.cancel()

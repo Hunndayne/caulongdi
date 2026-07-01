@@ -62,6 +62,7 @@ type BotContextMessage = {
   role: "user" | "assistant";
   text: string;
   createdAt?: string;
+  userName?: string;
 };
 
 type SessionRow = {
@@ -248,18 +249,27 @@ function helpText() {
   ].join("\n");
 }
 
-function contextForPrompt(context?: BotContextMessage[]) {
-  const items = (context ?? []).slice(-MAX_CONTEXT_MESSAGES_FOR_AI);
-  if (!items.length) return "";
+function contextForPrompt(context?: BotContextMessage[], groupSummary?: string) {
+  const parts: string[] = [];
 
-  return items
-    .map((item) => {
-      const who = item.role === "assistant" ? "Ting AI" : "Người dùng";
-      const text = item.text.replace(/^\/ting\s*/i, "").replace(/\s+/g, " ").trim().slice(0, 500);
-      return `${who}: ${text}`;
-    })
-    .filter(Boolean)
-    .join("\n");
+  if (groupSummary) {
+    parts.push(`[Tóm tắt nhóm]\n${groupSummary}`);
+  }
+
+  const items = (context ?? []).slice(-MAX_CONTEXT_MESSAGES_FOR_AI);
+  if (items.length) {
+    const messages = items
+      .map((item) => {
+        const who = item.role === "assistant" ? "Ting AI" : (item.userName || "Người dùng");
+        const text = item.text.replace(/^\/ting\s*/i, "").replace(/\s+/g, " ").trim().slice(0, 500);
+        return `${who}: ${text}`;
+      })
+      .filter(Boolean)
+      .join("\n");
+    parts.push(messages);
+  }
+
+  return parts.join("\n\n");
 }
 
 // --- Nhận diện ý định ---
@@ -865,7 +875,8 @@ async function replyNaturalChat(
   groupName: string,
   text: string,
   actor?: BotActor,
-  context?: BotContextMessage[]
+  context?: BotContextMessage[],
+  groupSummary?: string
 ): Promise<BotReply> {
   const apiKey = env.DEEPSEEK_API_KEY?.trim();
   const fallback = naturalChatFallback(groupName, text, actor);
@@ -881,8 +892,9 @@ async function replyNaturalChat(
     "Nếu người dùng hỏi về lịch chơi, thành viên, ai tham gia, chi phí/công nợ, hoặc thêm người vào buổi nhưng bạn không có đủ dữ liệu, hãy hỏi lại ngắn gọn để làm rõ.",
     "Không tự bịa dữ liệu lịch, công nợ, thành viên nếu không được cung cấp trong tin nhắn.",
     "TUYỆT ĐỐI KHÔNG nói rằng bạn ĐÃ thực hiện/cập nhật/ghi nhận/đánh dấu bất kỳ hành động nào — bạn không có khả năng thao tác dữ liệu; nếu người dùng yêu cầu một thao tác, hãy nói bạn chưa hỗ trợ và hướng dẫn làm trên web TingTing.",
+    "Nếu biết phong cách từng thành viên (trong tóm tắt nhóm), hãy điều chỉnh tone trả lời cho phù hợp: người hay gõ ngắn thì trả lời ngắn, người thích hỏi kỹ thì giải thích thêm.",
   ].join(" ");
-  const contextBlock = contextForPrompt(context);
+  const contextBlock = contextForPrompt(context, groupSummary);
 
   const resp = await fetch(`${baseUrl}/chat/completions`, {
     method: "POST",
@@ -1025,6 +1037,12 @@ function slashCommandIntent(text: string, context?: BotContextMessage[]): Parsed
 async function resolveIntent(env: Env, text: string, actor?: BotActor, context?: BotContextMessage[]): Promise<ParsedIntent> {
   const t = removeDiacritics(text.toLowerCase()).trim();
 
+  // Các lệnh slash rõ nghĩa: regex đủ chắc, không cần AI (tránh AI phân loại nhầm).
+  // "/play" và "/buoi" thuần (không tham số) → upcoming; "/help" đã xử lý ở tầng trên.
+  if (/^\/(play|buoi)$/i.test(text.trim())) {
+    return { intent: "upcoming", names: [] };
+  }
+
   // LLM là bộ phân loại CHÍNH — LUÔN chạy trước (kể cả lệnh "/thêm ..."), vì regex không
   // phải lúc nào cũng đúng. Regex chỉ là lưới an toàn khi AI nói "chat" hoặc không gọi được.
   let ai: ParsedIntent | null = null;
@@ -1038,6 +1056,10 @@ async function resolveIntent(env: Env, text: string, actor?: BotActor, context?:
 
   if (ai && ai.intent !== "chat") {
     const hasMoney = /\d/.test(t) || /\b(nghin|ngan|trieu|tram|chuc)\b/.test(t);
+    // AI đôi khi phân loại nhầm "/play" thành "help" — regex chắc hơn ở đây.
+    if (ai.intent === "help" && /^\/(play|buoi)\b/i.test(t)) {
+      return { intent: "upcoming", names: [] };
+    }
     // Sửa vài nhầm lẫn hay gặp quanh "thêm/chi phí":
     if (ai.intent === "add_member") {
       if (isUpdateCostLike(t)) return enrichAiIntent({ ...ai, intent: "update_cost" }, text, context);
@@ -1602,12 +1624,38 @@ async function findSessionForAttendees(
   return null;
 }
 
+// --- Lưu & đọc lịch sử tin Messenger từ D1 ---
+
+// Đọc summary nhóm từ DB (dùng chung với web chat).
+async function getGroupSummaryText(db: D1Database, groupId: string): Promise<string | undefined> {
+  const row = await db
+    .prepare("SELECT summary, member_styles FROM group_chat_summaries WHERE group_id = ?")
+    .bind(groupId)
+    .first<{ summary: string; member_styles: string }>();
+
+  if (!row || !row.summary) return undefined;
+
+  const parts: string[] = [`Tóm tắt nhóm: ${row.summary}`];
+  try {
+    const styles = JSON.parse(row.member_styles) as Record<string, { name?: unknown; style?: unknown }>;
+    const lines = Object.values(styles)
+      .filter((v) => typeof v?.name === "string" && typeof v?.style === "string")
+      .map((v) => `• ${v.name}: ${v.style}`)
+      .join("\n");
+    if (lines) parts.push(`Phong cách thành viên:\n${lines}`);
+  } catch {}
+
+  return parts.join("\n");
+}
+
+
 async function handleQuery(
   env: Env,
   threadId: string,
   text: string,
   actor?: BotActor,
-  context?: BotContextMessage[]
+  context?: BotContextMessage[],
+  groupSummary?: string
 ): Promise<BotReply> {
   const link = await env.DB.prepare("SELECT group_id FROM bot_thread_links WHERE thread_id = ?")
     .bind(threadId)
@@ -1664,7 +1712,7 @@ async function handleQuery(
     case "mark_paid":
       return replyMarkPaid(env, groupId, groupName, text, parsed.session);
     case "chat":
-      return replyNaturalChat(env, groupName, text, actor, context);
+      return replyNaturalChat(env, groupName, text, actor, context, groupSummary);
     default:
       return replySessions(env, groupId, groupName, parsed.intent, parsed.session);
   }
@@ -1675,7 +1723,8 @@ export async function handleGroupBotQuery(
   groupId: string,
   text: string,
   actor?: BotActor,
-  context?: BotContextMessage[]
+  context?: BotContextMessage[],
+  groupSummary?: string
 ): Promise<BotReply> {
   const group = await env.DB.prepare("SELECT name FROM groups WHERE id = ?")
     .bind(groupId)
@@ -1712,7 +1761,7 @@ export async function handleGroupBotQuery(
     case "mark_paid":
       return replyMarkPaid(env, groupId, groupName, text, parsed.session);
     case "chat":
-      return replyNaturalChat(env, groupName, text, actor, context);
+      return replyNaturalChat(env, groupName, text, actor, context, groupSummary);
     default:
       return replySessions(env, groupId, groupName, parsed.intent, parsed.session);
   }
@@ -3093,13 +3142,149 @@ bot.post("/outbox/ack", async (c) => {
   return c.json({ ok: true, acked: ids.length });
 });
 
+// Bot Python gửi batch tin nhắn cục bộ → Worker tóm tắt bằng AI → merge với summary cũ → ghi D1.
+// Python xóa tin cũ khỏi SQLite chỉ sau khi nhận ok=true.
+bot.post("/summarize", async (c) => {
+  const body = await c.req
+    .json<{
+      threadId?: string;
+      messages?: Array<{ senderName?: string; role?: string; body?: string }>;
+    }>()
+    .catch(() => null);
+  if (!body?.threadId || !Array.isArray(body.messages)) {
+    return c.json({ error: "threadId and messages required" }, 400);
+  }
+
+  const threadId = body.threadId.trim();
+
+  await ensureBotTables(c.env.DB);
+  const link = await c.env.DB
+    .prepare("SELECT group_id FROM bot_thread_links WHERE thread_id = ?")
+    .bind(threadId)
+    .first<{ group_id: string }>();
+  if (!link) return c.json({ ok: false, error: "Thread not linked to any group" });
+  const groupId = link.group_id;
+
+  const messages = body.messages.filter((m) => typeof m?.body === "string" && m.body.trim());
+  if (!messages.length) return c.json({ ok: false, error: "No messages to summarize" });
+
+  const apiKey = c.env.DEEPSEEK_API_KEY?.trim();
+  if (!apiKey) return c.json({ ok: false, error: "AI not configured" });
+
+  const chatLog = messages
+    .filter((m) => m.role !== "assistant")
+    .map((m) => `${m.senderName || "Thành viên"}: ${(m.body || "").slice(0, 200)}`)
+    .join("\n");
+  if (!chatLog.trim()) return c.json({ ok: false, error: "No user messages in batch" });
+
+  // Đọc summary + member_styles cũ để merge, tránh mất context trước đó.
+  const existing = await c.env.DB
+    .prepare("SELECT summary, member_styles FROM group_chat_summaries WHERE group_id = ?")
+    .bind(groupId)
+    .first<{ summary: string; member_styles: string }>();
+
+  const prevSummary = existing?.summary?.trim() || "";
+  let prevStyles: Record<string, { name: string; style: string }> = {};
+  try {
+    if (existing?.member_styles) prevStyles = JSON.parse(existing.member_styles);
+  } catch {}
+
+  const baseUrl = (c.env.DEEPSEEK_BASE_URL?.trim() || DEFAULT_DEEPSEEK_BASE_URL).replace(/\/+$/, "");
+  const model = c.env.DEEPSEEK_MODEL?.trim() || DEFAULT_DEEPSEEK_MODEL;
+
+  const system = [
+    "Bạn phân tích đoạn chat nhóm cầu lông tiếng Việt và trả về JSON cập nhật.",
+    prevSummary
+      ? "Bạn được cung cấp TÓM TẮT CŨ và PHONG CÁCH CŨ của nhóm — hãy CẬP NHẬT chúng dựa trên ĐOẠN CHAT MỚI, giữ lại thông tin quan trọng từ tóm tắt cũ."
+      : "Tóm tắt ngắn gọn nhóm dựa trên đoạn chat dưới đây.",
+    "(1) summary: cập nhật tóm tắt nhóm (tối đa 3 câu, gộp cũ + mới).",
+    "(2) memberStyles: cập nhật phong cách nhắn tin từng thành viên (1-2 câu mỗi người, giữ người cũ nếu chưa đủ tin để cập nhật).",
+    'Trả về JSON: {"summary": "...", "memberStyles": {"<senderName>": {"name": "...", "style": "..."}}}.',
+    "Chỉ cập nhật memberStyles khi thành viên có ít nhất 3 tin trong đoạn chat mới. summary bằng tiếng Việt.",
+  ].join(" ");
+
+  const userContent = [
+    prevSummary ? `Tóm tắt cũ:\n${prevSummary}` : "",
+    Object.keys(prevStyles).length
+      ? `Phong cách cũ:\n${Object.values(prevStyles).map((s) => `• ${s.name}: ${s.style}`).join("\n")}`
+      : "",
+    `Đoạn chat mới:\n${chatLog}`,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+
+  const resp = await fetch(`${baseUrl}/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: userContent },
+      ],
+      temperature: 0.3,
+      max_tokens: 600,
+      response_format: { type: "json_object" },
+      stream: false,
+    }),
+  });
+
+  if (!resp.ok) {
+    console.error("[summarize] deepseek http", resp.status, await resp.text().catch(() => ""));
+    return c.json({ ok: false, error: "AI request failed" });
+  }
+
+  const data = (await resp.json()) as { choices?: Array<{ message?: { content?: string } }> };
+  const content = data?.choices?.[0]?.message?.content ?? "";
+  let obj: { summary?: unknown; memberStyles?: unknown };
+  try {
+    obj = JSON.parse(content);
+  } catch {
+    console.error("[summarize] non-JSON response", content);
+    return c.json({ ok: false, error: "AI non-JSON response" });
+  }
+
+  // Merge member styles: cũ làm nền, mới override.
+  const merged = { ...prevStyles };
+  if (obj.memberStyles && typeof obj.memberStyles === "object" && !Array.isArray(obj.memberStyles)) {
+    for (const [key, val] of Object.entries(obj.memberStyles as Record<string, unknown>)) {
+      if (val && typeof val === "object") {
+        const v = val as { name?: unknown; style?: unknown };
+        if (typeof v.name === "string" && typeof v.style === "string") {
+          merged[key] = { name: v.name.trim(), style: v.style.trim().slice(0, 150) };
+        }
+      }
+    }
+  }
+
+  const summary = typeof obj.summary === "string" ? obj.summary.trim().slice(0, 500) : prevSummary;
+  const now = new Date().toISOString();
+
+  await c.env.DB
+    .prepare(
+      `INSERT INTO group_chat_summaries
+         (group_id, summary, member_styles, last_message_id, message_count, generated_at)
+       VALUES (?, ?, ?, NULL, ?, ?)
+       ON CONFLICT(group_id) DO UPDATE SET
+         summary        = excluded.summary,
+         member_styles  = excluded.member_styles,
+         last_message_id = NULL,
+         message_count  = message_count + excluded.message_count,
+         generated_at   = excluded.generated_at`
+    )
+    .bind(groupId, summary, JSON.stringify(merged), messages.length, now)
+    .run();
+
+  return c.json({ ok: true, summary });
+});
+
 bot.post("/message", async (c) => {
   const body = await c.req
     .json<{
       threadId?: string;
       senderName?: string;
       text?: string;
-      context?: Array<{ role?: string; text?: string }>;
+      context?: Array<{ role?: string; text?: string; userName?: string }>;
     }>()
     .catch(() => null);
   if (!body) return c.json({ error: "Invalid JSON body" }, 400);
@@ -3109,13 +3294,14 @@ bot.post("/message", async (c) => {
   if (!threadId) return c.json({ error: "threadId required" }, 400);
   if (!text) return c.json({ ok: true, reply: "" });
 
-  // Bot Python gửi kèm các tin gần nhất trong chat — để hiểu "buổi đó", "kèo vừa rồi"...
+  // Context từ SQLite cục bộ của bot Python — bao gồm userName để AI biết ai nói gì.
   const context: BotContextMessage[] = (Array.isArray(body.context) ? body.context : [])
     .filter((m) => m && typeof m.text === "string" && m.text.trim())
     .slice(-MAX_CONTEXT_MESSAGES_FOR_AI)
     .map((m) => ({
-      role: m.role === "assistant" ? "assistant" : "user",
+      role: m.role === "assistant" ? "assistant" as const : "user" as const,
       text: String(m.text).trim().slice(0, 500),
+      ...(m.userName && typeof m.userName === "string" ? { userName: m.userName } : {}),
     }));
 
   await ensureBotTables(c.env.DB);
@@ -3128,13 +3314,24 @@ bot.post("/message", async (c) => {
   }
   if (lower === "/help" || lower.startsWith("/help ")) return c.json({ ok: true, reply: helpText() });
 
+  const link = await c.env.DB
+    .prepare("SELECT group_id FROM bot_thread_links WHERE thread_id = ?")
+    .bind(threadId)
+    .first<{ group_id: string }>();
+  const groupId = link?.group_id ?? null;
+
+  // Đọc summary nhóm từ D1 (được ghi bởi /summarize hoặc web chat).
+  const groupSummary = groupId ? await getGroupSummaryText(c.env.DB, groupId) : undefined;
+
+  const senderName = body.senderName?.trim() || null;
   return c.json(
     await handleQuery(
       c.env,
       threadId,
       text,
-      { name: body.senderName?.trim() || null },
-      context.length ? context : undefined
+      { name: senderName },
+      context.length ? context : undefined,
+      groupSummary
     )
   );
 });

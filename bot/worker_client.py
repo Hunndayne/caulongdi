@@ -78,6 +78,26 @@ async def fetch_outbox_all() -> list[dict]:
     return [m for m in messages if isinstance(m, dict) and m.get("id") and m.get("text") and m.get("thread_id")]
 
 
+async def summarize_thread(thread_id: str, messages: list[dict]) -> bool:
+    """Gửi messages lên Worker tóm tắt → Worker ghi vào D1 rồi trả True nếu thành công."""
+    url = f"{config.WORKER_URL}/api/bot/summarize"
+    try:
+        async with httpx.AsyncClient(timeout=90) as client:
+            resp = await client.post(
+                url,
+                json={"threadId": thread_id, "messages": messages},
+                headers=_HEADERS,
+            )
+    except httpx.HTTPError as exc:
+        log.error("Không tóm tắt được thread %s: %s", thread_id, exc)
+        return False
+    if resp.status_code != 200:
+        log.error("Summarize trả %s: %s", resp.status_code, resp.text[:300])
+        return False
+    data = resp.json()
+    return bool((data or {}).get("ok"))
+
+
 async def ack_outbox(ids: list[str]) -> None:
     """Báo Worker các tin outbox đã gửi xong (best effort)."""
     if not ids:

@@ -11,8 +11,10 @@ const MAX_LIMIT = 120;
 const TING_BOT_USER_ID = "tingting-bot";
 const TING_BOT_EMAIL = "ting@tingting.local";
 const TING_BOT_NAME = "Ting AI";
-const TING_CONTEXT_WINDOW_MINUTES = 30;
-const TING_CONTEXT_LIMIT = 12;
+const TING_CONTEXT_WINDOW_MINUTES = 60;
+const TING_CONTEXT_LIMIT = 20;
+const TING_SUMMARY_UPDATE_THRESHOLD = 20;
+const TING_SUMMARY_BATCH_SIZE = 80;
 
 type ChatMessageRow = {
   id: string;
@@ -29,6 +31,24 @@ type TingContextRow = {
   user_id: string;
   body: string;
   created_at: string;
+  user_name: string;
+};
+
+type GroupChatSummaryRow = {
+  summary: string;
+  member_styles: string;
+  last_message_id: string | null;
+  message_count: number;
+  generated_at: string;
+};
+
+type MemberStyle = { name: string; style: string };
+
+type GroupChatSummary = {
+  summary: string;
+  memberStyles: Record<string, MemberStyle>;
+  lastMessageId: string | null;
+  messageCount: number;
 };
 
 let chatTablesEnsured = false;
@@ -51,6 +71,19 @@ async function ensureChatTables(db: D1Database) {
 
   await db
     .prepare("CREATE INDEX IF NOT EXISTS idx_chat_messages_group_created ON chat_messages(group_id, created_at)")
+    .run();
+
+  await db
+    .prepare(
+      `CREATE TABLE IF NOT EXISTS group_chat_summaries (
+        group_id       TEXT PRIMARY KEY,
+        summary        TEXT NOT NULL DEFAULT '',
+        member_styles  TEXT NOT NULL DEFAULT '{}',
+        last_message_id TEXT,
+        message_count  INTEGER NOT NULL DEFAULT 0,
+        generated_at   TEXT NOT NULL
+      )`
+    )
     .run();
 
   chatTablesEnsured = true;
@@ -132,27 +165,226 @@ async function insertChatMessage(db: D1Database, groupId: string, userId: string
   return getChatMessage(db, id);
 }
 
-async function getTingConversationContext(db: D1Database, groupId: string, userId: string, before: string) {
+// Lấy context cuộc trò chuyện gần đây của TẤT CẢ thành viên trong nhóm (không chỉ user + bot),
+// có tên người gửi để AI phân biệt ai nói gì.
+async function getTingConversationContext(db: D1Database, groupId: string, before: string) {
   const since = new Date(Date.parse(before) - TING_CONTEXT_WINDOW_MINUTES * 60 * 1000).toISOString();
   const rows = await db
     .prepare(
-      `SELECT user_id, body, created_at
-       FROM chat_messages
-       WHERE group_id = ?
-         AND created_at >= ?
-         AND created_at < ?
-         AND user_id IN (?, ?)
-       ORDER BY created_at DESC, id DESC
+      `SELECT cm.user_id, cm.body, cm.created_at, u.name as user_name
+       FROM chat_messages cm
+       JOIN users u ON u.id = cm.user_id
+       WHERE cm.group_id = ?
+         AND cm.created_at >= ?
+         AND cm.created_at < ?
+       ORDER BY cm.created_at DESC, cm.id DESC
        LIMIT ?`
     )
-    .bind(groupId, since, before, userId, TING_BOT_USER_ID, TING_CONTEXT_LIMIT)
+    .bind(groupId, since, before, TING_CONTEXT_LIMIT)
     .all<TingContextRow>();
 
   return (rows.results ?? []).reverse().map((row) => ({
     role: row.user_id === TING_BOT_USER_ID ? "assistant" as const : "user" as const,
     text: row.body,
     createdAt: row.created_at,
+    userName: row.user_id === TING_BOT_USER_ID ? "Ting AI" : row.user_name,
   }));
+}
+
+// --- Group chat summary (Tầng 2 & 3) ---
+
+async function getGroupChatSummary(db: D1Database, groupId: string): Promise<GroupChatSummary | null> {
+  const row = await db
+    .prepare(
+      `SELECT summary, member_styles, last_message_id, message_count, generated_at
+       FROM group_chat_summaries WHERE group_id = ?`
+    )
+    .bind(groupId)
+    .first<GroupChatSummaryRow>();
+
+  if (!row) return null;
+
+  let memberStyles: Record<string, MemberStyle> = {};
+  try {
+    const parsed = JSON.parse(row.member_styles);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      memberStyles = parsed as Record<string, MemberStyle>;
+    }
+  } catch {}
+
+  return {
+    summary: row.summary,
+    memberStyles,
+    lastMessageId: row.last_message_id,
+    messageCount: row.message_count,
+  };
+}
+
+// Đếm tin nhắn mới kể từ lần tổng hợp cuối (để biết có cần cập nhật không).
+async function countNewMessagesSince(db: D1Database, groupId: string, sinceMessageId: string | null): Promise<number> {
+  if (!sinceMessageId) {
+    const row = await db
+      .prepare("SELECT COUNT(*) as cnt FROM chat_messages WHERE group_id = ?")
+      .bind(groupId)
+      .first<{ cnt: number }>();
+    return row?.cnt ?? 0;
+  }
+
+  const lastMsg = await db
+    .prepare("SELECT created_at FROM chat_messages WHERE id = ?")
+    .bind(sinceMessageId)
+    .first<{ created_at: string }>();
+
+  if (!lastMsg) return 0;
+
+  const row = await db
+    .prepare("SELECT COUNT(*) as cnt FROM chat_messages WHERE group_id = ? AND created_at > ?")
+    .bind(groupId, lastMsg.created_at)
+    .first<{ cnt: number }>();
+
+  return row?.cnt ?? 0;
+}
+
+// Gọi AI để phân tích đoạn chat và tổng hợp: chủ đề nhóm + phong cách từng thành viên.
+async function generateGroupSummaryWithAI(
+  env: Env,
+  messages: Array<{ userId: string; userName: string; body: string }>
+): Promise<{ summary: string; memberStyles: Record<string, MemberStyle> } | null> {
+  const apiKey = env.DEEPSEEK_API_KEY?.trim();
+  if (!apiKey || messages.length === 0) return null;
+
+  const baseUrl = (env.DEEPSEEK_BASE_URL?.trim() || "https://api.deepseek.com").replace(/\/+$/, "");
+  const model = env.DEEPSEEK_MODEL?.trim() || "deepseek-chat";
+
+  const chatLog = messages
+    .filter((m) => m.userId !== TING_BOT_USER_ID)
+    .map((m) => `${m.userName}: ${m.body.slice(0, 200)}`)
+    .join("\n");
+
+  if (!chatLog.trim()) return null;
+
+  const system = [
+    "Bạn phân tích đoạn chat nhóm cầu lông tiếng Việt và trả về JSON.",
+    "Nhiệm vụ: (1) Tóm tắt ngắn gọn các chủ đề, sự kiện nổi bật của nhóm gần đây (tối đa 2 câu).",
+    "(2) Nhận xét phong cách nhắn tin / tính cách của từng thành viên dựa trên chat (1-2 câu ngắn mỗi người).",
+    'Trả về JSON: {"summary": "...", "memberStyles": {"<userId>": {"name": "...", "style": "..."}}}.',
+    "memberStyles: khóa là userId, style là mô tả phong cách ngắn (hay gõ ngắn, hay hỏi kỹ, thích emoji, lo tiền, ...).",
+    "Chỉ nhận xét thành viên có ít nhất 3 tin. Không bịa nếu không đủ dữ liệu. summary bằng tiếng Việt.",
+  ].join(" ");
+
+  try {
+    const resp = await fetch(`${baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: `Đoạn chat:\n${chatLog}` },
+        ],
+        temperature: 0.3,
+        max_tokens: 600,
+        response_format: { type: "json_object" },
+        stream: false,
+      }),
+    });
+
+    if (!resp.ok) {
+      console.error("[group-summary] deepseek http", resp.status);
+      return null;
+    }
+
+    const data = (await resp.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    const content = data?.choices?.[0]?.message?.content ?? "";
+    const obj = JSON.parse(content) as { summary?: unknown; memberStyles?: unknown };
+
+    const memberStyles: Record<string, MemberStyle> = {};
+    if (obj.memberStyles && typeof obj.memberStyles === "object" && !Array.isArray(obj.memberStyles)) {
+      for (const [uid, val] of Object.entries(obj.memberStyles as Record<string, unknown>)) {
+        if (val && typeof val === "object") {
+          const v = val as { name?: unknown; style?: unknown };
+          if (typeof v.name === "string" && typeof v.style === "string") {
+            memberStyles[uid] = { name: v.name.trim(), style: v.style.trim().slice(0, 150) };
+          }
+        }
+      }
+    }
+
+    return {
+      summary: typeof obj.summary === "string" ? obj.summary.trim().slice(0, 400) : "",
+      memberStyles,
+    };
+  } catch (error) {
+    console.error("[group-summary]", error);
+    return null;
+  }
+}
+
+// Kiểm tra và cập nhật summary nếu đủ tin mới. Gọi sau khi insert message.
+async function maybeUpdateGroupSummary(env: Env, groupId: string, latestMessageId: string): Promise<void> {
+  try {
+    const current = await getGroupChatSummary(env.DB, groupId);
+    const newCount = await countNewMessagesSince(env.DB, groupId, current?.lastMessageId ?? null);
+
+    if (newCount < TING_SUMMARY_UPDATE_THRESHOLD) return;
+
+    const rows = await env.DB
+      .prepare(
+        `SELECT cm.id, cm.user_id, cm.body, u.name as user_name
+         FROM chat_messages cm
+         JOIN users u ON u.id = cm.user_id
+         WHERE cm.group_id = ?
+         ORDER BY cm.created_at DESC, cm.id DESC
+         LIMIT ?`
+      )
+      .bind(groupId, TING_SUMMARY_BATCH_SIZE)
+      .all<{ id: string; user_id: string; body: string; user_name: string }>();
+
+    const messages = (rows.results ?? []).reverse().map((r) => ({
+      userId: r.user_id,
+      userName: r.user_name,
+      body: r.body,
+    }));
+
+    const generated = await generateGroupSummaryWithAI(env, messages);
+    if (!generated) return;
+
+    const now = new Date().toISOString();
+    await env.DB
+      .prepare(
+        `INSERT INTO group_chat_summaries
+           (group_id, summary, member_styles, last_message_id, message_count, generated_at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(group_id) DO UPDATE SET
+           summary = excluded.summary,
+           member_styles = excluded.member_styles,
+           last_message_id = excluded.last_message_id,
+           message_count = excluded.message_count,
+           generated_at = excluded.generated_at`
+      )
+      .bind(groupId, generated.summary, JSON.stringify(generated.memberStyles), latestMessageId, messages.length, now)
+      .run();
+  } catch (error) {
+    console.error("[group-summary] update failed", error);
+  }
+}
+
+// Định dạng summary thành chuỗi để truyền vào AI prompt.
+function formatGroupSummaryForPrompt(summary: GroupChatSummary | null): string {
+  if (!summary || !summary.summary) return "";
+
+  const parts: string[] = [`Tóm tắt nhóm: ${summary.summary}`];
+
+  const styles = Object.entries(summary.memberStyles)
+    .filter(([uid]) => uid !== TING_BOT_USER_ID)
+    .map(([, info]) => `• ${info.name}: ${info.style}`)
+    .join("\n");
+
+  if (styles) {
+    parts.push(`Phong cách thành viên:\n${styles}`);
+  }
+
+  return parts.join("\n");
 }
 
 chat.get("/:groupId/messages", async (c) => {
@@ -206,11 +438,19 @@ chat.post("/:groupId/messages", async (c) => {
       reply = 'Gõ sau /ting điều bạn muốn hỏi. Ví dụ: "/ting buổi tuần này" hoặc "/ting buổi sắp tới có ai".';
     } else {
       try {
-        const context = await getTingConversationContext(c.env.DB, groupId, c.get("userId"), now);
-        const result = await handleGroupBotQuery(c.env, groupId, tingPrompt, {
-          userId: c.get("userId"),
-          name: sentMessage?.user.name,
-        }, context);
+        const [context, groupSummary] = await Promise.all([
+          getTingConversationContext(c.env.DB, groupId, now),
+          getGroupChatSummary(c.env.DB, groupId),
+        ]);
+        const formattedSummary = formatGroupSummaryForPrompt(groupSummary);
+        const result = await handleGroupBotQuery(
+          c.env,
+          groupId,
+          tingPrompt,
+          { userId: c.get("userId"), name: sentMessage?.user.name },
+          context,
+          formattedSummary || undefined
+        );
         reply = result.reply || "Mình chưa có câu trả lời cho câu này.";
       } catch (error) {
         console.error("[web-chat-ting]", error);
@@ -221,6 +461,11 @@ chat.post("/:groupId/messages", async (c) => {
     const replyAt = new Date(Date.now() + 1).toISOString();
     const botMessage = await insertChatMessage(c.env.DB, groupId, TING_BOT_USER_ID, reply, replyAt);
     if (botMessage) messages.push(botMessage);
+  }
+
+  // Cập nhật summary bất đồng bộ sau khi đã có đủ tin mới (không block response).
+  if (sentMessage?.id) {
+    c.executionCtx.waitUntil(maybeUpdateGroupSummary(c.env, groupId, sentMessage.id));
   }
 
   return c.json({ messages }, 201);
