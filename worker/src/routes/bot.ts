@@ -37,6 +37,7 @@ type Intent =
 type SessionDraft = {
   date?: string;
   startTime?: string;
+  endTime?: string;
   venue?: string;
   note?: string;
 };
@@ -236,7 +237,7 @@ function helpText() {
     '• "buổi sắp tới có ai" — ai tham gia buổi sắp tới',
     '• "thêm <tên> vào buổi" — thêm người vào buổi sắp tới',
     '• "bớt tôi ra" / "Nam không đi nữa" — rút người khỏi buổi',
-    '• "dời kèo mai sang 19h" / "đổi sân sang Q7" — sửa buổi',
+    '• "dời kèo mai sang 19h" / "đổi giờ kết thúc thành 21h" / "đổi sân sang Q7" — sửa buổi',
     '• "hủy kèo ngày mai" — hủy buổi (bot hỏi xác nhận trước khi xóa)',
     '• "tháng này đánh mấy buổi" / "ai đi nhiều nhất" — thống kê',
     '• "chi phí buổi vừa rồi" / "ai nợ ai" — xem tổng tiền và công nợ của buổi',
@@ -741,6 +742,8 @@ async function classifyWithAI(
     "Nếu người dùng muốn tạo/set/lên kèo/buổi/lịch mới, intent là create_session.",
     'Nếu muốn rút/bớt ai khỏi buổi ("bớt tôi ra", "Nam không đi nữa", "tôi bận rồi không đi được") thì intent là remove_member, names là người cần rút.',
     "Nếu muốn dời/đổi giờ/ngày/sân của buổi ĐÃ CÓ thì intent là update_session: session là buổi đang nói tới (theo thông tin cũ/ngữ cảnh), changes là giá trị MỚI muốn đổi sang.",
+    'PHÂN BIỆT giờ BẮT ĐẦU với giờ KẾT THÚC khi update_session: "đổi giờ" / "dời giờ" / "đổi giờ bắt đầu" / "bắt đầu lúc..." → changes.startTime; "đổi giờ kết thúc" / "kết thúc lúc" / "chơi tới..." / "đá tới..." → changes.endTime. TUYỆT ĐỐI không gán nhầm giờ kết thúc vào startTime.',
+    'Nếu người dùng NÊU/XÁC NHẬN giờ chơi của MỘT buổi đã tồn tại dù không dùng từ "đổi/dời" (vd "giờ đánh cầu ngày 2/7 là từ 16:30 đến 18:30", "buổi mai chơi từ 7h đến 9h"), vẫn hiểu là update_session với changes.startTime/changes.endTime tương ứng — KHÔNG xếp vào chat.',
     'Nếu muốn hủy/xóa kèo/buổi thì intent là cancel_session — kể cả câu xác nhận ngắn ("đồng ý hủy", "ok hủy đi") ngay sau khi bot vừa hỏi xác nhận trong ngữ cảnh.',
     "Nếu hỏi thống kê tổng hợp NHIỀU buổi (đánh mấy buổi tháng này, ai đi nhiều nhất, tổng chi tiêu tháng/tuần/năm) thì intent là stats — khác costs (chi phí của MỘT buổi cụ thể).",
     'Hiểu tiếng lóng cầu lông: "quánh", "đánh cầu", "đi cầu", "đi sân", "kèo" đều nói về buổi chơi.',
@@ -753,7 +756,7 @@ async function classifyWithAI(
     'Nếu người dùng muốn ĐÁNH DẤU/XÁC NHẬN đã trả tiền/đã chuyển khoản công nợ ("tôi trả Nam rồi", "đánh dấu đã trả", "Nam chuyển cho tôi rồi") thì intent là mark_paid.',
     "Only classify today/week/upcoming/next/recent/list_attendees when the user clearly asks about badminton sessions, schedule, court, or players; casual chat that happens to mention time words must be unknown.",
     "Bạn phân tích câu của người dùng về lịch chơi cầu lông của một nhóm và TRẢ VỀ JSON.",
-    'Định dạng JSON: {"intent": "...", "names": ["..."], "session": {"date": "YYYY-MM-DD", "startTime": "HH:MM", "venue": "..."}, "changes": {"date": "...", "startTime": "...", "venue": "..."}, "cost": {"label": "...", "amount": 0, "quantity": 1, "payerName": "...", "consumerNames": ["..."]}}.',
+    'Định dạng JSON: {"intent": "...", "names": ["..."], "session": {"date": "YYYY-MM-DD", "startTime": "HH:MM", "endTime": "HH:MM", "venue": "..."}, "changes": {"date": "...", "startTime": "...", "endTime": "...", "venue": "..."}, "cost": {"label": "...", "amount": 0, "quantity": 1, "payerName": "...", "consumerNames": ["..."]}}.',
     "intent là MỘT trong: next, upcoming, today, week, recent, list_members, list_attendees, add_member, remove_member, create_session, update_session, cancel_session, costs, add_cost, update_cost, mark_paid, stats, help, unknown.",
     "Ý nghĩa: next=buổi sắp tới gần nhất; upcoming=danh sách buổi sắp tới; today=hôm nay; week=tuần này; recent=các buổi gần đây/lịch sử;",
     "list_members=liệt kê thành viên nhóm; list_attendees=ai tham gia buổi; add_member=thêm người vào buổi; create_session=tạo buổi/kèo mới; costs=xem chi phí/công nợ buổi; add_cost=ghi một khoản chi mới; update_cost=sửa/xóa khoản chi đã ghi; mark_paid=xác nhận đã trả nợ; help=hướng dẫn; unknown=không liên quan.",
@@ -815,14 +818,15 @@ async function classifyWithAI(
 
   const parseAiDraft = (value: unknown): SessionDraft | undefined => {
     if (!value || typeof value !== "object") return undefined;
-    const raw = value as { date?: unknown; startTime?: unknown; venue?: unknown };
+    const raw = value as { date?: unknown; startTime?: unknown; endTime?: unknown; venue?: unknown };
     const venueRaw = typeof raw.venue === "string" ? cleanupVenue(raw.venue) : "";
     const draft: SessionDraft = {
       date: normalizeAiDate(raw.date),
       startTime: normalizeAiTime(raw.startTime),
+      endTime: normalizeAiTime(raw.endTime),
       venue: venueRaw ? venueRaw.slice(0, 80) : undefined,
     };
-    return draft.date || draft.startTime || draft.venue ? draft : undefined;
+    return draft.date || draft.startTime || draft.endTime || draft.venue ? draft : undefined;
   };
   const session = parseAiDraft(obj?.session);
   const changes = parseAiDraft((obj as { changes?: unknown })?.changes);
@@ -932,6 +936,7 @@ function mergeSession(primary?: SessionDraft, fallback?: SessionDraft): SessionD
   return {
     date: primary?.date ?? fallback?.date,
     startTime: primary?.startTime ?? fallback?.startTime,
+    endTime: primary?.endTime ?? fallback?.endTime,
     venue: primary?.venue ?? fallback?.venue,
   };
 }
@@ -2851,7 +2856,7 @@ async function replyUpdateSession(
   selector?: SessionDraft,
   changes?: SessionDraft
 ): Promise<BotReply> {
-  if (!changes || (!changes.date && !changes.startTime && !changes.venue)) {
+  if (!changes || (!changes.date && !changes.startTime && !changes.endTime && !changes.venue)) {
     return { ok: false, reply: 'Bạn muốn đổi gì? Ví dụ: "dời kèo mai sang 19h" hoặc "đổi sân sang Q7".' };
   }
 
@@ -2873,6 +2878,10 @@ async function replyUpdateSession(
     sets.push("start_time = ?");
     binds.push(changes.startTime);
   }
+  if (changes.endTime) {
+    sets.push("end_time = ?");
+    binds.push(changes.endTime);
+  }
   if (changes.venue) {
     sets.push("venue = ?");
     binds.push(changes.venue);
@@ -2884,6 +2893,7 @@ async function replyUpdateSession(
     ...session,
     date: changes.date ?? session.date,
     start_time: changes.startTime ?? session.start_time,
+    end_time: changes.endTime ?? session.end_time,
     venue: changes.venue ?? session.venue,
   };
   return {

@@ -83,6 +83,26 @@ const defaultCostForm: CostFormState = {
   consumerIds: [],
 };
 
+type SessionEditFormState = {
+  name: string;
+  date: string;
+  startTime: string;
+  endTime: string;
+  venue: string;
+  location: string;
+  note: string;
+};
+
+const defaultSessionEditForm: SessionEditFormState = {
+  name: "",
+  date: "",
+  startTime: "",
+  endTime: "",
+  venue: "",
+  location: "",
+  note: "",
+};
+
 type ImportedCostRow = {
   label: string;
   amount: number;
@@ -386,6 +406,9 @@ export default function SessionDetailPage() {
   const [walkinName, setWalkinName] = useState("");
   const [walkinRefId, setWalkinRefId] = useState("");
   const [addingWalkin, setAddingWalkin] = useState(false);
+  const [showEditDialog, setShowEditDialog] = useState(false);
+  const [editForm, setEditForm] = useState<SessionEditFormState>(defaultSessionEditForm);
+  const [savingEdit, setSavingEdit] = useState(false);
   const costImportInputRef = useRef<HTMLInputElement | null>(null);
   const receiptInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -1163,6 +1186,41 @@ export default function SessionDetailPage() {
     await refresh(s.id);
   };
 
+  const handleOpenEdit = () => {
+    setEditForm({
+      name: s.name ?? "",
+      date: s.date,
+      startTime: s.start_time,
+      endTime: s.end_time ?? "",
+      venue: s.venue,
+      location: s.location ?? "",
+      note: s.note ?? "",
+    });
+    setShowEditDialog(true);
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editForm.date || !editForm.startTime || !editForm.venue.trim()) return;
+    setSavingEdit(true);
+    try {
+      await api.updateSession(s.id, {
+        name: editForm.name.trim() || null,
+        date: editForm.date,
+        start_time: editForm.startTime,
+        end_time: editForm.endTime || null,
+        venue: editForm.venue.trim(),
+        location: editForm.location.trim() || undefined,
+        note: editForm.note.trim() || undefined,
+      });
+      await refresh(s.id);
+      setShowEditDialog(false);
+    } catch (error: any) {
+      alert(error.message);
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
   const totalCost = s.costs.reduce((sum, cost) => sum + cost.amount, 0);
   const totalTransferAmount = paymentRows.reduce((sum, row) => sum + row.payment.amount_owed, 0);
   const confirmedTransferAmount = paymentRows.reduce(
@@ -1361,6 +1419,11 @@ export default function SessionDetailPage() {
           <Badge variant={s.status === "upcoming" ? "green" : "gray"}>
             {s.status === "upcoming" ? "Sắp tới" : "Hoàn thành"}
           </Badge>
+          {canManageSession && (
+            <Button variant="ghost" size="icon" onClick={handleOpenEdit}>
+              <Pencil size={16} />
+            </Button>
+          )}
           {canManageSessionStrict && (
             <Button variant="ghost" size="icon" onClick={handleDeleteSession} className="text-red-500">
               <Trash2 size={16} />
@@ -2152,6 +2215,91 @@ export default function SessionDetailPage() {
           </div>
         </div>
       )}
+
+      <Dialog
+        open={showEditDialog}
+        onClose={() => {
+          if (!savingEdit) setShowEditDialog(false);
+        }}
+        title="Sửa buổi"
+        className="sm:max-w-md"
+      >
+        <div className="space-y-4">
+          <div>
+            <label className="mb-1 block text-sm font-medium text-gray-700">Tên buổi</label>
+            <Input
+              value={editForm.name}
+              onChange={(e) => setEditForm((current) => ({ ...current, name: e.target.value }))}
+              placeholder="Kèo tối thứ 5"
+              disabled={savingEdit}
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-sm font-medium text-gray-700">Ngày *</label>
+            <Input
+              type="date"
+              value={editForm.date}
+              onChange={(e) => setEditForm((current) => ({ ...current, date: e.target.value }))}
+              disabled={savingEdit}
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="mb-1 block text-sm font-medium text-gray-700">Giờ bắt đầu *</label>
+              <Input
+                type="time"
+                value={editForm.startTime}
+                onChange={(e) => setEditForm((current) => ({ ...current, startTime: e.target.value }))}
+                disabled={savingEdit}
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-sm font-medium text-gray-700">Giờ kết thúc</label>
+              <Input
+                type="time"
+                value={editForm.endTime}
+                onChange={(e) => setEditForm((current) => ({ ...current, endTime: e.target.value }))}
+                disabled={savingEdit}
+              />
+            </div>
+          </div>
+          <div>
+            <label className="mb-1 block text-sm font-medium text-gray-700">Sân / địa điểm *</label>
+            <Input
+              value={editForm.venue}
+              onChange={(e) => setEditForm((current) => ({ ...current, venue: e.target.value }))}
+              placeholder="Sân HL"
+              disabled={savingEdit}
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-sm font-medium text-gray-700">Địa chỉ</label>
+            <Input
+              value={editForm.location}
+              onChange={(e) => setEditForm((current) => ({ ...current, location: e.target.value }))}
+              placeholder="123 Nguyễn Trãi, Q1"
+              disabled={savingEdit}
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-sm font-medium text-gray-700">Ghi chú</label>
+            <Input
+              value={editForm.note}
+              onChange={(e) => setEditForm((current) => ({ ...current, note: e.target.value }))}
+              placeholder="Ghi chú cho nhóm..."
+              disabled={savingEdit}
+            />
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setShowEditDialog(false)} disabled={savingEdit}>
+              Hủy
+            </Button>
+            <Button onClick={handleSaveEdit} disabled={savingEdit || !editForm.date || !editForm.startTime || !editForm.venue.trim()}>
+              {savingEdit ? "Đang lưu..." : "Lưu"}
+            </Button>
+          </div>
+        </div>
+      </Dialog>
 
       <Dialog
         open={showWalkinDialog}
