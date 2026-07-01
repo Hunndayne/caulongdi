@@ -1,5 +1,6 @@
 .env
 storage_state.json
+chat_history.db
 __pycache__/
 .venv/
 venv/
