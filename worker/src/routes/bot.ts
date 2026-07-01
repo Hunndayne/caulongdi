@@ -9,7 +9,8 @@ import { recalcSessionPayments } from "./sessions";
 
 const bot = new Hono<{ Bindings: Env; Variables: { userId: string; userRole: string } }>();
 
-const DEFAULT_DEEPSEEK_MODEL = "deepseek-chat";
+// deepseek-chat/deepseek-reasoner (tên cũ) bị retire hẳn sau 24/7/2026 — dùng tên model V4 mới.
+const DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-flash";
 const DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com";
 const MAX_SESSIONS_IN_REPLY = 8;
 
@@ -786,8 +787,10 @@ async function classifyWithAI(
           }\nTin nhắn hiện tại: ${text}`,
         },
       ],
-      temperature: 0,
-      max_tokens: 200,
+      // Bật thinking cho bước phân loại/rút dữ liệu — dễ sai (vd nhầm giờ bắt đầu/kết thúc)
+      // nên đánh đổi thêm token + độ trễ lấy độ chính xác. Thinking mode không nhận temperature.
+      thinking: { type: "enabled" },
+      max_tokens: 1000,
       response_format: { type: "json_object" },
       stream: false,
     }),
@@ -915,8 +918,9 @@ async function replyNaturalChat(
           }\nTin nhắn hiện tại: ${text}`,
         },
       ],
-      temperature: 0.7,
-      max_tokens: 450,
+      // Thinking mode không nhận temperature.
+      thinking: { type: "enabled" },
+      max_tokens: 900,
       stream: false,
     }),
   });
@@ -1416,8 +1420,9 @@ async function pickSessionWithAI(
             content: `${contextBlock ? `Ngữ cảnh gần đây:\n${contextBlock}\n\n` : ""}Danh sách buổi:\n${list}\n\nCâu của người dùng: ${text}`,
           },
         ],
-        temperature: 0,
-        max_tokens: 80,
+        // Thinking mode không nhận temperature; max_tokens nâng lên để chừa chỗ cho chuỗi suy luận.
+        thinking: { type: "enabled" },
+        max_tokens: 600,
         response_format: { type: "json_object" },
         stream: false,
       }),
@@ -3223,8 +3228,9 @@ bot.post("/summarize", async (c) => {
         { role: "system", content: system },
         { role: "user", content: userContent },
       ],
-      temperature: 0.3,
-      max_tokens: 600,
+      // Thinking mode không nhận temperature; max_tokens nâng lên để chừa chỗ cho chuỗi suy luận.
+      thinking: { type: "enabled" },
+      max_tokens: 1200,
       response_format: { type: "json_object" },
       stream: false,
     }),

@@ -1062,7 +1062,7 @@ async function normalizeReceiptLabelsVi(c: any, items: ReceiptParsedCost[]): Pro
   if (!apiKey) return new Map();
 
   const baseUrl = (c.env.DEEPSEEK_BASE_URL?.trim() || "https://api.deepseek.com").replace(/\/+$/, "");
-  const model = c.env.DEEPSEEK_MODEL?.trim() || "deepseek-chat";
+  const model = c.env.DEEPSEEK_MODEL?.trim() || "deepseek-v4-flash";
 
   const labels = [...new Set(items.map((item) => item.label))];
   if (labels.length === 0) return new Map();
@@ -1087,8 +1087,9 @@ async function normalizeReceiptLabelsVi(c: any, items: ReceiptParsedCost[]): Pro
           },
           { role: "user", content: JSON.stringify(labels) },
         ],
-        temperature: 0,
-        max_tokens: 800,
+        // Thinking mode không nhận temperature; max_tokens nâng lên để chừa chỗ cho chuỗi suy luận.
+        thinking: { type: "enabled" },
+        max_tokens: 1400,
         response_format: { type: "json_object" },
         stream: false,
       }),

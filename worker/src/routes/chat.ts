@@ -244,7 +244,7 @@ async function generateGroupSummaryWithAI(
   if (!apiKey || messages.length === 0) return null;
 
   const baseUrl = (env.DEEPSEEK_BASE_URL?.trim() || "https://api.deepseek.com").replace(/\/+$/, "");
-  const model = env.DEEPSEEK_MODEL?.trim() || "deepseek-chat";
+  const model = env.DEEPSEEK_MODEL?.trim() || "deepseek-v4-flash";
 
   const chatLog = messages
     .filter((m) => m.userId !== TING_BOT_USER_ID)
@@ -271,8 +271,9 @@ async function generateGroupSummaryWithAI(
           { role: "system", content: system },
           { role: "user", content: `Đoạn chat:\n${chatLog}` },
         ],
-        temperature: 0.3,
-        max_tokens: 600,
+        // Thinking mode không nhận temperature; max_tokens nâng lên để chừa chỗ cho chuỗi suy luận.
+        thinking: { type: "enabled" },
+        max_tokens: 1200,
         response_format: { type: "json_object" },
         stream: false,
       }),
