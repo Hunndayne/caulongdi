@@ -75,6 +75,14 @@ def _clean_mention(text: str) -> str:
 
 _summarizing: set[str] = set()
 
+# Lệnh gõ thủ công để tóm tắt ngay (không chờ đủ SUMMARY_THRESHOLD).
+_SUMMARY_COMMANDS = {"/tomtat", "/tom tat", "/summarize", "/summary"}
+_MIN_MESSAGES_FOR_MANUAL_SUMMARY = 5
+
+
+def _is_summary_command(text: str) -> bool:
+    return _strip_diacritics(text.strip()).lower() in _SUMMARY_COMMANDS
+
 
 async def _maybe_summarize(thread_id: str) -> None:
     """Gửi batch tin lên Worker tóm tắt → lưu D1 → xóa tin cũ trong SQLite cục bộ."""
@@ -88,14 +96,37 @@ async def _maybe_summarize(thread_id: str) -> None:
         messages = chat_store.get_batch_for_summary(thread_id)
         if not messages:
             return
-        ok = await summarize_thread(thread_id, messages)
-        if ok:
+        summary = await summarize_thread(thread_id, messages)
+        if summary:
             pruned = chat_store.prune_old_messages(thread_id)
             log.info("[%s] Tóm tắt xong, đã xóa %d tin cũ khỏi SQLite cục bộ", thread_id, pruned)
         else:
             log.warning("[%s] Tóm tắt thất bại — giữ nguyên tin nhắn cục bộ", thread_id)
     except Exception:
         log.exception("[%s] Lỗi khi tóm tắt", thread_id)
+    finally:
+        _summarizing.discard(thread_id)
+
+
+async def _summarize_now(thread_id: str) -> str:
+    """Lệnh /tomtat gõ tay: tóm tắt ngay bằng batch mới nhất, bất kể đã đủ ngưỡng hay chưa."""
+    if thread_id in _summarizing:
+        return "Mình đang tóm tắt rồi, đợi chút nhé."
+    total = chat_store.count_messages(thread_id)
+    if total < _MIN_MESSAGES_FOR_MANUAL_SUMMARY:
+        return "Chưa có đủ tin nhắn gần đây để tóm tắt đâu, chat thêm chút rồi thử lại nhé."
+    _summarizing.add(thread_id)
+    try:
+        messages = chat_store.get_batch_for_summary(thread_id)
+        summary = await summarize_thread(thread_id, messages)
+        if not summary:
+            return "Tóm tắt thất bại (có thể nhóm chưa /connect) — thử lại sau nhé."
+        pruned = chat_store.prune_old_messages(thread_id)
+        log.info("[%s] Tóm tắt thủ công xong, đã xóa %d tin cũ khỏi SQLite cục bộ", thread_id, pruned)
+        return f"📝 Tóm tắt gần đây:\n{summary}"
+    except Exception:
+        log.exception("[%s] Lỗi khi tóm tắt thủ công", thread_id)
+        return "Tóm tắt bị lỗi, thử lại sau nhé."
     finally:
         _summarizing.discard(thread_id)
 
@@ -116,14 +147,20 @@ async def _forward_and_reply(client: MessengerClient, thread_id: str, messages: 
     state["messages_forwarded"] += 1
     text = _clean_mention(m["text"])
     chat_store.store_message(thread_id, sender, "user", text)
-    context = chat_store.get_context(thread_id)
-    reply = await ask_worker(text, sender, context, thread_id)
+
+    if _is_summary_command(text):
+        reply = await _summarize_now(thread_id)
+    else:
+        context = chat_store.get_context(thread_id)
+        reply = await ask_worker(text, sender, context, thread_id)
+
     if reply:
         async with _send_lock:
             await client.send(reply, thread_id)
         state["replies_sent"] += 1
         chat_store.store_message(thread_id, None, "assistant", reply)
-        asyncio.create_task(_maybe_summarize(thread_id))
+        if not _is_summary_command(text):
+            asyncio.create_task(_maybe_summarize(thread_id))
         return True
     return False
 

@@ -78,8 +78,8 @@ async def fetch_outbox_all() -> list[dict]:
     return [m for m in messages if isinstance(m, dict) and m.get("id") and m.get("text") and m.get("thread_id")]
 
 
-async def summarize_thread(thread_id: str, messages: list[dict]) -> bool:
-    """Gửi messages lên Worker tóm tắt → Worker ghi vào D1 rồi trả True nếu thành công."""
+async def summarize_thread(thread_id: str, messages: list[dict]) -> str | None:
+    """Gửi messages lên Worker tóm tắt → Worker ghi vào D1, trả chuỗi tóm tắt (None nếu lỗi)."""
     url = f"{config.WORKER_URL}/api/bot/summarize"
     try:
         async with httpx.AsyncClient(timeout=90) as client:
@@ -90,12 +90,15 @@ async def summarize_thread(thread_id: str, messages: list[dict]) -> bool:
             )
     except httpx.HTTPError as exc:
         log.error("Không tóm tắt được thread %s: %s", thread_id, exc)
-        return False
+        return None
     if resp.status_code != 200:
         log.error("Summarize trả %s: %s", resp.status_code, resp.text[:300])
-        return False
+        return None
     data = resp.json()
-    return bool((data or {}).get("ok"))
+    if not (data or {}).get("ok"):
+        return None
+    summary = (data or {}).get("summary")
+    return summary.strip() if isinstance(summary, str) and summary.strip() else None
 
 
 async def ack_outbox(ids: list[str]) -> None:

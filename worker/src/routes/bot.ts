@@ -246,6 +246,7 @@ function helpText() {
     '• /alias <tên trên web> — ghép tên Messenger của bạn với thành viên web (để "thêm tôi" đúng người; /alias xoa để bỏ)',
     "• /connect <mã> — liên kết nhóm chat với nhóm TingTing (lấy mã trên web)",
     "• /disconnect — huỷ liên kết",
+    "• /tomtat — tóm tắt nhanh đoạn chat gần đây (cũng lưu vào bộ nhớ nhóm để bot nói chuyện tự nhiên hơn)",
   ].join("\n");
 }
 
