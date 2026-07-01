@@ -36,17 +36,15 @@ type TingContextRow = {
 
 type GroupChatSummaryRow = {
   summary: string;
-  member_styles: string;
+  group_style: string;
   last_message_id: string | null;
   message_count: number;
   generated_at: string;
 };
 
-type MemberStyle = { name: string; style: string };
-
 type GroupChatSummary = {
   summary: string;
-  memberStyles: Record<string, MemberStyle>;
+  groupStyle: string;
   lastMessageId: string | null;
   messageCount: number;
 };
@@ -78,7 +76,7 @@ async function ensureChatTables(db: D1Database) {
       `CREATE TABLE IF NOT EXISTS group_chat_summaries (
         group_id       TEXT PRIMARY KEY,
         summary        TEXT NOT NULL DEFAULT '',
-        member_styles  TEXT NOT NULL DEFAULT '{}',
+        group_style    TEXT NOT NULL DEFAULT '',
         last_message_id TEXT,
         message_count  INTEGER NOT NULL DEFAULT 0,
         generated_at   TEXT NOT NULL
@@ -196,7 +194,7 @@ async function getTingConversationContext(db: D1Database, groupId: string, befor
 async function getGroupChatSummary(db: D1Database, groupId: string): Promise<GroupChatSummary | null> {
   const row = await db
     .prepare(
-      `SELECT summary, member_styles, last_message_id, message_count, generated_at
+      `SELECT summary, group_style, last_message_id, message_count, generated_at
        FROM group_chat_summaries WHERE group_id = ?`
     )
     .bind(groupId)
@@ -204,17 +202,9 @@ async function getGroupChatSummary(db: D1Database, groupId: string): Promise<Gro
 
   if (!row) return null;
 
-  let memberStyles: Record<string, MemberStyle> = {};
-  try {
-    const parsed = JSON.parse(row.member_styles);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      memberStyles = parsed as Record<string, MemberStyle>;
-    }
-  } catch {}
-
   return {
     summary: row.summary,
-    memberStyles,
+    groupStyle: row.group_style || "",
     lastMessageId: row.last_message_id,
     messageCount: row.message_count,
   };
@@ -245,11 +235,11 @@ async function countNewMessagesSince(db: D1Database, groupId: string, sinceMessa
   return row?.cnt ?? 0;
 }
 
-// Gọi AI để phân tích đoạn chat và tổng hợp: chủ đề nhóm + phong cách từng thành viên.
+// Gọi AI để phân tích đoạn chat và tổng hợp: chủ đề nhóm + phong cách chat chung của cả nhóm.
 async function generateGroupSummaryWithAI(
   env: Env,
   messages: Array<{ userId: string; userName: string; body: string }>
-): Promise<{ summary: string; memberStyles: Record<string, MemberStyle> } | null> {
+): Promise<{ summary: string; groupStyle: string } | null> {
   const apiKey = env.DEEPSEEK_API_KEY?.trim();
   if (!apiKey || messages.length === 0) return null;
 
@@ -266,10 +256,9 @@ async function generateGroupSummaryWithAI(
   const system = [
     "Bạn phân tích đoạn chat nhóm cầu lông tiếng Việt và trả về JSON.",
     "Nhiệm vụ: (1) Tóm tắt ngắn gọn các chủ đề, sự kiện nổi bật của nhóm gần đây (tối đa 2 câu).",
-    "(2) Nhận xét phong cách nhắn tin / tính cách của từng thành viên dựa trên chat (1-2 câu ngắn mỗi người).",
-    'Trả về JSON: {"summary": "...", "memberStyles": {"<userId>": {"name": "...", "style": "..."}}}.',
-    "memberStyles: khóa là userId, style là mô tả phong cách ngắn (hay gõ ngắn, hay hỏi kỹ, thích emoji, lo tiền, ...).",
-    "Chỉ nhận xét thành viên có ít nhất 3 tin. Không bịa nếu không đủ dữ liệu. summary bằng tiếng Việt.",
+    "(2) Mô tả TÍNH CÁCH/PHONG CÁCH CHAT CHUNG của cả nhóm (không phải từng người) — mức độ đùa giỡn, thân mật, hay dùng teencode/emoji, không khí chung (tối đa 2-3 câu).",
+    'Trả về JSON: {"summary": "...", "groupStyle": "..."}.',
+    "groupStyle dùng để bot bắt chước tông giọng khi trả lời cho hợp không khí nhóm. Không bịa nếu không đủ dữ liệu. Cả hai đều bằng tiếng Việt.",
   ].join(" ");
 
   try {
@@ -296,23 +285,11 @@ async function generateGroupSummaryWithAI(
 
     const data = (await resp.json()) as { choices?: Array<{ message?: { content?: string } }> };
     const content = data?.choices?.[0]?.message?.content ?? "";
-    const obj = JSON.parse(content) as { summary?: unknown; memberStyles?: unknown };
-
-    const memberStyles: Record<string, MemberStyle> = {};
-    if (obj.memberStyles && typeof obj.memberStyles === "object" && !Array.isArray(obj.memberStyles)) {
-      for (const [uid, val] of Object.entries(obj.memberStyles as Record<string, unknown>)) {
-        if (val && typeof val === "object") {
-          const v = val as { name?: unknown; style?: unknown };
-          if (typeof v.name === "string" && typeof v.style === "string") {
-            memberStyles[uid] = { name: v.name.trim(), style: v.style.trim().slice(0, 150) };
-          }
-        }
-      }
-    }
+    const obj = JSON.parse(content) as { summary?: unknown; groupStyle?: unknown };
 
     return {
       summary: typeof obj.summary === "string" ? obj.summary.trim().slice(0, 400) : "",
-      memberStyles,
+      groupStyle: typeof obj.groupStyle === "string" ? obj.groupStyle.trim().slice(0, 400) : "",
     };
   } catch (error) {
     console.error("[group-summary]", error);
@@ -353,16 +330,16 @@ async function maybeUpdateGroupSummary(env: Env, groupId: string, latestMessageI
     await env.DB
       .prepare(
         `INSERT INTO group_chat_summaries
-           (group_id, summary, member_styles, last_message_id, message_count, generated_at)
+           (group_id, summary, group_style, last_message_id, message_count, generated_at)
          VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT(group_id) DO UPDATE SET
            summary = excluded.summary,
-           member_styles = excluded.member_styles,
+           group_style = excluded.group_style,
            last_message_id = excluded.last_message_id,
            message_count = excluded.message_count,
            generated_at = excluded.generated_at`
       )
-      .bind(groupId, generated.summary, JSON.stringify(generated.memberStyles), latestMessageId, messages.length, now)
+      .bind(groupId, generated.summary, generated.groupStyle, latestMessageId, messages.length, now)
       .run();
   } catch (error) {
     console.error("[group-summary] update failed", error);
@@ -375,13 +352,8 @@ function formatGroupSummaryForPrompt(summary: GroupChatSummary | null): string {
 
   const parts: string[] = [`Tóm tắt nhóm: ${summary.summary}`];
 
-  const styles = Object.entries(summary.memberStyles)
-    .filter(([uid]) => uid !== TING_BOT_USER_ID)
-    .map(([, info]) => `• ${info.name}: ${info.style}`)
-    .join("\n");
-
-  if (styles) {
-    parts.push(`Phong cách thành viên:\n${styles}`);
+  if (summary.groupStyle) {
+    parts.push(`Phong cách/tính cách chat của nhóm: ${summary.groupStyle}`);
   }
 
   return parts.join("\n");

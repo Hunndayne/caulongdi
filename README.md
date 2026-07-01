@@ -281,6 +281,39 @@ Script chỉ gửi email Timo có dòng tiền vào `vừa tăng ... VND`, có `
 
 ---
 
+
+Dùng `attach_login.py` theo flow này nhé:
+
+1. Mở Chrome riêng có debug port:
+
+```powershell
+& "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --user-data-dir="$env:USERPROFILE\fb-bot-profile"
+```
+
+2. Trong cửa sổ Chrome vừa mở, vào:
+
+```text
+https://www.messenger.com/
+```
+
+Đăng nhập acc phụ, làm 2FA xong, chờ tới khi thấy danh sách chat.
+
+3. Mở terminal khác rồi chạy bằng đúng venv của `bot`:
+
+```powershell
+cd D:\code\caulongdi\bot
+.\.venv\Scripts\python.exe .\attach_login.py
+```
+
+Script sẽ in các tab đang mở. Nếu thấy tab Messenger đúng rồi thì bấm `Enter`; nó sẽ lưu cookie vào:
+
+```text
+D:\code\caulongdi\bot\storage_state.json
+```
+
+Sau đó bot dùng file này khi chạy `main.py`.
+
+
 ## Checklist trước khi go-live
 
 - [ ] Tạo Google Cloud Console project, bật Google OAuth API
@@ -293,3 +326,6 @@ Script chỉ gửi email Timo có dòng tiền vào `vừa tăng ... VND`, có `
 - [ ] Test đăng nhập Google
 - [ ] Kiểm tra user đầu tiên có `role = admin`
 - [ ] Invite các thành viên trong nhóm vào link Pages
+
+
+
