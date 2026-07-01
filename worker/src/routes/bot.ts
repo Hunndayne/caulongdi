@@ -3142,8 +3142,8 @@ bot.post("/outbox/ack", async (c) => {
   return c.json({ ok: true, acked: ids.length });
 });
 
-// Bot Python gửi batch tin nhắn cục bộ → Worker tóm tắt bằng AI → ghi D1 → trả ok.
-// Python xóa tin cũ khỏi SQLite chỉ sau khi nhận ok=true để đảm bảo an toàn dữ liệu.
+// Bot Python gửi batch tin nhắn cục bộ → Worker tóm tắt bằng AI → merge với summary cũ → ghi D1.
+// Python xóa tin cũ khỏi SQLite chỉ sau khi nhận ok=true.
 bot.post("/summarize", async (c) => {
   const body = await c.req
     .json<{
@@ -3171,24 +3171,47 @@ bot.post("/summarize", async (c) => {
   const apiKey = c.env.DEEPSEEK_API_KEY?.trim();
   if (!apiKey) return c.json({ ok: false, error: "AI not configured" });
 
-  const baseUrl = (c.env.DEEPSEEK_BASE_URL?.trim() || DEFAULT_DEEPSEEK_BASE_URL).replace(/\/+$/, "");
-  const model = c.env.DEEPSEEK_MODEL?.trim() || DEFAULT_DEEPSEEK_MODEL;
-
   const chatLog = messages
     .filter((m) => m.role !== "assistant")
     .map((m) => `${m.senderName || "Thành viên"}: ${(m.body || "").slice(0, 200)}`)
     .join("\n");
-
   if (!chatLog.trim()) return c.json({ ok: false, error: "No user messages in batch" });
 
+  // Đọc summary + member_styles cũ để merge, tránh mất context trước đó.
+  const existing = await c.env.DB
+    .prepare("SELECT summary, member_styles FROM group_chat_summaries WHERE group_id = ?")
+    .bind(groupId)
+    .first<{ summary: string; member_styles: string }>();
+
+  const prevSummary = existing?.summary?.trim() || "";
+  let prevStyles: Record<string, { name: string; style: string }> = {};
+  try {
+    if (existing?.member_styles) prevStyles = JSON.parse(existing.member_styles);
+  } catch {}
+
+  const baseUrl = (c.env.DEEPSEEK_BASE_URL?.trim() || DEFAULT_DEEPSEEK_BASE_URL).replace(/\/+$/, "");
+  const model = c.env.DEEPSEEK_MODEL?.trim() || DEFAULT_DEEPSEEK_MODEL;
+
   const system = [
-    "Bạn phân tích đoạn chat nhóm cầu lông tiếng Việt và trả về JSON.",
-    "(1) Tóm tắt ngắn gọn các chủ đề, sự kiện nổi bật gần đây (tối đa 2 câu).",
-    "(2) Nhận xét phong cách nhắn tin của từng thành viên (1-2 câu ngắn mỗi người).",
+    "Bạn phân tích đoạn chat nhóm cầu lông tiếng Việt và trả về JSON cập nhật.",
+    prevSummary
+      ? "Bạn được cung cấp TÓM TẮT CŨ và PHONG CÁCH CŨ của nhóm — hãy CẬP NHẬT chúng dựa trên ĐOẠN CHAT MỚI, giữ lại thông tin quan trọng từ tóm tắt cũ."
+      : "Tóm tắt ngắn gọn nhóm dựa trên đoạn chat dưới đây.",
+    "(1) summary: cập nhật tóm tắt nhóm (tối đa 3 câu, gộp cũ + mới).",
+    "(2) memberStyles: cập nhật phong cách nhắn tin từng thành viên (1-2 câu mỗi người, giữ người cũ nếu chưa đủ tin để cập nhật).",
     'Trả về JSON: {"summary": "...", "memberStyles": {"<senderName>": {"name": "...", "style": "..."}}}.',
-    "memberStyles: khóa là tên người gửi, style là mô tả phong cách ngắn.",
-    "Chỉ nhận xét thành viên có ít nhất 3 tin. summary bằng tiếng Việt.",
+    "Chỉ cập nhật memberStyles khi thành viên có ít nhất 3 tin trong đoạn chat mới. summary bằng tiếng Việt.",
   ].join(" ");
+
+  const userContent = [
+    prevSummary ? `Tóm tắt cũ:\n${prevSummary}` : "",
+    Object.keys(prevStyles).length
+      ? `Phong cách cũ:\n${Object.values(prevStyles).map((s) => `• ${s.name}: ${s.style}`).join("\n")}`
+      : "",
+    `Đoạn chat mới:\n${chatLog}`,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 
   const resp = await fetch(`${baseUrl}/chat/completions`, {
     method: "POST",
@@ -3197,10 +3220,10 @@ bot.post("/summarize", async (c) => {
       model,
       messages: [
         { role: "system", content: system },
-        { role: "user", content: `Đoạn chat:\n${chatLog}` },
+        { role: "user", content: userContent },
       ],
       temperature: 0.3,
-      max_tokens: 500,
+      max_tokens: 600,
       response_format: { type: "json_object" },
       stream: false,
     }),
@@ -3221,19 +3244,20 @@ bot.post("/summarize", async (c) => {
     return c.json({ ok: false, error: "AI non-JSON response" });
   }
 
-  const memberStyles: Record<string, { name: string; style: string }> = {};
+  // Merge member styles: cũ làm nền, mới override.
+  const merged = { ...prevStyles };
   if (obj.memberStyles && typeof obj.memberStyles === "object" && !Array.isArray(obj.memberStyles)) {
     for (const [key, val] of Object.entries(obj.memberStyles as Record<string, unknown>)) {
       if (val && typeof val === "object") {
         const v = val as { name?: unknown; style?: unknown };
         if (typeof v.name === "string" && typeof v.style === "string") {
-          memberStyles[key] = { name: v.name.trim(), style: v.style.trim().slice(0, 150) };
+          merged[key] = { name: v.name.trim(), style: v.style.trim().slice(0, 150) };
         }
       }
     }
   }
 
-  const summary = typeof obj.summary === "string" ? obj.summary.trim().slice(0, 400) : "";
+  const summary = typeof obj.summary === "string" ? obj.summary.trim().slice(0, 500) : prevSummary;
   const now = new Date().toISOString();
 
   await c.env.DB
@@ -3248,7 +3272,7 @@ bot.post("/summarize", async (c) => {
          message_count  = message_count + excluded.message_count,
          generated_at   = excluded.generated_at`
     )
-    .bind(groupId, summary, JSON.stringify(memberStyles), messages.length, now)
+    .bind(groupId, summary, JSON.stringify(merged), messages.length, now)
     .run();
 
   return c.json({ ok: true, summary });

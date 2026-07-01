@@ -10,7 +10,7 @@ _DB_PATH: str = getattr(config, "CHAT_DB_PATH", str(Path(__file__).parent / "cha
 
 CONTEXT_LIMIT = 20
 CONTEXT_WINDOW_MINUTES = 60
-SUMMARY_THRESHOLD = 15   # số tin tích lũy để kích hoạt tóm tắt
+SUMMARY_THRESHOLD = 40   # số tin tích lũy để kích hoạt tóm tắt
 SUMMARY_BATCH = 60       # tin nhắn gửi lên Worker để tóm tắt
 KEEP_AFTER_PRUNE = 20    # giữ lại sau khi xóa tin cũ
 
