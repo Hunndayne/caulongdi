@@ -97,8 +97,13 @@ async def summarize_thread(thread_id: str, messages: list[dict]) -> str | None:
     data = resp.json()
     if not (data or {}).get("ok"):
         return None
-    summary = (data or {}).get("summary")
-    return summary.strip() if isinstance(summary, str) and summary.strip() else None
+    # humanSummary: bản recap ngắn cho người đọc (hiển thị khi gõ /tomtat).
+    # Fallback về summary (bản chi tiết cho bot) nếu vì lý do nào đó thiếu humanSummary.
+    for key in ("humanSummary", "summary"):
+        value = (data or {}).get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
 
 
 async def ack_outbox(ids: list[str]) -> None:

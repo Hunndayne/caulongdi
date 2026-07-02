@@ -74,6 +74,7 @@ export async function ensureBotTables(db: D1Database) {
       `CREATE TABLE IF NOT EXISTS group_chat_summaries (
         group_id        TEXT PRIMARY KEY,
         summary         TEXT NOT NULL DEFAULT '',
+        human_summary   TEXT NOT NULL DEFAULT '',
         group_style     TEXT NOT NULL DEFAULT '',
         last_message_id TEXT,
         message_count   INTEGER NOT NULL DEFAULT 0,
@@ -82,5 +83,17 @@ export async function ensureBotTables(db: D1Database) {
     )
     .run();
 
+  // DB đã tồn tại từ trước sẽ thiếu cột human_summary — thêm idempotent (bỏ qua lỗi trùng cột).
+  await ensureColumn(db, "group_chat_summaries", "human_summary");
+
   ensured = true;
+}
+
+// Thêm cột TEXT NOT NULL DEFAULT '' nếu chưa có. Bỏ qua lỗi "duplicate column".
+async function ensureColumn(db: D1Database, table: string, column: string) {
+  try {
+    await db.prepare(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT NOT NULL DEFAULT ''`).run();
+  } catch {
+    // Cột đã tồn tại — không sao.
+  }
 }

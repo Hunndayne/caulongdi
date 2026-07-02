@@ -36,6 +36,7 @@ type TingContextRow = {
 
 type GroupChatSummaryRow = {
   summary: string;
+  human_summary: string;
   group_style: string;
   last_message_id: string | null;
   message_count: number;
@@ -44,6 +45,7 @@ type GroupChatSummaryRow = {
 
 type GroupChatSummary = {
   summary: string;
+  humanSummary: string;
   groupStyle: string;
   lastMessageId: string | null;
   messageCount: number;
@@ -76,6 +78,7 @@ async function ensureChatTables(db: D1Database) {
       `CREATE TABLE IF NOT EXISTS group_chat_summaries (
         group_id       TEXT PRIMARY KEY,
         summary        TEXT NOT NULL DEFAULT '',
+        human_summary  TEXT NOT NULL DEFAULT '',
         group_style    TEXT NOT NULL DEFAULT '',
         last_message_id TEXT,
         message_count  INTEGER NOT NULL DEFAULT 0,
@@ -83,6 +86,15 @@ async function ensureChatTables(db: D1Database) {
       )`
     )
     .run();
+
+  // DB cũ có thể thiếu cột human_summary — thêm idempotent (bỏ qua lỗi trùng cột).
+  try {
+    await db
+      .prepare("ALTER TABLE group_chat_summaries ADD COLUMN human_summary TEXT NOT NULL DEFAULT ''")
+      .run();
+  } catch {
+    // Cột đã tồn tại — không sao.
+  }
 
   chatTablesEnsured = true;
 }
@@ -194,7 +206,7 @@ async function getTingConversationContext(db: D1Database, groupId: string, befor
 async function getGroupChatSummary(db: D1Database, groupId: string): Promise<GroupChatSummary | null> {
   const row = await db
     .prepare(
-      `SELECT summary, group_style, last_message_id, message_count, generated_at
+      `SELECT summary, human_summary, group_style, last_message_id, message_count, generated_at
        FROM group_chat_summaries WHERE group_id = ?`
     )
     .bind(groupId)
@@ -204,6 +216,7 @@ async function getGroupChatSummary(db: D1Database, groupId: string): Promise<Gro
 
   return {
     summary: row.summary,
+    humanSummary: row.human_summary || "",
     groupStyle: row.group_style || "",
     lastMessageId: row.last_message_id,
     messageCount: row.message_count,
@@ -239,7 +252,7 @@ async function countNewMessagesSince(db: D1Database, groupId: string, sinceMessa
 async function generateGroupSummaryWithAI(
   env: Env,
   messages: Array<{ userId: string; userName: string; body: string }>
-): Promise<{ summary: string; groupStyle: string } | null> {
+): Promise<{ summary: string; humanSummary: string; groupStyle: string } | null> {
   const apiKey = env.DEEPSEEK_API_KEY?.trim();
   if (!apiKey || messages.length === 0) return null;
 
@@ -254,11 +267,12 @@ async function generateGroupSummaryWithAI(
   if (!chatLog.trim()) return null;
 
   const system = [
-    "Bạn phân tích đoạn chat nhóm cầu lông tiếng Việt và trả về JSON.",
-    "Nhiệm vụ: (1) Tóm tắt ngắn gọn các chủ đề, sự kiện nổi bật của nhóm gần đây (tối đa 2 câu).",
-    "(2) Mô tả TÍNH CÁCH/PHONG CÁCH CHAT CHUNG của cả nhóm (không phải từng người) — mức độ đùa giỡn, thân mật, hay dùng teencode/emoji, không khí chung (tối đa 2-3 câu).",
-    'Trả về JSON: {"summary": "...", "groupStyle": "..."}.',
-    "groupStyle dùng để bot bắt chước tông giọng khi trả lời cho hợp không khí nhóm. Không bịa nếu không đủ dữ liệu. Cả hai đều bằng tiếng Việt.",
+    "Bạn phân tích đoạn chat nhóm cầu lông tiếng Việt và trả về JSON gồm 3 trường.",
+    "(1) summary: BẢN NGỮ CẢNH CHI TIẾT để CHATBOT đọc và hiểu, đủ để trả lời câu sau. Ghi rõ, gạch đầu dòng, BỎ mục nào không có dữ liệu, KHÔNG bịa: nội dung/chủ đề chính đang bàn; bối cảnh quan trọng cần nhớ; các quyết định/kết luận đã chốt; thuật ngữ - tên riêng - biệt danh thành viên; việc cần làm tiếp theo; số liệu quan trọng (giờ giấc, sân bãi, tiền nong, tỉ số...). Tối đa ~2000 ký tự.",
+    "(2) humanSummary: BẢN RECAP NGẮN cho NGƯỜI đọc lướt để hiểu nhanh chuyện gì vừa xảy ra — 2 đến 5 gạch đầu dòng, câu ngắn gọn thân thiện, tối đa ~600 ký tự.",
+    "(3) groupStyle: mô tả TÍNH CÁCH/PHONG CÁCH CHAT CHUNG của cả nhóm (không phải từng người) — mức độ đùa giỡn, thân mật, hay dùng teencode/emoji, không khí chung (tối đa 2-3 câu), để bot bắt chước tông giọng.",
+    'Trả về JSON: {"summary": "...", "humanSummary": "...", "groupStyle": "..."}.',
+    "Không bịa nếu không đủ dữ liệu. Tất cả bằng tiếng Việt.",
   ].join(" ");
 
   try {
@@ -271,9 +285,9 @@ async function generateGroupSummaryWithAI(
           { role: "system", content: system },
           { role: "user", content: `Đoạn chat:\n${chatLog}` },
         ],
-        // Thinking mode không nhận temperature; max_tokens nâng lên để chừa chỗ cho chuỗi suy luận.
+        // Thinking mode không nhận temperature; max_tokens nâng cao để chừa chỗ cho chuỗi suy luận + bản tóm tắt chi tiết.
         thinking: { type: "enabled" },
-        max_tokens: 1200,
+        max_tokens: 3000,
         response_format: { type: "json_object" },
         stream: false,
       }),
@@ -286,10 +300,11 @@ async function generateGroupSummaryWithAI(
 
     const data = (await resp.json()) as { choices?: Array<{ message?: { content?: string } }> };
     const content = data?.choices?.[0]?.message?.content ?? "";
-    const obj = JSON.parse(content) as { summary?: unknown; groupStyle?: unknown };
+    const obj = JSON.parse(content) as { summary?: unknown; humanSummary?: unknown; groupStyle?: unknown };
 
     return {
-      summary: typeof obj.summary === "string" ? obj.summary.trim().slice(0, 400) : "",
+      summary: typeof obj.summary === "string" ? obj.summary.trim().slice(0, 2200) : "",
+      humanSummary: typeof obj.humanSummary === "string" ? obj.humanSummary.trim().slice(0, 700) : "",
       groupStyle: typeof obj.groupStyle === "string" ? obj.groupStyle.trim().slice(0, 400) : "",
     };
   } catch (error) {
@@ -331,16 +346,17 @@ async function maybeUpdateGroupSummary(env: Env, groupId: string, latestMessageI
     await env.DB
       .prepare(
         `INSERT INTO group_chat_summaries
-           (group_id, summary, group_style, last_message_id, message_count, generated_at)
-         VALUES (?, ?, ?, ?, ?, ?)
+           (group_id, summary, human_summary, group_style, last_message_id, message_count, generated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(group_id) DO UPDATE SET
            summary = excluded.summary,
+           human_summary = excluded.human_summary,
            group_style = excluded.group_style,
            last_message_id = excluded.last_message_id,
            message_count = excluded.message_count,
            generated_at = excluded.generated_at`
       )
-      .bind(groupId, generated.summary, generated.groupStyle, latestMessageId, messages.length, now)
+      .bind(groupId, generated.summary, generated.humanSummary, generated.groupStyle, latestMessageId, messages.length, now)
       .run();
   } catch (error) {
     console.error("[group-summary] update failed", error);

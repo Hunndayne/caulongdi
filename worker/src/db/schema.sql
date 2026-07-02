@@ -217,7 +217,8 @@ CREATE INDEX IF NOT EXISTS idx_bot_link_codes_expires ON bot_link_codes(expires_
 
 CREATE TABLE IF NOT EXISTS group_chat_summaries (
   group_id       TEXT PRIMARY KEY,
-  summary        TEXT NOT NULL DEFAULT '',
+  summary        TEXT NOT NULL DEFAULT '',   -- bản ngữ cảnh chi tiết cho bot
+  human_summary  TEXT NOT NULL DEFAULT '',   -- bản recap ngắn cho người đọc (/tomtat)
   group_style    TEXT NOT NULL DEFAULT '',
   last_message_id TEXT,
   message_count  INTEGER NOT NULL DEFAULT 0,

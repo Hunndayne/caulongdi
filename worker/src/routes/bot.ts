@@ -3201,14 +3201,15 @@ bot.post("/summarize", async (c) => {
   const model = c.env.DEEPSEEK_MODEL?.trim() || DEFAULT_DEEPSEEK_MODEL;
 
   const system = [
-    "Bạn phân tích đoạn chat nhóm cầu lông tiếng Việt và trả về JSON cập nhật.",
+    "Bạn phân tích đoạn chat nhóm cầu lông tiếng Việt và trả về JSON cập nhật gồm 3 trường.",
     prevSummary || prevGroupStyle
       ? "Bạn được cung cấp TÓM TẮT CŨ và PHONG CÁCH CHAT CŨ của nhóm — hãy CẬP NHẬT chúng dựa trên ĐOẠN CHAT MỚI, giữ lại thông tin quan trọng từ bản cũ."
-      : "Tóm tắt ngắn gọn nhóm và mô tả phong cách chat chung dựa trên đoạn chat dưới đây.",
-    "(1) summary: cập nhật tóm tắt nhóm (tối đa 3 câu, gộp cũ + mới).",
-    "(2) groupStyle: mô tả TÍNH CÁCH/PHONG CÁCH CHAT CHUNG của cả nhóm (không phải từng người) — mức độ đùa giỡn, thân mật, hay dùng teencode/emoji, không khí chung của nhóm (tối đa 2-3 câu), để bot bắt chước tông giọng khi trả lời cho hợp không khí nhóm.",
-    'Trả về JSON: {"summary": "...", "groupStyle": "..."}.',
-    "summary và groupStyle đều bằng tiếng Việt.",
+      : "Tóm tắt nhóm và mô tả phong cách chat chung dựa trên đoạn chat dưới đây.",
+    "(1) summary: BẢN NGỮ CẢNH CHI TIẾT để CHATBOT đọc và hiểu, đủ để trả lời câu hỏi sau — GỘP cũ + mới. Ghi rõ, gạch đầu dòng, BỎ mục nào không có dữ liệu, KHÔNG bịa: nội dung/chủ đề chính đang bàn; bối cảnh quan trọng cần nhớ; các quyết định/kết luận đã chốt; thuật ngữ - tên riêng - biệt danh thành viên; việc cần làm tiếp theo; số liệu quan trọng (giờ giấc, sân bãi, tiền nong, tỉ số...). Tối đa ~2000 ký tự.",
+    "(2) humanSummary: BẢN RECAP NGẮN cho NGƯỜI trong nhóm đọc lướt để hiểu nhanh chuyện gì vừa xảy ra — 2 đến 5 gạch đầu dòng, câu ngắn gọn thân thiện, tối đa ~600 ký tự.",
+    "(3) groupStyle: mô tả TÍNH CÁCH/PHONG CÁCH CHAT CHUNG của cả nhóm (không phải từng người) — mức độ đùa giỡn, thân mật, hay dùng teencode/emoji, không khí chung của nhóm (tối đa 2-3 câu), để bot bắt chước tông giọng khi trả lời cho hợp không khí nhóm.",
+    'Trả về JSON: {"summary": "...", "humanSummary": "...", "groupStyle": "..."}.',
+    "Tất cả bằng tiếng Việt.",
   ].join(" ");
 
   const userContent = [
@@ -3228,9 +3229,9 @@ bot.post("/summarize", async (c) => {
         { role: "system", content: system },
         { role: "user", content: userContent },
       ],
-      // Thinking mode không nhận temperature; max_tokens nâng lên để chừa chỗ cho chuỗi suy luận.
+      // Thinking mode không nhận temperature; max_tokens nâng cao để chừa chỗ cho chuỗi suy luận + bản tóm tắt chi tiết.
       thinking: { type: "enabled" },
-      max_tokens: 1200,
+      max_tokens: 3000,
       response_format: { type: "json_object" },
       stream: false,
     }),
@@ -3243,7 +3244,7 @@ bot.post("/summarize", async (c) => {
 
   const data = (await resp.json()) as { choices?: Array<{ message?: { content?: string } }> };
   const content = data?.choices?.[0]?.message?.content ?? "";
-  let obj: { summary?: unknown; groupStyle?: unknown };
+  let obj: { summary?: unknown; humanSummary?: unknown; groupStyle?: unknown };
   try {
     obj = JSON.parse(content);
   } catch {
@@ -3251,7 +3252,9 @@ bot.post("/summarize", async (c) => {
     return c.json({ ok: false, error: "AI non-JSON response" });
   }
 
-  const summary = typeof obj.summary === "string" ? obj.summary.trim().slice(0, 500) : prevSummary;
+  const summary = typeof obj.summary === "string" && obj.summary.trim() ? obj.summary.trim().slice(0, 2200) : prevSummary;
+  const humanSummary =
+    typeof obj.humanSummary === "string" && obj.humanSummary.trim() ? obj.humanSummary.trim().slice(0, 700) : "";
   const groupStyle =
     typeof obj.groupStyle === "string" && obj.groupStyle.trim()
       ? obj.groupStyle.trim().slice(0, 400)
@@ -3261,19 +3264,21 @@ bot.post("/summarize", async (c) => {
   await c.env.DB
     .prepare(
       `INSERT INTO group_chat_summaries
-         (group_id, summary, group_style, last_message_id, message_count, generated_at)
-       VALUES (?, ?, ?, NULL, ?, ?)
+         (group_id, summary, human_summary, group_style, last_message_id, message_count, generated_at)
+       VALUES (?, ?, ?, ?, NULL, ?, ?)
        ON CONFLICT(group_id) DO UPDATE SET
          summary        = excluded.summary,
+         human_summary  = excluded.human_summary,
          group_style    = excluded.group_style,
          last_message_id = NULL,
          message_count  = message_count + excluded.message_count,
          generated_at   = excluded.generated_at`
     )
-    .bind(groupId, summary, groupStyle, messages.length, now)
+    .bind(groupId, summary, humanSummary, groupStyle, messages.length, now)
     .run();
 
-  return c.json({ ok: true, summary });
+  // humanSummary: bản ngắn cho người đọc (hiển thị khi gõ /tomtat). summary: bản chi tiết cho bot.
+  return c.json({ ok: true, summary, humanSummary });
 });
 
 bot.post("/message", async (c) => {
