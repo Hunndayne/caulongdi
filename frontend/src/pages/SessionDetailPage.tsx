@@ -127,6 +127,13 @@ type ReceiptDraft = Omit<ReceiptParseResult, "items"> & {
   items: ReceiptDraftItem[];
 };
 
+type AttendanceChangeAction = "add" | "remove";
+
+type PendingAttendanceConfirmation =
+  | { kind: "member"; action: AttendanceChangeAction; memberId: string; memberName: string }
+  | { kind: "self"; action: AttendanceChangeAction; memberName: string }
+  | { kind: "walkin"; action: "add"; memberName: string; walkinName: string; refMemberId: string };
+
 const MAX_RECEIPT_IMAGE_WIDTH = 1200;
 const MAX_RECEIPT_IMAGE_HEIGHT = 3200;
 const MAX_RECEIPT_UPLOAD_BYTES = 3 * 1024 * 1024;
@@ -406,6 +413,8 @@ export default function SessionDetailPage() {
   const [walkinName, setWalkinName] = useState("");
   const [walkinRefId, setWalkinRefId] = useState("");
   const [addingWalkin, setAddingWalkin] = useState(false);
+  const [pendingAttendanceConfirmation, setPendingAttendanceConfirmation] = useState<PendingAttendanceConfirmation | null>(null);
+  const [confirmingAttendanceChange, setConfirmingAttendanceChange] = useState(false);
   const [showEditDialog, setShowEditDialog] = useState(false);
   const [editForm, setEditForm] = useState<SessionEditFormState>(defaultSessionEditForm);
   const [savingEdit, setSavingEdit] = useState(false);
@@ -578,21 +587,65 @@ export default function SessionDetailPage() {
     }
   };
 
+  const applyMemberAttendanceChange = async (memberId: string, action: AttendanceChangeAction) => {
+    if (action === "remove") {
+      await api.removeSessionMember(s.id, memberId);
+    } else {
+      await api.addSessionMember(s.id, memberId);
+    }
+    await refresh(s.id);
+  };
+
+  const applyAddWalkin = async (name: string, refMemberId: string) => {
+    if (!id) return;
+    setAddingWalkin(true);
+    try {
+      await api.addWalkin(id, { name: name || undefined, refMemberId });
+      setShowWalkinDialog(false);
+      setWalkinName("");
+      setWalkinRefId("");
+      await refresh(s.id);
+    } finally {
+      setAddingWalkin(false);
+    }
+  };
+
+  const applySelfAttendanceChange = async (action: AttendanceChangeAction) => {
+    setJoining(true);
+    try {
+      if (action === "remove") {
+        await api.leaveSession(s.id);
+      } else {
+        await api.joinSession(s.id);
+      }
+      await refresh(s.id);
+      await fetchMembers(s.group_id);
+    } finally {
+      setJoining(false);
+    }
+  };
+
   const toggleMember = async (memberId: string) => {
     if (!canManageSession) return;
-    const isLeaving = checkedInIds.has(memberId);
-    if (isLeaving && attendanceLeaveLocked) {
+    const action: AttendanceChangeAction = checkedInIds.has(memberId) ? "remove" : "add";
+    if (action === "remove" && attendanceLeaveLocked) {
       alert("Đã tính tiền, chỉ admin mới được bỏ điểm danh buổi này.");
       return;
     }
 
+    if (hasCalculatedPayments) {
+      const member = memberById.get(memberId) ?? attendanceList.find((item) => item.id === memberId);
+      setPendingAttendanceConfirmation({
+        kind: "member",
+        action,
+        memberId,
+        memberName: member?.name ?? "người này",
+      });
+      return;
+    }
+
     try {
-      if (isLeaving) {
-        await api.removeSessionMember(s.id, memberId);
-      } else {
-        await api.addSessionMember(s.id, memberId);
-      }
-      await refresh(s.id);
+      await applyMemberAttendanceChange(memberId, action);
     } catch (error: any) {
       alert(error.message);
     }
@@ -604,17 +657,23 @@ export default function SessionDetailPage() {
       alert("Cần chọn người bảo lãnh (ref) cho vãng lai.");
       return;
     }
-    setAddingWalkin(true);
+
+    const trimmedName = walkinName.trim();
+    if (hasCalculatedPayments) {
+      setPendingAttendanceConfirmation({
+        kind: "walkin",
+        action: "add",
+        memberName: trimmedName || "vãng lai mới",
+        walkinName: trimmedName,
+        refMemberId: walkinRefId,
+      });
+      return;
+    }
+
     try {
-      await api.addWalkin(id, { name: walkinName.trim() || undefined, refMemberId: walkinRefId });
-      setShowWalkinDialog(false);
-      setWalkinName("");
-      setWalkinRefId("");
-      await refresh(s.id);
+      await applyAddWalkin(trimmedName, walkinRefId);
     } catch (error: any) {
       alert(error.message);
-    } finally {
-      setAddingWalkin(false);
     }
   };
 
@@ -630,24 +689,44 @@ export default function SessionDetailPage() {
 
   const handleJoinToggle = async () => {
     if (s.status !== "upcoming") return;
-    if (hasJoined && attendanceLeaveLocked) {
+    const action: AttendanceChangeAction = hasJoined ? "remove" : "add";
+    if (action === "remove" && attendanceLeaveLocked) {
       alert("Đã tính tiền, chỉ admin mới được bỏ điểm danh buổi này.");
       return;
     }
 
-    setJoining(true);
+    if (hasCalculatedPayments) {
+      setPendingAttendanceConfirmation({
+        kind: "self",
+        action,
+        memberName: authSession?.user.name ?? "bạn",
+      });
+      return;
+    }
+
     try {
-      if (hasJoined) {
-        await api.leaveSession(s.id);
+      await applySelfAttendanceChange(action);
+    } catch (error: any) {
+      alert(error.message);
+    }
+  };
+
+  const handleConfirmAttendanceChange = async () => {
+    if (!pendingAttendanceConfirmation) return;
+    setConfirmingAttendanceChange(true);
+    try {
+      if (pendingAttendanceConfirmation.kind === "member") {
+        await applyMemberAttendanceChange(pendingAttendanceConfirmation.memberId, pendingAttendanceConfirmation.action);
+      } else if (pendingAttendanceConfirmation.kind === "self") {
+        await applySelfAttendanceChange(pendingAttendanceConfirmation.action);
       } else {
-        await api.joinSession(s.id);
+        await applyAddWalkin(pendingAttendanceConfirmation.walkinName, pendingAttendanceConfirmation.refMemberId);
       }
-      await refresh(s.id);
-      await fetchMembers(s.group_id);
+      setPendingAttendanceConfirmation(null);
     } catch (error: any) {
       alert(error.message);
     } finally {
-      setJoining(false);
+      setConfirmingAttendanceChange(false);
     }
   };
 
@@ -2304,7 +2383,7 @@ export default function SessionDetailPage() {
       <Dialog
         open={showWalkinDialog}
         onClose={() => {
-          if (!addingWalkin) setShowWalkinDialog(false);
+          if (!addingWalkin && !pendingAttendanceConfirmation) setShowWalkinDialog(false);
         }}
         title="Thêm vãng lai"
         className="sm:max-w-md"
@@ -2351,6 +2430,50 @@ export default function SessionDetailPage() {
             </Button>
           </div>
         </div>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(pendingAttendanceConfirmation)}
+        onClose={() => {
+          if (!confirmingAttendanceChange) setPendingAttendanceConfirmation(null);
+        }}
+        title={pendingAttendanceConfirmation?.action === "remove" ? "Xác nhận xóa người" : "Xác nhận thêm người"}
+        className="sm:max-w-md"
+      >
+        {pendingAttendanceConfirmation && (
+          <div className="space-y-4">
+            <p className="text-sm text-gray-600">
+              Buổi này đã tính tiền. Bạn có chắc chắn muốn{" "}
+              <span className="font-semibold text-gray-900">
+                {pendingAttendanceConfirmation.action === "remove" ? "xóa" : "thêm"} {pendingAttendanceConfirmation.memberName}
+              </span>{" "}
+              {pendingAttendanceConfirmation.action === "remove" ? "khỏi buổi" : "vào buổi"} không?
+            </p>
+            <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
+              Thay đổi điểm danh có thể làm công nợ chưa xác nhận được tính lại.
+            </p>
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="outline"
+                onClick={() => setPendingAttendanceConfirmation(null)}
+                disabled={confirmingAttendanceChange}
+              >
+                Hủy
+              </Button>
+              <Button
+                variant={pendingAttendanceConfirmation.action === "remove" ? "destructive" : "default"}
+                onClick={handleConfirmAttendanceChange}
+                disabled={confirmingAttendanceChange}
+              >
+                {confirmingAttendanceChange
+                  ? "Đang xử lý..."
+                  : pendingAttendanceConfirmation.action === "remove"
+                    ? "Xóa khỏi buổi"
+                    : "Thêm vào buổi"}
+              </Button>
+            </div>
+          </div>
+        )}
       </Dialog>
 
       <Dialog
