@@ -1117,7 +1117,7 @@ async function resolveIntent(env: Env, text: string, actor?: BotActor, context?:
   if (isUpdateCostLike(t)) {
     return { intent: "update_cost", names: [], cost: parseUpdateCostDraft(text), session: parseSessionReference(text, context) };
   }
-  if (isAddCostLike(text) && !asksForCosts(t)) {
+  if (isAddCostLike(text) && (!asksForCosts(t) || /\b(them|add|ghi)\b/.test(t))) {
     return {
       intent: "add_cost",
       names: [],
@@ -2079,7 +2079,7 @@ async function replyAddCost(
 
   let session: SessionRow | null;
   if (hasSessionSelector(selector)) {
-    const resolution = await resolveSessionForAction(env, groupId, selector, false);
+    const resolution = await resolveSessionForAction(env, groupId, selector, false, text);
     if (resolution.choices) return ambiguousSessionsReply(resolution.choices);
     session = resolution.session;
   } else {
