@@ -577,10 +577,13 @@ function isUpdateCostLike(t: string): boolean {
 }
 
 // Ghi khoản chi mới: có số tiền + từ chỉ chi tiêu ("tiền sân 80k", "3 ống cầu 270k Nam trả").
+// Cũng nhận "80k cho buổi/kèo" — user gõ tắt không kèm keyword tên khoản.
 function isAddCostLike(text: string): boolean {
   if (parseMoneyVn(text) === undefined) return false;
   const t = removeDiacritics(text.toLowerCase());
-  return /\b(tien|phi|chi phi|khoan|san|nuoc|cau|bong|bill|an|nem|ve|nuoc uong|do an)\b/.test(t);
+  if (/\b(tien|phi|chi phi|khoan|san|nuoc|cau|bong|bill|an|nem|ve|nuoc uong|do an)\b/.test(t)) return true;
+  if (/\b(cho buoi|cho keo|vao buoi|vao keo)\b/.test(t)) return true;
+  return false;
 }
 
 function detectIntentByRegex(text: string): Intent | null {
@@ -3290,7 +3293,8 @@ bot.post("/message", async (c) => {
   if (!body) return c.json({ error: "Invalid JSON body" }, 400);
 
   const threadId = body.threadId?.trim();
-  const text = (body.text ?? "").trim();
+  // Chuẩn hóa "/ thêm ..." → "/thêm ..." (user hay nhấn space sau dấu /).
+  const text = (body.text ?? "").trim().replace(/^\/\s+/, "/");
   if (!threadId) return c.json({ error: "threadId required" }, 400);
   if (!text) return c.json({ ok: true, reply: "" });
 
