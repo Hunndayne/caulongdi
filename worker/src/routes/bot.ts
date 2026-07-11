@@ -3293,8 +3293,7 @@ bot.post("/message", async (c) => {
   if (!body) return c.json({ error: "Invalid JSON body" }, 400);
 
   const threadId = body.threadId?.trim();
-  // Chuẩn hóa "/ thêm ..." → "/thêm ..." (user hay nhấn space sau dấu /).
-  const text = (body.text ?? "").trim().replace(/^\/\s+/, "/");
+  const text = (body.text ?? "").trim();
   if (!threadId) return c.json({ error: "threadId required" }, 400);
   if (!text) return c.json({ ok: true, reply: "" });
 
