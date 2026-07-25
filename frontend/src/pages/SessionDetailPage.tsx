@@ -303,6 +303,15 @@ function buildManualTransferContent(payerName: string, venue: string, date: stri
   return deburrVi(raw).replace(/\s+/g, " ").trim().slice(0, 80);
 }
 
+// Nội dung CK cho chiều hoàn tiền hũ -> người ứng. Không dùng mã CLD vì tiền ra khỏi hũ, không cần đối soát.
+function buildPaybackTransferContent(payerName: string, venue: string, date: string) {
+  const [y, m, d] = date.split("-");
+  const dmy = y && m && d ? `${d}/${m}/${y}` : date;
+  const venuePart = venue.trim() ? `buoi ${venue.trim()} ` : "";
+  const raw = `Hoan tien ung ${payerName.trim()} ${venuePart}ngay ${dmy}`;
+  return deburrVi(raw).replace(/\s+/g, " ").trim().slice(0, 80);
+}
+
 function createReceiptDraftId(index: number) {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
   return `${Date.now()}-${index}`;
@@ -550,6 +559,17 @@ export default function SessionDetailPage() {
       if (rankDiff !== 0) return rankDiff;
       return b.payment.amount_owed - a.payment.amount_owed;
     });
+
+  // Thu về hũ: cộng dồn nguyên số tiền mỗi người đã ứng (không cấn trừ phần chia của họ) để trưởng nhóm hoàn lại.
+  const potPaybackTotals = new Map<string, number>();
+  for (const cost of s.costs) {
+    if (cost.consumer_pending === 1 || !cost.payer_id) continue;
+    potPaybackTotals.set(cost.payer_id, (potPaybackTotals.get(cost.payer_id) ?? 0) + cost.amount);
+  }
+  const potPaybackRows = Array.from(potPaybackTotals.entries())
+    .map(([payerId, amount]) => ({ payer: memberById.get(payerId) ?? null, amount }))
+    .filter((row): row is { payer: Member; amount: number } => Boolean(row.payer))
+    .sort((a, b) => b.amount - a.amount);
 
   const handleSetRecipient = async (value: string) => {
     setRecipientId(value);
@@ -1372,6 +1392,40 @@ export default function SessionDetailPage() {
         destAccountName: dest.accountName,
         destLabel: dest.label,
         isPot: dest.isPot,
+      };
+    } catch {
+      return null;
+    }
+  };
+
+  // Chiều hoàn tiền từ hũ cho người đã ứng — luôn về tài khoản CÁ NHÂN của họ, khác hẳn buildQrData (chiều thu tiền).
+  const buildPaybackQrData = (payer: Member, amount: number): PaymentQrData | null => {
+    if (!hasBankInfo(payer) || amount <= 0) return null;
+    const bankBin = payer.user_bank_bin ?? "";
+    const accountNumber = payer.user_bank_account_number ?? "";
+    const accountName = payer.user_bank_account_name ?? "";
+    const note = buildPaybackTransferContent(payer.name, s.venue, s.date);
+    const roundedAmount = Math.ceil(amount);
+    const qrUrl = `https://img.vietqr.io/image/${bankBin}-${accountNumber}-compact.png?amount=${roundedAmount}&addInfo=${encodeURIComponent(note)}&accountName=${encodeURIComponent(accountName)}`;
+
+    try {
+      return {
+        qrUrl,
+        qrPayload: buildVietQrPayload({
+          bankBin,
+          accountNumber,
+          amount: roundedAmount,
+          description: note,
+        }),
+        note,
+        amount: roundedAmount,
+        recipient: payer,
+        recipientBankName: getBankNameByBin(bankBin),
+        destBankBin: bankBin,
+        destAccountNumber: accountNumber,
+        destAccountName: accountName,
+        destLabel: payer.name,
+        isPot: false,
       };
     } catch {
       return null;
@@ -2371,6 +2425,56 @@ export default function SessionDetailPage() {
                     {formatCurrency(totalTransferAmount)}
                   </span>
                 </div>
+              </div>
+            </div>
+          )}
+
+          {collectToPot && canManageSession && potPaybackRows.length > 0 && (
+            <div className="space-y-3 rounded-xl border border-blue-100 bg-blue-50/40 p-3">
+              <div>
+                <div className="text-sm font-semibold text-gray-900">Hũ cần hoàn lại cho người ứng tiền</div>
+                <p className="mt-0.5 text-xs text-gray-500">
+                  Mọi người đã nộp đủ phần mình vào hũ, trưởng nhóm rút quỹ chuyển lại cho những người đã ứng tiền trước.
+                </p>
+              </div>
+              <div className="space-y-2">
+                {potPaybackRows.map(({ payer, amount }) => {
+                  const qrData = buildPaybackQrData(payer, amount);
+                  return (
+                    <div key={payer.id} className="rounded-xl border border-gray-100 bg-white p-3">
+                      <div className="flex items-center gap-3">
+                        <Avatar name={payer.name} color={payer.avatar_color} size="sm" />
+                        <div className="min-w-0 flex-1">
+                          <div className="font-medium text-gray-900">{payer.name}</div>
+                          <div className="mt-0.5 text-sm font-semibold text-gray-800">{formatCurrency(amount)}</div>
+                        </div>
+                      </div>
+
+                      {qrData ? (
+                        <div className="mt-3 flex flex-col items-center gap-2">
+                          <img
+                            src={qrData.qrUrl}
+                            alt={`QR hoàn tiền cho ${payer.name}`}
+                            className="h-auto w-48 rounded-lg border border-gray-200"
+                            loading="lazy"
+                          />
+                          <div className="grid w-full max-w-xs grid-cols-2 gap-2">
+                            <Button size="sm" onClick={() => handleOpenBankDialog(qrData)}>
+                              <ExternalLink size={14} className="mr-1" />
+                              Mở ngân hàng
+                            </Button>
+                            <Button variant="outline" size="sm" onClick={() => handleDownloadQr(qrData)}>
+                              <Download size={14} className="mr-1" />
+                              Tải mã QR
+                            </Button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="mt-2 text-xs text-amber-600">Chưa cập nhật số tài khoản.</div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}

@@ -2488,23 +2488,10 @@ export async function recalcSessionPayments(env: Env, sessionId: string): Promis
     }
   }
 
-  // Thu về hũ: ai đã ứng chi phí thì được cấn trừ vào nợ hũ. Hũ không thể là bên NỢ trong sổ
-  // (payments.member_id NOT NULL), nên phần ứng dư ra là việc trưởng nhóm hoàn lại bằng QR
-  // cá nhân của người đó — không tạo payment row ngược.
-  if (paymentToPot) {
-    for (const cost of costs.results) {
-      if ((cost as any).consumer_pending) continue;
-      if (!cost.payer_id || !eligibleMemberSet.has(cost.payer_id)) continue;
-
-      const key = `${cost.payer_id}:${POT_RECIPIENT}`;
-      const owed = paymentMap.get(key);
-      if (!owed) continue;
-
-      const remaining = owed - Math.round(cost.amount);
-      if (remaining > 0) paymentMap.set(key, remaining);
-      else paymentMap.delete(key);
-    }
-  }
+  // Thu về hũ: KHÔNG cấn trừ tiền người ứng vào nợ hũ của họ. Ai cũng nộp đủ phần mình vào
+  // hũ, rồi hũ hoàn lại người ứng ĐÚNG số đã ứng. Nhiều hơn một lượt chuyển nhưng số tiền
+  // cần hoàn là con số chính xác (tổng chi phí họ ứng), không phụ thuộc phần chia nên không
+  // lệch làm tròn — trưởng nhóm rút quỹ trả lại theo QR cá nhân của người đó.
 
   // Khi force mode bật, người nhận chung cần trả lại cho từng người đã ứng tiền thực tế
   if (!paymentToPot && forceCommonRecipient && fallbackRecipientId) {
