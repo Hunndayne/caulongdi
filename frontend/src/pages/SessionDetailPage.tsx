@@ -50,7 +50,6 @@ const PAYMENT_QR_PREFIX = {
   manual: "TT",
   autoConfirm: "CLD",
 } as const;
-const TIMO_WEBHOOK_RECIPIENT_EMAIL = "tranthanhhung1641@gmail.com";
 
 const COST_TYPES = [
   { value: "court", label: "Phí địa điểm" },
@@ -154,6 +153,12 @@ type PaymentQrData = {
   amount: number;
   recipient: Member;
   recipientBankName: string;
+  // Đích chuyển khoản thật sự — có thể là tài khoản chung của nhóm (hũ), khác recipient khi thu về nhóm.
+  destBankBin: string;
+  destAccountNumber: string;
+  destAccountName: string;
+  destLabel: string;
+  isPot: boolean;
 };
 
 const BANK_DIRECTORY = banksData.data as BankDirectoryEntry[];
@@ -267,14 +272,6 @@ function splitImportNames(value: unknown) {
 
 function hasBankInfo(member: Member | null | undefined) {
   return Boolean(member?.user_bank_bin && member?.user_bank_account_number && member?.user_bank_account_name);
-}
-
-function normalizeEmail(value?: string | null) {
-  return value?.trim().toLowerCase() ?? "";
-}
-
-function isTimoWebhookRecipient(member: Member | null | undefined) {
-  return normalizeEmail(member?.user_email) === TIMO_WEBHOOK_RECIPIENT_EMAIL;
 }
 
 function getBankNameByBin(bankBin?: string | null) {
@@ -406,9 +403,10 @@ export default function SessionDetailPage() {
   const [managingSettings, setManagingSettings] = useState(false);
   const [showManagerSettings, setShowManagerSettings] = useState(false);
   const [recipientId, setRecipientId] = useState("");
-  const [autoConfirm, setAutoConfirm] = useState(false);
   const [bankDialogPayment, setBankDialogPayment] = useState<PaymentQrData | null>(null);
   const [bankOpenNotice, setBankOpenNotice] = useState("");
+  const [checkingTimoPot, setCheckingTimoPot] = useState(false);
+  const [timoCheckNotice, setTimoCheckNotice] = useState("");
   const [showWalkinDialog, setShowWalkinDialog] = useState(false);
   const [walkinName, setWalkinName] = useState("");
   const [walkinRefId, setWalkinRefId] = useState("");
@@ -423,9 +421,13 @@ export default function SessionDetailPage() {
 
   const currentUserId = (authSession?.user as { id?: string } | undefined)?.id;
   const managersList = useMemo(() => parseManagers(currentSession?.managers), [currentSession?.managers]);
-  const groupRole = currentSession?.group_id
-    ? groups.find((group) => group.id === currentSession.group_id)?.role
-    : undefined;
+  const sessionGroup = currentSession?.group_id
+    ? groups.find((group) => group.id === currentSession.group_id) ?? null
+    : null;
+  const groupRole = sessionGroup?.role;
+  const collectToPot = currentSession?.payment_to_pot === 1;
+  const potAutoConfirm = collectToPot && Boolean(sessionGroup?.timoEnabled);
+  const groupAccountReady = Boolean(sessionGroup?.groupBankBin && sessionGroup?.groupBankAccountNumber && sessionGroup?.groupBankAccountName);
 
   const canManageSession = Boolean(
     isAdminUser(authSession?.user) ||
@@ -456,14 +458,7 @@ export default function SessionDetailPage() {
   }, [currentSession, fetchMembers]);
 
   useEffect(() => {
-    const raw = currentSession?.payment_recipient ?? "";
-    if (raw.startsWith("auto_")) {
-      setAutoConfirm(true);
-      setRecipientId(raw.slice(5));
-    } else {
-      setAutoConfirm(false);
-      setRecipientId(raw);
-    }
+    setRecipientId(currentSession?.payment_recipient ?? "");
   }, [currentSession?.id, currentSession?.payment_recipient]);
 
   useEffect(() => {
@@ -536,8 +531,6 @@ export default function SessionDetailPage() {
   const walkinRefOptions = s.members.filter((member) => !member.is_walkin && member.user_id);
 
   const fallbackRecipientMember = recipientId ? memberById.get(recipientId) ?? null : null;
-  const fallbackRecipientUsesTimoWebhook = isTimoWebhookRecipient(fallbackRecipientMember);
-  const effectiveAutoConfirm = fallbackRecipientUsesTimoWebhook || autoConfirm;
   const memberByImportName = new Map<string, Member>();
   for (const member of memberById.values()) {
     memberByImportName.set(normalizeImportText(member.name), member);
@@ -558,32 +551,27 @@ export default function SessionDetailPage() {
     });
 
   const handleSetRecipient = async (value: string) => {
-    const nextRecipient = value ? memberById.get(value) ?? null : null;
-    const nextAutoConfirm = isTimoWebhookRecipient(nextRecipient) || (autoConfirm && !fallbackRecipientUsesTimoWebhook);
     setRecipientId(value);
-    setAutoConfirm(nextAutoConfirm);
     if (!canManageSession || !id) return;
-    const stored = value ? (nextAutoConfirm ? `auto_${value}` : value) : null;
     try {
-      await api.updateSession(id, { payment_recipient: stored } as any);
+      await api.updateSession(id, { payment_recipient: value || null } as any);
     } catch {
       // keep local selection optimistic; refresh will reconcile if needed
     }
   };
 
-  const handleToggleAutoConfirm = async () => {
-    if (fallbackRecipientUsesTimoWebhook) {
-      setAutoConfirm(true);
-      return;
-    }
-    const next = !autoConfirm;
-    setAutoConfirm(next);
-    if (!canManageSession || !id || !recipientId) return;
-    const stored = next ? `auto_${recipientId}` : recipientId;
+  // Thu về tài khoản chung của nhóm (1) hay về người nhận chung (0). Chỉ khi thu về nhóm thì
+  // QR mới trỏ vào tài khoản nhóm và mới đối soát được qua lịch sử giao dịch hũ Timo.
+  const handleSetPaymentTarget = async (value: 0 | 1) => {
+    if (!canManageSession || currentSession?.payment_to_pot === value) return;
+    setManagingSettings(true);
     try {
-      await api.updateSession(id, { payment_recipient: stored } as any);
-    } catch {
-      setAutoConfirm(!next);
+      await api.updateSession(s.id, { paymentToPot: value } as any);
+      await refresh(s.id);
+    } catch (error: any) {
+      alert(error.message);
+    } finally {
+      setManagingSettings(false);
     }
   };
 
@@ -1241,6 +1229,32 @@ export default function SessionDetailPage() {
     }
   };
 
+  // Bấm tay để đối soát hũ Timo ngay, không phải chờ cron.
+  const handleCheckTimoPot = async () => {
+    if (!potAutoConfirm || !sessionGroup) return;
+    setCheckingTimoPot(true);
+    setTimoCheckNotice("");
+    try {
+      const result = await api.checkPotNow(sessionGroup.id);
+      if (result.throttled) {
+        setTimoCheckNotice("Vừa kiểm tra xong, thử lại sau vài giây.");
+        return;
+      }
+      if (result.error) {
+        setTimoCheckNotice(result.error);
+        return;
+      }
+      await refresh(s.id);
+      setTimoCheckNotice(result.confirmed
+        ? `Đã xác nhận ${result.confirmed} giao dịch.`
+        : "Chưa thấy giao dịch mới khớp với buổi này.");
+    } catch (error: any) {
+      setTimoCheckNotice(error.message || "Không kiểm tra được hũ Timo.");
+    } finally {
+      setCheckingTimoPot(false);
+    }
+  };
+
   const handleTogglePayment = async (paymentId: string) => {
     try {
       await api.togglePayment(paymentId);
@@ -1310,30 +1324,51 @@ export default function SessionDetailPage() {
   const confirmedCostProgress = Math.min(confirmedTransferAmount, paymentProgressTarget);
 
   const buildQrData = (paymentId: string, debtor: Member, recipient: Member, amount: number): PaymentQrData | null => {
-    if (!recipient.user_bank_bin || !recipient.user_bank_account_number || !recipient.user_bank_account_name) return null;
+    // Thu về nhóm → đích là tài khoản chung của nhóm (hũ), KHÔNG phải tài khoản cá nhân của recipient.
+    const dest = collectToPot
+      ? {
+        bankBin: sessionGroup?.groupBankBin ?? "",
+        accountNumber: sessionGroup?.groupBankAccountNumber ?? "",
+        accountName: sessionGroup?.groupBankAccountName ?? "",
+        label: sessionGroup?.groupBankAccountName || sessionGroup?.name || "Tài khoản chung nhóm",
+        isPot: true,
+      }
+      : {
+        bankBin: recipient.user_bank_bin ?? "",
+        accountNumber: recipient.user_bank_account_number ?? "",
+        accountName: recipient.user_bank_account_name ?? "",
+        label: recipient.name,
+        isPot: false,
+      };
+    if (!dest.bankBin || !dest.accountNumber || !dest.accountName) return null;
     if (amount <= 0 || debtor.id === recipient.id) return null;
-    const isAutoRecipient = isTimoWebhookRecipient(recipient) || (effectiveAutoConfirm && recipient.id === recipientId);
-    // Tự động (CLD): GIỮ mã để webhook Timo đối soát. Thủ công (TT cũ): mã vô dụng
-    // (email không về hộp webhook) → thay bằng nội dung dễ đọc cho người nhận.
-    const note = isAutoRecipient
+
+    // Tự động (CLD): GIỮ mã để hệ thống đối soát lịch sử giao dịch hũ Timo. Thủ công (TT cũ):
+    // mã vô dụng (tiền không vào hũ) → thay bằng nội dung dễ đọc cho người nhận.
+    const note = potAutoConfirm
       ? `${PAYMENT_QR_PREFIX.autoConfirm}-${paymentId}`
       : buildManualTransferContent(debtor.name, s.venue, s.date);
     const roundedAmount = Math.ceil(amount);
-    const qrUrl = `https://img.vietqr.io/image/${recipient.user_bank_bin}-${recipient.user_bank_account_number}-compact.png?amount=${roundedAmount}&addInfo=${encodeURIComponent(note)}&accountName=${encodeURIComponent(recipient.user_bank_account_name)}`;
+    const qrUrl = `https://img.vietqr.io/image/${dest.bankBin}-${dest.accountNumber}-compact.png?amount=${roundedAmount}&addInfo=${encodeURIComponent(note)}&accountName=${encodeURIComponent(dest.accountName)}`;
 
     try {
       return {
         qrUrl,
         qrPayload: buildVietQrPayload({
-          bankBin: recipient.user_bank_bin,
-          accountNumber: recipient.user_bank_account_number,
+          bankBin: dest.bankBin,
+          accountNumber: dest.accountNumber,
           amount: roundedAmount,
           description: note,
         }),
         note,
         amount: roundedAmount,
         recipient,
-        recipientBankName: getBankNameByBin(recipient.user_bank_bin),
+        recipientBankName: getBankNameByBin(dest.bankBin),
+        destBankBin: dest.bankBin,
+        destAccountNumber: dest.accountNumber,
+        destAccountName: dest.accountName,
+        destLabel: dest.label,
+        isPot: dest.isPot,
       };
     } catch {
       return null;
@@ -1353,9 +1388,9 @@ export default function SessionDetailPage() {
         bankKey,
         qrPayload: bankDialogPayment.qrPayload,
         timoPayload: {
-          bankCode: bankDialogPayment.recipient.user_bank_bin ?? "",
+          bankCode: bankDialogPayment.destBankBin,
           bankName: bankDialogPayment.recipientBankName,
-          accNumber: bankDialogPayment.recipient.user_bank_account_number ?? "",
+          accNumber: bankDialogPayment.destAccountNumber,
           amount: bankDialogPayment.amount,
           description: bankDialogPayment.note,
           editable: false,
@@ -1578,6 +1613,42 @@ export default function SessionDetailPage() {
               </label>
 
               <div className="space-y-1.5">
+                <label className="block text-xs font-medium text-gray-700">Tiền thu về</label>
+                <div className="space-y-1">
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="radio"
+                      name="payment-target"
+                      checked={collectToPot}
+                      disabled={!canManageSession || !groupAccountReady || managingSettings}
+                      onChange={() => handleSetPaymentTarget(1)}
+                      className="border-gray-300"
+                    />
+                    <span className="text-gray-700">Tài khoản chung của nhóm</span>
+                  </label>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="radio"
+                      name="payment-target"
+                      checked={!collectToPot}
+                      disabled={!canManageSession || managingSettings}
+                      onChange={() => handleSetPaymentTarget(0)}
+                      className="border-gray-300"
+                    />
+                    <span className="text-gray-700">Người nhận chung</span>
+                  </label>
+                  {!groupAccountReady && (
+                    <p className="text-xs text-gray-400">
+                      Nhóm chưa khai tài khoản nhận chung — vào Cài đặt nhóm để thêm.
+                    </p>
+                  )}
+                  {collectToPot && !sessionGroup?.timoEnabled && (
+                    <p className="text-xs text-gray-400">
+                      Chưa có link hũ Timo nên không tự xác nhận, tiền vẫn chuyển bình thường.
+                    </p>
+                  )}
+                </div>
+
                 <label className="block text-xs font-medium text-gray-700">Người nhận chung</label>
                 <select
                   value={recipientId}
@@ -1613,16 +1684,6 @@ export default function SessionDetailPage() {
                         className="rounded border-gray-300"
                       />
                       <span className="text-gray-700">Tất cả tiền chuyển về người nhận chung</span>
-                    </label>
-                    <label className="flex items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={effectiveAutoConfirm}
-                        disabled={fallbackRecipientUsesTimoWebhook}
-                        onChange={handleToggleAutoConfirm}
-                        className="rounded border-gray-300"
-                      />
-                      <span className="text-gray-700">Webhook tự động xác nhận (Timo)</span>
                     </label>
                   </div>
                 )}
@@ -2137,19 +2198,39 @@ export default function SessionDetailPage() {
 
       {tab === "Thanh toán" && (
         <div className="space-y-3">
-          <Button variant="outline" size="sm" onClick={copyNotification} className="w-full">
-            {copied ? (
-              <>
-                <Check size={14} className="mr-1 text-green-600" />
-                Đã copy
-              </>
-            ) : (
-              <>
-                <Copy size={14} className="mr-1" />
-                Copy thông báo
-              </>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" onClick={copyNotification} className="flex-1">
+              {copied ? (
+                <>
+                  <Check size={14} className="mr-1 text-green-600" />
+                  Đã copy
+                </>
+              ) : (
+                <>
+                  <Copy size={14} className="mr-1" />
+                  Copy thông báo
+                </>
+              )}
+            </Button>
+            {potAutoConfirm && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleCheckTimoPot}
+                disabled={checkingTimoPot}
+                className="flex-1"
+              >
+                <RefreshCw size={14} className={`mr-1 ${checkingTimoPot ? "animate-spin" : ""}`} />
+                {checkingTimoPot ? "Đang kiểm tra..." : "Kiểm tra thanh toán"}
+              </Button>
             )}
-          </Button>
+          </div>
+
+          {timoCheckNotice && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700">
+              {timoCheckNotice}
+            </div>
+          )}
 
           {paymentRows.length === 0 ? (
             <div className="py-8 text-center text-sm text-gray-400">Chưa tính tiền. Vào tab Chi phí để tính lại.</div>
@@ -2223,12 +2304,14 @@ export default function SessionDetailPage() {
                       <div className="mt-3 flex flex-col items-center gap-2">
                         <img
                           src={qrData.qrUrl}
-                          alt={`QR chuyển khoản cho ${qrRecipient?.name ?? recipientName}`}
+                          alt={`QR chuyển khoản cho ${qrData.destLabel}`}
                           className="h-auto w-48 rounded-lg border border-gray-200"
                           loading="lazy"
                         />
                         <div className="text-center text-xs text-gray-500">
-                          QR nhận tiền: {qrRecipient?.name ?? recipientName}
+                          {qrData.isPot
+                            ? `QR nhận tiền: ${qrData.destLabel} · ${qrData.destAccountNumber} (tài khoản chung nhóm)`
+                            : `QR nhận tiền: ${qrData.destLabel}`}
                         </div>
                         <div className="grid w-full max-w-xs grid-cols-2 gap-2">
                           <Button size="sm" onClick={() => handleOpenBankDialog(qrData)}>

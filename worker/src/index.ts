@@ -13,6 +13,7 @@ import groupsRouter from "./routes/groups";
 import paymentWebhooksRouter from "./routes/paymentWebhooks";
 import botRouter from "./routes/bot";
 import { enqueueSessionReminders } from "./botOutbox";
+import { pollStalePots } from "./timoPot";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -206,6 +207,28 @@ app.use("/api/*", async (c, next) => {
   await next();
 });
 
+// Cron trên serverless không chắc nổ đúng giờ, nên request thường cũng kích hoạt đối soát hũ.
+// Chặn tần suất bằng biến trong isolate để không thêm query vào mọi lần gọi API; cửa 1 tiếng
+// nằm trong pollStalePots nên gọi thừa cũng vô hại.
+let lastPotSweepAt = 0;
+const POT_SWEEP_MIN_GAP_MS = 5 * 60 * 1000;
+
+app.use("/api/*", async (c, next) => {
+  if (Date.now() - lastPotSweepAt > POT_SWEEP_MIN_GAP_MS) {
+    lastPotSweepAt = Date.now();
+    c.executionCtx?.waitUntil?.(
+      pollStalePots(c.env)
+        .then((summaries) => {
+          const confirmed = summaries.reduce((total, item) => total + item.confirmed, 0);
+          if (confirmed > 0) console.log(`[sweep] hũ Timo: xác nhận ${confirmed} giao dịch`);
+        })
+        .catch((error) => console.error("[sweep] pollStalePots", error))
+    );
+  }
+
+  await next();
+});
+
 app.route("/api/members", membersRouter);
 app.route("/api/sessions", sessionsRouter);
 app.route("/api/payments", paymentsRouter);
@@ -216,7 +239,7 @@ app.route("/api/groups", groupsRouter);
 
 export default {
   fetch: app.fetch,
-  // Cron (wrangler.toml [triggers]): nhắc kèo sắp diễn ra qua bot Messenger.
+  // Cron (wrangler.toml [triggers]): nhắc kèo qua bot Messenger + đối soát hũ Timo.
   scheduled(_controller: unknown, env: Env, ctx: ExecutionContext) {
     ctx.waitUntil(
       enqueueSessionReminders(env)
@@ -224,6 +247,22 @@ export default {
           if (queued > 0) console.log(`[cron] đã xếp ${queued} tin nhắc kèo vào outbox`);
         })
         .catch((error) => console.error("[cron] enqueueSessionReminders", error))
+    );
+
+    ctx.waitUntil(
+      pollStalePots(env)
+        .then((summaries) => {
+          for (const summary of summaries) {
+            if (summary.error) {
+              console.error(`[cron] hũ Timo nhóm ${summary.groupId}: ${summary.error}`);
+            } else if (summary.confirmed > 0) {
+              console.log(
+                `[cron] hũ Timo nhóm ${summary.groupId}: xác nhận ${summary.confirmed}/${summary.scanned} giao dịch`
+              );
+            }
+          }
+        })
+        .catch((error) => console.error("[cron] pollAllTimoPots", error))
     );
   },
 };

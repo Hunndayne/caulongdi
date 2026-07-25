@@ -4,6 +4,7 @@ import {
   Bot,
   Check,
   Copy,
+  Landmark,
   Link2,
   Mail,
   Plus,
@@ -21,6 +22,7 @@ import {
 import { api } from "@/api/client";
 import { useSession } from "@/lib/auth-client";
 import { isAdminUser } from "@/lib/permissions";
+import { cn, formatCurrency } from "@/lib/utils";
 import { useGroupsStore } from "@/stores/groupsStore";
 import { Avatar } from "@/components/shared/Avatar";
 import { Badge } from "@/components/ui/badge";
@@ -28,7 +30,40 @@ import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { EmptyState } from "@/components/shared/EmptyState";
-import type { GroupInvite, GroupMember, GroupSearchResult } from "@/types";
+import type { GroupInvite, GroupMember, GroupPaymentSettings, GroupSearchResult } from "@/types";
+import banksData from "@/lib/banks.json";
+
+const banks = (banksData as any).data.filter((b: any) => b.transferSupported === 1);
+
+const TIMO_OUTCOME_LABELS: Record<string, { label: string; className: string }> = {
+  confirmed: { label: "Đã xác nhận", className: "text-green-600" },
+  already_paid: { label: "Đã trả trước đó", className: "text-gray-500" },
+  no_payment_code: { label: "Không có mã TingTing", className: "text-gray-400" },
+  not_incoming: { label: "Tiền ra khỏi hũ", className: "text-gray-400" },
+  amount_mismatch: { label: "Lệch số tiền", className: "text-orange-600" },
+  not_pot_session: { label: "Buổi không thu về nhóm", className: "text-orange-600" },
+  not_found: { label: "Không tìm thấy payment", className: "text-orange-600" },
+  wrong_group: { label: "Payment thuộc nhóm khác", className: "text-orange-600" },
+  recipient_not_eligible: { label: "Người nhận không hợp lệ", className: "text-orange-600" },
+  pending: { label: "Đang xử lý", className: "text-gray-500" },
+};
+
+// Backend có thể thêm outcome mới — không map được thì hiện thẳng giá trị gốc.
+function timoOutcomeLabel(outcome: string) {
+  return TIMO_OUTCOME_LABELS[outcome] ?? { label: outcome, className: "text-gray-500" };
+}
+
+function formatTimoTime(value: string | null) {
+  if (!value) return "chưa có";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString("vi-VN", {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
 
 export default function MembersPage() {
   const { data: session } = useSession();
@@ -66,6 +101,17 @@ export default function MembersPage() {
   const [botLinkExpiresAt, setBotLinkExpiresAt] = useState<string | null>(null);
   const [botLinkLoading, setBotLinkLoading] = useState(false);
   const [botLinkCopied, setBotLinkCopied] = useState(false);
+  const [timoPot, setTimoPot] = useState<GroupPaymentSettings | null>(null);
+  const [groupBankBin, setGroupBankBin] = useState("");
+  const [groupBankAccountNumber, setGroupBankAccountNumber] = useState("");
+  const [groupBankAccountName, setGroupBankAccountName] = useState("");
+  const [timoShareUrl, setTimoShareUrl] = useState("");
+  const [timoPasscode, setTimoPasscode] = useState("");
+  const [timoSaving, setTimoSaving] = useState(false);
+  const [timoChecking, setTimoChecking] = useState(false);
+  const [timoDeleting, setTimoDeleting] = useState(false);
+  const [timoNotice, setTimoNotice] = useState<string | null>(null);
+  const [timoWarning, setTimoWarning] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [editName, setEditName] = useState("");
   const [editDescription, setEditDescription] = useState("");
@@ -96,6 +142,15 @@ export default function MembersPage() {
     // Mã bot thuộc về nhóm cụ thể — đổi nhóm là bỏ mã đang hiện
     setBotLinkCode(null);
     setBotLinkExpiresAt(null);
+    // Cài đặt thanh toán cũng theo nhóm — tránh hiện dữ liệu của nhóm trước
+    setTimoPot(null);
+    setGroupBankBin("");
+    setGroupBankAccountNumber("");
+    setGroupBankAccountName("");
+    setTimoShareUrl("");
+    setTimoPasscode("");
+    setTimoNotice(null);
+    setTimoWarning(null);
     if (!activeGroupId) return;
 
     setMembersLoading(true);
@@ -248,6 +303,90 @@ export default function MembersPage() {
     }
   };
 
+  const refreshTimoPot = async (groupId: string) => {
+    try {
+      setTimoPot(await api.getPaymentSettings(groupId));
+    } catch {}
+  };
+
+  const handleSaveTimoPot = async () => {
+    if (!activeGroupId) return;
+
+    setTimoSaving(true);
+    setError(null);
+    setTimoNotice(null);
+    setTimoWarning(null);
+    try {
+      const payload: { bankBin?: string; bankAccountNumber?: string; bankAccountName?: string; shareUrl?: string; passcode?: string } = {
+        bankBin: groupBankBin,
+        bankAccountNumber: groupBankAccountNumber.trim(),
+        bankAccountName: groupBankAccountName.trim(),
+      };
+      // Chỉ gửi shareUrl khi ô có nội dung — gửi "" nhầm sẽ bỏ mất hũ đang có
+      if (timoShareUrl.trim()) payload.shareUrl = timoShareUrl.trim();
+      if (timoPasscode.trim()) payload.passcode = timoPasscode.trim();
+
+      const settings = await api.savePaymentSettings(activeGroupId, payload);
+      setTimoPot(settings);
+      setGroupBankBin(settings.bankBin ?? "");
+      setGroupBankAccountNumber(settings.bankAccountNumber ?? "");
+      setGroupBankAccountName(settings.bankAccountName ?? "");
+      setTimoShareUrl(settings.timo.shareUrl ?? "");
+      setTimoPasscode("");
+      setTimoWarning(settings.warning ?? null);
+      setTimoNotice(
+        typeof settings.txnCount === "number"
+          ? `Đã lưu, đọc thử được ${settings.txnCount} giao dịch.`
+          : "Đã lưu thông tin thanh toán."
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Không lưu được cài đặt thanh toán");
+    } finally {
+      setTimoSaving(false);
+    }
+  };
+
+  const handleCheckTimoPot = async () => {
+    if (!activeGroupId) return;
+
+    setTimoChecking(true);
+    setError(null);
+    setTimoNotice(null);
+    try {
+      const result = await api.checkPotNow(activeGroupId);
+      setTimoNotice(
+        result.throttled
+          ? "Vừa quét xong, thử lại sau vài giây."
+          : `Đã quét ${result.scanned ?? 0} giao dịch, xác nhận ${result.confirmed ?? 0}.`
+      );
+      await refreshTimoPot(activeGroupId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Không quét được hũ Timo");
+    } finally {
+      setTimoChecking(false);
+    }
+  };
+
+  const handleDeleteTimoPot = async () => {
+    if (!activeGroupId) return;
+    if (!confirm("Bỏ liên kết hũ Timo? Nhóm sẽ không còn tự xác nhận thanh toán.")) return;
+
+    setTimoDeleting(true);
+    setError(null);
+    try {
+      const settings = await api.savePaymentSettings(activeGroupId, { shareUrl: "" });
+      setTimoPot(settings);
+      setTimoShareUrl("");
+      setTimoPasscode("");
+      setTimoWarning(null);
+      setTimoNotice("Đã bỏ liên kết hũ Timo.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Không bỏ được liên kết hũ Timo");
+    } finally {
+      setTimoDeleting(false);
+    }
+  };
+
   const handleRemoveMember = async (member: GroupMember) => {
     if (!activeGroupId) return;
     if (!confirm(`Xóa ${member.name} khỏi nhóm ${activeGroup?.name}?`)) return;
@@ -292,7 +431,22 @@ export default function MembersPage() {
   const openSettings = () => {
     setEditName(activeGroup?.name ?? "");
     setEditDescription(activeGroup?.description ?? "");
+    setTimoPasscode("");
+    setTimoNotice(null);
+    setTimoWarning(null);
     setSettingsOpen(true);
+
+    if (!activeGroupId || !canManageGroup) return;
+    // Chỉ admin nhóm đọc được; 403 hoặc lỗi mạng thì bỏ qua êm
+    api.getPaymentSettings(activeGroupId)
+      .then((settings) => {
+        setTimoPot(settings);
+        setGroupBankBin(settings.bankBin ?? "");
+        setGroupBankAccountNumber(settings.bankAccountNumber ?? "");
+        setGroupBankAccountName(settings.bankAccountName ?? "");
+        setTimoShareUrl(settings.timo.shareUrl ?? "");
+      })
+      .catch(() => {});
   };
 
   const handleSaveGroupInfo = async () => {
@@ -729,6 +883,184 @@ export default function MembersPage() {
                   <Bot size={15} className="mr-1.5" />
                   {botLinkLoading ? "Đang tạo..." : "Tạo mã liên kết"}
                 </Button>
+              )}
+            </div>
+          )}
+
+          {canManageGroup && (
+            <div className="space-y-2 border-t border-gray-100 pt-4">
+              <div className="flex items-center gap-2 text-sm font-semibold text-gray-900">
+                <Landmark size={16} className="text-green-600" />
+                Thanh toán của nhóm
+              </div>
+              <p className="text-xs text-gray-500">
+                Tài khoản nhận tiền CHUNG của nhóm — khác hoàn toàn với tài khoản cá nhân trong trang cá nhân
+                (tài khoản cá nhân chỉ dùng khi trưởng nhóm hoàn tiền cho người đã ứng chi phí).
+              </p>
+
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">Ngân hàng</label>
+                <select
+                  value={groupBankBin}
+                  onChange={(event) => setGroupBankBin(event.target.value)}
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                >
+                  <option value="">-- Chọn ngân hàng --</option>
+                  {banks.map((b: any) => (
+                    <option key={b.bin} value={b.bin}>{b.shortName} - {b.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">Số tài khoản</label>
+                <Input
+                  value={groupBankAccountNumber}
+                  onChange={(event) => setGroupBankAccountNumber(event.target.value)}
+                  placeholder="0123456789 hoặc TIMO90C0908A658"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">Tên chủ tài khoản</label>
+                <Input
+                  value={groupBankAccountName}
+                  onChange={(event) => setGroupBankAccountName(event.target.value.toUpperCase())}
+                  placeholder="NGUYEN VAN A"
+                />
+                <p className="mt-1 text-xs text-gray-400">In hoa, không dấu</p>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">Link hũ Timo (không bắt buộc)</label>
+                <Input
+                  value={timoShareUrl}
+                  onChange={(event) => setTimoShareUrl(event.target.value)}
+                  placeholder="https://share.timo.vn/VN/transaction/..."
+                />
+                <p className="mt-1 text-xs text-gray-400">
+                  Có link thì hệ thống tự xác nhận khi thành viên chuyển tiền; để trống vẫn dùng tài khoản chung
+                  bình thường.
+                </p>
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">Mật khẩu hũ (không bắt buộc)</label>
+                {/* Backend không bao giờ trả mật khẩu về nên ô này luôn để trống */}
+                <Input
+                  type="password"
+                  value={timoPasscode}
+                  onChange={(event) => setTimoPasscode(event.target.value)}
+                  placeholder="Để trống nếu hũ không đặt mật khẩu"
+                />
+                {timoPot?.timo.hasSecurityCode && (
+                  <div className="mt-1 text-xs text-gray-400">Đã lưu mật khẩu — để trống nếu không đổi</div>
+                )}
+              </div>
+              <Button size="sm" onClick={handleSaveTimoPot} disabled={timoSaving}>
+                {timoSaving ? "Đang lưu..." : "Lưu"}
+              </Button>
+
+              {(timoWarning || timoPot?.timo.accountMatchesPot === false) && (
+                <div className="rounded-lg border border-orange-200 bg-orange-50 px-3 py-2 text-xs font-medium text-orange-700">
+                  {timoWarning ??
+                    "Số tài khoản nhóm không phải số riêng của hũ — tiền chuyển vào sẽ không tự xác nhận được."}
+                </div>
+              )}
+
+              {timoNotice && (
+                <div className="rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-xs text-green-700">
+                  {timoNotice}
+                </div>
+              )}
+
+              {timoPot?.timo.configured && (
+                <div className="space-y-3 rounded-lg border border-gray-100 bg-gray-50 p-3">
+                  <div className="space-y-0.5 text-xs text-gray-600">
+                    <div className="text-sm font-medium text-gray-900">{timoPot.timo.potName ?? "Hũ Timo"}</div>
+                    {timoPot.timo.ownerName && <div>Chủ hũ: {timoPot.timo.ownerName}</div>}
+                    {timoPot.timo.potBankLabel && <div>Ngân hàng: {timoPot.timo.potBankLabel}</div>}
+                    {timoPot.timo.potAccount && (
+                      <div>
+                        Số tài khoản của hũ:{" "}
+                        <span className="font-mono text-gray-800">{timoPot.timo.potAccount}</span>
+                      </div>
+                    )}
+                    {timoPot.timo.potAltAccount && (
+                      <div>
+                        Tài khoản chính của chủ hũ (không phải của hũ, đừng dùng số này):{" "}
+                        <span className="font-mono text-gray-800">{timoPot.timo.potAltAccount}</span>
+                      </div>
+                    )}
+                    {timoPot.timo.shareUrl && (
+                      <a
+                        href={timoPot.timo.shareUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="block break-all text-green-600 hover:text-green-700"
+                      >
+                        {timoPot.timo.shareUrl}
+                      </a>
+                    )}
+                  </div>
+
+                  <div className="space-y-0.5 text-xs text-gray-500">
+                    <div>Quét gần nhất: {formatTimoTime(timoPot.timo.lastCheckedAt)}</div>
+                    <div>Quét thành công gần nhất: {formatTimoTime(timoPot.timo.lastOkAt)}</div>
+                    <div className="text-gray-400">Hệ thống tự quét mỗi tiếng, hoặc khi có người bấm đã chuyển tiền.</div>
+                  </div>
+
+                  {timoPot.timo.lastError && (
+                    <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                      Lỗi lần quét gần nhất: {timoPot.timo.lastError}
+                    </div>
+                  )}
+
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="w-full"
+                    onClick={handleCheckTimoPot}
+                    disabled={timoChecking}
+                  >
+                    <RefreshCw size={14} className="mr-1.5" />
+                    {timoChecking ? "Đang quét..." : "Kiểm tra ngay"}
+                  </Button>
+
+                  {timoPot.timo.recentTxns.length > 0 && (
+                    <div className="space-y-1.5">
+                      <div className="text-xs font-medium text-gray-700">Giao dịch gần đây</div>
+                      {timoPot.timo.recentTxns.map((txn) => {
+                        const outcome = timoOutcomeLabel(txn.outcome);
+                        return (
+                          <div
+                            key={`${txn.seenAt}-${txn.paymentId ?? txn.description ?? ""}`}
+                            className="rounded-lg border border-gray-100 bg-white px-2.5 py-2 text-xs"
+                          >
+                            <div className="flex items-baseline justify-between gap-2">
+                              <span className="text-gray-500">{txn.date ?? formatTimoTime(txn.seenAt)}</span>
+                              <span className="font-medium text-gray-900">
+                                {typeof txn.amount === "number" ? formatCurrency(txn.amount) : "—"}
+                              </span>
+                            </div>
+                            {txn.title && <div className="truncate text-gray-700">{txn.title}</div>}
+                            {txn.description && (
+                              <div className="break-words text-gray-500">{txn.description}</div>
+                            )}
+                            <div className={cn("mt-0.5 font-medium", outcome.className)}>{outcome.label}</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {timoPot?.timo.configured && (
+                <button
+                  className="text-xs text-red-500 hover:text-red-600 disabled:opacity-50"
+                  onClick={handleDeleteTimoPot}
+                  disabled={timoDeleting}
+                >
+                  {timoDeleting ? "Đang bỏ liên kết..." : "Bỏ liên kết hũ"}
+                </button>
               )}
             </div>
           )}

@@ -1,3 +1,27 @@
+/**
+ * ⚠️ DEPRECATED — cách này KHÔNG còn là đường chính để tự xác nhận thanh toán.
+ *
+ * Thay bằng: đối soát lịch sử giao dịch "hũ" (money pot) Timo theo từng nhóm.
+ * Trưởng nhóm dán link chia sẻ hũ + mật mã vào Cài đặt nhóm trên web, Worker cron
+ * (10 phút/lần) đọc lịch sử giao dịch của hũ và tự xác nhận payment.
+ * Tài liệu đầy đủ: docs/timo-pot-autoconfirm.md
+ * Code: worker/src/timoPot.ts (poller) + worker/src/paymentConfirm.ts (lõi xác nhận dùng chung)
+ *
+ * Vì sao bỏ script này:
+ *   1. Chỉ chạy được với MỘT hộp thư duy nhất (RECIPIENT_EMAIL / PAYMENT_AUTOCONFIRM_EMAIL)
+ *      → chỉ nhóm nào có đúng người đó đứng thu tiền mới tự xác nhận được.
+ *   2. GmailApp.search(query, 0, 20) chỉ quét 20 thread mỗi lần chạy → hộp thư nhiều mail
+ *      là BỎ LỠ GIAO DỊCH, mà im lặng không báo lỗi ở đâu cả.
+ *   3. Phụ thuộc trigger Apps Script và format mail Timo; chết là chết lặng.
+ *
+ * File còn giữ để CHẠY SONG SONG trong giai đoạn chuyển đổi (các nhóm chưa cấu hình hũ Timo).
+ * Cả hai đường dùng chung lõi worker/src/paymentConfirm.ts nên không xác nhận trùng nhau.
+ * Khi mọi nhóm đã chuyển sang hũ Timo: xoá file này + route
+ * worker/src/routes/paymentWebhooks.ts + secret PAYMENT_WEBHOOK_SECRET / PAYMENT_AUTOCONFIRM_EMAIL.
+ *
+ * KHÔNG thêm tính năng mới vào đây.
+ */
+
 const WEBHOOK_URL = "https://caulong.hunn.io.vn/api/payment-webhooks/bank-transfer";
 const WEBHOOK_SECRET = "PASTE_PAYMENT_WEBHOOK_SECRET_HERE";
 const RECIPIENT_EMAIL = "tranthanhhung1641@gmail.com";

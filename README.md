@@ -57,6 +57,12 @@ database_id = "PASTE_YOUR_ID_HERE"
 npx wrangler d1 execute tingting-db --local --file=src/db/schema.sql
 ```
 
+Rồi các patch bổ sung, trong đó có hũ Timo (tự xác nhận thanh toán):
+
+```bash
+pnpm db:patch:timo-pot     # cột groups.timo_* + bảng timo_seen_txn
+```
+
 ### 4. Tạo file secrets cho local dev
 
 Tạo file `worker/.dev.vars`:
@@ -65,9 +71,14 @@ Tạo file `worker/.dev.vars`:
 GOOGLE_CLIENT_ID=your_google_client_id
 GOOGLE_CLIENT_SECRET=your_google_client_secret
 BETTER_AUTH_SECRET=any_random_string_32chars_minimum
-PAYMENT_WEBHOOK_SECRET=another_random_string_32chars_minimum
 FRONTEND_URL=http://localhost:5173
+
+# (legacy, tuỳ chọn) chỉ cần nếu còn chạy webhook Gmail cũ — xem mục Tự xác nhận thanh toán
+PAYMENT_WEBHOOK_SECRET=another_random_string_32chars_minimum
 ```
+
+> Tính năng **tự xác nhận thanh toán qua hũ Timo** không cần secret/env nào — cấu hình nằm trong
+> D1 theo từng nhóm. Chỉ cần chạy migration `patch-timo-pot.sql` (xem bên dưới).
 
 ### 5. Khởi động
 
@@ -109,6 +120,7 @@ Truy cập: http://localhost:5173
 cd worker
 npx wrangler d1 create tingting-db
 npx wrangler d1 execute tingting-db --file=src/db/schema.sql
+pnpm db:patch:timo-pot:prod      # hũ Timo: cột groups.timo_* + bảng timo_seen_txn
 ```
 
 ### Bước 2 — Set secrets
@@ -117,12 +129,16 @@ npx wrangler d1 execute tingting-db --file=src/db/schema.sql
 npx wrangler secret put GOOGLE_CLIENT_ID
 npx wrangler secret put GOOGLE_CLIENT_SECRET
 npx wrangler secret put BETTER_AUTH_SECRET
+
+# (legacy) chỉ khi còn chạy webhook Gmail cũ trong giai đoạn chuyển đổi
 npx wrangler secret put PAYMENT_WEBHOOK_SECRET
 ```
 
 > `BETTER_AUTH_SECRET` có thể là bất kỳ chuỗi random nào, tối thiểu 32 ký tự.
 > Tạo nhanh: `openssl rand -base64 32`
-> `PAYMENT_WEBHOOK_SECRET` là chuỗi bí mật dài dùng cho Google Apps Script gọi webhook thanh toán.
+> `PAYMENT_WEBHOOK_SECRET` là chuỗi bí mật dùng cho Google Apps Script gọi webhook thanh toán —
+> **chỉ thuộc đường legacy**. Đường chính (hũ Timo) không cần secret nào, cấu hình nằm trong D1
+> theo từng nhóm.
 
 ### Bước 3 — Deploy Worker
 
@@ -255,18 +271,58 @@ DELETE /api/sessions/:id/costs/:cid Xóa khoản chi (admin)
 POST   /api/sessions/:id/recalculate Tính lại payments (admin)
 
 POST   /api/payments/:id/toggle     Toggle đã trả / chưa trả
-POST   /api/payment-webhooks/bank-transfer  Auto-confirm QR payment webhook
+
+GET    /api/groups/:id/timo-pot         Trạng thái hũ Timo của nhóm (admin nhóm)
+PUT    /api/groups/:id/timo-pot         Lưu link + mật mã hũ (admin nhóm)
+DELETE /api/groups/:id/timo-pot         Bỏ cấu hình hũ (admin nhóm)
+POST   /api/groups/:id/timo-pot/check   "Kiểm tra ngay" (mọi thành viên, throttle 15s)
+
+POST   /api/payment-webhooks/bank-transfer  Auto-confirm QR payment webhook (legacy, Gmail)
 
 GET    /api/stats                   Tổng hợp thống kê
 ```
 
 ---
 
-## Google Apps Script cho Timo
+## Tự xác nhận thanh toán
+
+### Cách chính — hũ (money pot) Timo, theo từng nhóm
+
+Trưởng nhóm tạo **hũ** trong app Timo, bật link chia sẻ lịch sử giao dịch, rồi dán link + mật mã
+bảo vệ vào **Cài đặt nhóm** trên web. Worker cron (10 phút/lần, `[triggers] crons` trong
+`worker/wrangler.toml`) đọc lịch sử giao dịch của từng hũ và tự đánh dấu payment đã trả khi nội
+dung chuyển khoản chứa mã `CLD-<paymentId>` và số tiền khớp. Thành viên có thể bấm **Kiểm tra
+ngay** để không phải chờ hết nhịp cron.
+
+Nhóm nào cũng dùng được, **không phụ thuộc hộp thư của ai**. Không cần secret/env mới — cấu hình
+nằm trong D1 theo nhóm (`groups.timo_*`).
+
+**Điều kiện quan trọng:** số tài khoản ngân hàng mà người thu tiền khai trong TingTing phải là số
+tài khoản **của hũ**. Khai tài khoản chính thì lịch sử hũ không thấy giao dịch → không bao giờ tự
+xác nhận được.
+
+Chuẩn bị một lần cho toàn hệ thống:
+
+```bash
+cd worker
+pnpm db:patch:timo-pot:prod    # cột groups.timo_* + bảng timo_seen_txn
+```
+
+📖 **Chi tiết đầy đủ** (contract API Timo, schema, các tầng kiểm tra, hướng dẫn thiết lập từng
+bước, checklist chẩn đoán khi không xác nhận được, rủi ro): [`docs/timo-pot-autoconfirm.md`](docs/timo-pot-autoconfirm.md)
+
+### Cách cũ — Google Apps Script quét Gmail (LEGACY, sẽ bỏ)
+
+> ⚠️ **Deprecated.** Chỉ còn chạy song song trong giai đoạn chuyển đổi, cho nhóm chưa cấu hình hũ
+> Timo. Hai nhược điểm khiến nó bị thay: (a) chỉ chạy được với **một hộp thư duy nhất**
+> (`PAYMENT_AUTOCONFIRM_EMAIL`) nên chỉ nhóm có người đó thu tiền mới tự xác nhận được;
+> (b) `GmailApp.search(query, 0, 20)` chỉ quét 20 thread mỗi lần → hộp thư nhiều mail là bỏ lỡ
+> giao dịch mà không báo lỗi. Khi mọi nhóm đã chuyển sang hũ Timo: xoá script, xoá route
+> `/api/payment-webhooks/bank-transfer`, bỏ `PAYMENT_WEBHOOK_SECRET` và `PAYMENT_AUTOCONFIRM_EMAIL`.
 
 Script mẫu nằm ở `scripts/timo-gmail-webhook.gs`.
 
-1. Tạo một Google Apps Script gắn với Gmail của `tranthanhhung1641@gmail.com`.
+1. Tạo một Google Apps Script gắn với Gmail của người đứng thu tiền.
 2. Dán nội dung file script vào Apps Script.
 3. Thay `PASTE_PAYMENT_WEBHOOK_SECRET_HERE` bằng đúng secret đã set trong Worker qua `PAYMENT_WEBHOOK_SECRET`.
 4. Tạo trigger chạy hàm `scanTimoPaymentEmails` mỗi 1-5 phút.
@@ -278,6 +334,8 @@ https://caulong.hunn.io.vn/api/payment-webhooks/bank-transfer
 ```
 
 Script chỉ gửi email Timo có dòng tiền vào `vừa tăng ... VND`, có `Mô tả: ...`, và phần mô tả chứa mã `TT-<paymentId>` hoặc `CLD-<paymentId>` được nhúng trong QR.
+
+Cả hai đường dùng chung lõi xác nhận `worker/src/paymentConfirm.ts` nên không xác nhận trùng nhau.
 
 ---
 
@@ -319,13 +377,18 @@ Sau đó bot dùng file này khi chạy `main.py`.
 - [ ] Tạo Google Cloud Console project, bật Google OAuth API
 - [ ] Lấy `GOOGLE_CLIENT_ID` và `GOOGLE_CLIENT_SECRET`
 - [ ] Chạy `wrangler d1 create` và schema migration
-- [ ] Set 4 secrets: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `BETTER_AUTH_SECRET`, `PAYMENT_WEBHOOK_SECRET`
+- [ ] Chạy migration hũ Timo: `pnpm db:patch:timo-pot:prod`
+- [ ] Set 3 secrets: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `BETTER_AUTH_SECRET`
+      (+ `PAYMENT_WEBHOOK_SECRET` chỉ nếu còn chạy webhook Gmail legacy)
 - [ ] Cập nhật `FRONTEND_URL` trong `wrangler.toml`
+- [ ] Kiểm tra `[triggers] crons` còn trong `wrangler.toml` (nhắc kèo + đối soát hũ Timo)
 - [ ] Deploy worker và frontend
 - [ ] Thêm domain vào Google Console (origins + redirect URI)
 - [ ] Test đăng nhập Google
 - [ ] Kiểm tra user đầu tiên có `role = admin`
 - [ ] Invite các thành viên trong nhóm vào link Pages
+- [ ] Mỗi trưởng nhóm: cấu hình hũ Timo trong Cài đặt nhóm + khai số tài khoản **của hũ** cho
+      người thu tiền, rồi test 1 giao dịch thật ([`docs/timo-pot-autoconfirm.md`](docs/timo-pot-autoconfirm.md))
 
 
 

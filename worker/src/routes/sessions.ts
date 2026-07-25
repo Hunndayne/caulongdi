@@ -3,6 +3,7 @@ import { sendNewSessionNotification, sendPaymentDueNotification, sendWalkinQrNot
 import { enqueueNewSessionAnnounce } from "../botOutbox";
 import { Env } from "../types";
 import { nanoid } from "../utils";
+import { ensureTimoPotTables } from "../db/timoTables";
 
 const sessions = new Hono<{ Bindings: Env; Variables: { userId: string; userRole: string } }>();
 
@@ -38,6 +39,8 @@ type SessionBody = {
   force_payment_recipient?: number;
   walkin_debt_mode?: string;
   walkinDebtMode?: string;
+  payment_to_pot?: number | boolean;
+  paymentToPot?: number | boolean;
 };
 
 type SessionRow = {
@@ -1700,9 +1703,16 @@ sessions.put("/:id", async (c) => {
   const walkinDebtModeChanged = normalizedWalkinDebtMode !== undefined
     && normalizedWalkinDebtMode !== existingWalkinDebtMode;
 
+  // Thu tiền về tài khoản chung của nhóm (hũ) thay vì về người nhận chung.
+  await ensureTimoPotTables(c.env.DB);
+  const paymentToPotInput = body.paymentToPot ?? body.payment_to_pot;
+  const paymentToPot = paymentToPotInput === undefined
+    ? ((existing as any).payment_to_pot ?? 0)
+    : (paymentToPotInput ? 1 : 0);
+
   await c.env.DB.prepare(`
     UPDATE sessions
-    SET name = ?, date = ?, start_time = ?, end_time = ?, venue = ?, location = ?, note = ?, status = ?, payment_recipient = ?, allow_all_edit = ?, force_payment_recipient = ?, walkin_debt_mode = ?
+    SET name = ?, date = ?, start_time = ?, end_time = ?, venue = ?, location = ?, note = ?, status = ?, payment_recipient = ?, allow_all_edit = ?, force_payment_recipient = ?, walkin_debt_mode = ?, payment_to_pot = ?
     WHERE id = ?
   `)
     .bind(
@@ -1718,6 +1728,7 @@ sessions.put("/:id", async (c) => {
       body.allow_all_edit !== undefined ? body.allow_all_edit : ((existing as any).allow_all_edit ?? 0),
       body.force_payment_recipient !== undefined ? body.force_payment_recipient : ((existing as any).force_payment_recipient ?? 0),
       normalizedWalkinDebtMode ?? existingWalkinDebtMode,
+      paymentToPot,
       id
     )
     .run();

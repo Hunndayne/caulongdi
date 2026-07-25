@@ -17,6 +17,8 @@ import type {
   AiUsageStatus,
   ChatMessage,
   SendChatMessageResponse,
+  GroupPaymentSettings,
+  TimoPotCheckResult,
 } from "@/types";
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
@@ -147,6 +149,27 @@ export const api = {
     request<JoinLinkPreview>(`/api/groups/join/${code}`),
   joinViaLink: (code: string) =>
     request<{ success: boolean; groupId: string; alreadyMember: boolean }>(`/api/groups/join/${code}`, { method: "POST" }),
+
+  // Cài đặt thanh toán của nhóm: tài khoản nhận chung + hũ Timo (tuỳ chọn)
+  getPaymentSettings: (groupId: string) =>
+    request<GroupPaymentSettings>(`/api/groups/${groupId}/payment-settings`),
+  savePaymentSettings: (
+    groupId: string,
+    data: {
+      bankBin?: string;
+      bankAccountNumber?: string;
+      bankAccountName?: string;
+      /** Chuỗi rỗng = bỏ liên kết hũ. Bỏ hẳn field = giữ nguyên hũ đang có. */
+      shareUrl?: string;
+      passcode?: string;
+    }
+  ) =>
+    request<GroupPaymentSettings>(`/api/groups/${groupId}/payment-settings`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
+  checkPotNow: (groupId: string) =>
+    request<TimoPotCheckResult>(`/api/groups/${groupId}/payment-settings/check`, { method: "POST" }),
 
   // Messenger bot
   createBotLinkCode: (groupId: string) =>

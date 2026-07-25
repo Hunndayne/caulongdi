@@ -39,6 +39,13 @@ export interface PlayGroup {
   memberCount: number;
   createdAt: string;
   updatedAt: string;
+  // Tài khoản nhận tiền CHUNG của nhóm — KHÁC HOÀN TOÀN tài khoản cá nhân trong profile.
+  // Tài khoản cá nhân dùng cho chiều hoàn tiền lại người ứng chi phí.
+  groupBankBin?: string | null;
+  groupBankAccountNumber?: string | null;
+  groupBankAccountName?: string | null;
+  /** Nhóm đã cấu hình hũ Timo → thanh toán thu về nhóm có thể tự xác nhận. */
+  timoEnabled?: boolean;
 }
 
 export interface GroupMember {
@@ -95,6 +102,63 @@ export interface JoinLinkPreview {
   alreadyMember: boolean;
 }
 
+// Cài đặt thanh toán của nhóm: tài khoản nhận tiền chung + hũ Timo (tuỳ chọn) để tự xác nhận.
+export interface GroupPaymentSettings {
+  bankBin: string | null;
+  bankAccountNumber: string | null;
+  bankAccountName: string | null;
+  /** Đã có đủ ngân hàng + số tài khoản chung. */
+  configured: boolean;
+  timo: GroupTimoStatus;
+  /** Cảnh báo sau khi lưu, vd số tài khoản nhóm không phải số riêng của hũ. */
+  warning?: string | null;
+  /** Số giao dịch đọc thử được lúc lưu link hũ. */
+  txnCount?: number | null;
+}
+
+// Không có trường nào chứa mật khẩu hũ: backend chỉ trả cờ hasSecurityCode.
+export interface GroupTimoStatus {
+  configured: boolean;
+  verifyCode: string | null;
+  shareUrl: string | null;
+  hasSecurityCode: boolean;
+  potName: string | null;
+  /** Số tài khoản RIÊNG của hũ — số tài khoản chung của nhóm nên là số này. */
+  potAccount: string | null;
+  /** Tài khoản CHÍNH của chủ hũ, KHÔNG phải của hũ. Dùng số này thì tiền không vào hũ. */
+  potAltAccount: string | null;
+  potBankLabel: string | null;
+  ownerName: string | null;
+  /** null = chưa đủ dữ liệu để so; false = tiền sẽ không vào hũ nên không tự xác nhận được. */
+  accountMatchesPot: boolean | null;
+  lastCheckedAt: string | null;
+  lastOkAt: string | null;
+  lastError: string | null;
+  recentTxns: TimoPotTxn[];
+}
+
+export interface TimoPotTxn {
+  date: string | null;
+  amount: number | null;
+  /** txnTitle của Timo: "Từ NGUYEN VAN A" (tiền vào) / "Đến ..." (tiền ra). */
+  title: string | null;
+  /** txnDesc của Timo — nội dung chuyển khoản, chứa mã CLD. */
+  description: string | null;
+  paymentId: string | null;
+  outcome: string;
+  seenAt: string;
+}
+
+export interface TimoPotCheckResult {
+  throttled: boolean;
+  groupId?: string;
+  scanned?: number;
+  confirmed?: number;
+  pages?: number;
+  error?: string | null;
+  lastCheckedAt?: string | null;
+}
+
 export interface Member {
   id: string;
   group_id?: string;
@@ -127,6 +191,8 @@ export interface Session {
   status: "upcoming" | "completed";
   payment_recipient?: string | null;
   force_payment_recipient?: number;
+  /** 1 = thu tiền về tài khoản chung của nhóm (hũ); 0 = về người nhận chung. */
+  payment_to_pot?: number;
   managers?: string | null;
   walkin_debt_mode?: "self" | "ref";
   allow_all_edit?: number;

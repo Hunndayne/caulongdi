@@ -3,6 +3,19 @@ import { sendGroupInviteNotification } from "../email";
 import { Env } from "../types";
 import { nanoid } from "../utils";
 import { ensureBotTables } from "../db/botTables";
+import { ensureTimoPotTables } from "../db/timoTables";
+import { normalizeAccountNumber } from "../paymentConfirm";
+import {
+  TIMO_CODE,
+  fetchAliasInfo,
+  fetchTxnPage,
+  flattenTxnPage,
+  parseShareCode,
+  pollGroupPot,
+  sha512Hex,
+  shareUrlFromCode,
+  timoErrorMessage,
+} from "../timoPot";
 
 const BOT_LINK_CODE_TTL_MS = 10 * 60 * 1000;
 
@@ -22,6 +35,11 @@ type GroupRow = {
   member_count: number;
   created_at: string;
   updated_at: string;
+  // Chỉ những cột an toàn để mọi thành viên thấy. timo_security_hash KHÔNG map ra ngoài.
+  group_bank_bin?: string | null;
+  group_bank_account_number?: string | null;
+  group_bank_account_name?: string | null;
+  timo_verify_code?: string | null;
 };
 
 type GroupMemberRow = {
@@ -157,6 +175,13 @@ function toGroup(row: GroupRow) {
     memberCount: row.member_count,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    // Tài khoản nhận tiền CHUNG của nhóm — khác hoàn toàn tài khoản cá nhân trong profile.
+    // Trang buổi chơi dùng bộ này để dựng QR khi buổi đặt thu về nhóm.
+    groupBankBin: row.group_bank_bin ?? null,
+    groupBankAccountNumber: row.group_bank_account_number ?? null,
+    groupBankAccountName: row.group_bank_account_name ?? null,
+    // Có hũ Timo thì thanh toán thu về nhóm được tự xác nhận.
+    timoEnabled: Boolean(row.timo_verify_code?.trim()),
   };
 }
 
@@ -1061,6 +1086,318 @@ groups.post("/:id/bot-link-code", async (c) => {
     }
     throw error;
   }
+});
+
+// ─── Cài đặt thanh toán của nhóm ─────────────────────────────
+// Tài khoản nhận tiền CHUNG của nhóm (trưởng nhóm điền) + hũ Timo TUỲ CHỌN để tự xác nhận.
+// Tài khoản chung này KHÁC HOÀN TOÀN tài khoản cá nhân trong profile: cá nhân dùng cho
+// chiều hoàn tiền lại người ứng chi phí, tài khoản chung dùng cho chiều thu tiền của nhóm.
+
+const TIMO_CHECK_THROTTLE_MS = 15_000;
+
+type PaymentSettingsRow = {
+  id: string;
+  group_bank_bin?: string | null;
+  group_bank_account_number?: string | null;
+  group_bank_account_name?: string | null;
+  timo_verify_code?: string | null;
+  timo_security_hash?: string | null;
+  timo_pot_name?: string | null;
+  timo_pot_account?: string | null;
+  timo_pot_alt_account?: string | null;
+  timo_pot_bank_label?: string | null;
+  timo_owner_name?: string | null;
+  timo_last_checked_at?: string | null;
+  timo_last_ok_at?: string | null;
+  timo_last_error?: string | null;
+};
+
+async function loadPaymentSettings(c: any, groupId: string): Promise<PaymentSettingsRow | null> {
+  const row = await c.env.DB.prepare(`
+    SELECT id, group_bank_bin, group_bank_account_number, group_bank_account_name,
+           timo_verify_code, timo_security_hash, timo_pot_name, timo_pot_account,
+           timo_pot_alt_account, timo_pot_bank_label, timo_owner_name,
+           timo_last_checked_at, timo_last_ok_at, timo_last_error
+    FROM groups
+    WHERE id = ?
+  `)
+    .bind(groupId)
+    .first();
+
+  return (row as PaymentSettingsRow | null) ?? null;
+}
+
+// KHÔNG bao giờ trả timo_security_hash ra ngoài: với API Timo, hash chính là mật khẩu.
+function toPaymentSettings(row: PaymentSettingsRow | null, recentTxns: unknown[] = []) {
+  const verifyCode = row?.timo_verify_code?.trim() || null;
+  const account = normalizeAccountNumber(row?.group_bank_account_number);
+  const potAccount = normalizeAccountNumber(row?.timo_pot_account);
+
+  return {
+    bankBin: row?.group_bank_bin ?? null,
+    bankAccountNumber: row?.group_bank_account_number ?? null,
+    bankAccountName: row?.group_bank_account_name ?? null,
+    configured: Boolean(row?.group_bank_bin && row?.group_bank_account_number),
+    timo: {
+      configured: Boolean(verifyCode),
+      verifyCode,
+      shareUrl: verifyCode ? shareUrlFromCode(verifyCode) : null,
+      hasSecurityCode: Boolean(row?.timo_security_hash),
+      potName: row?.timo_pot_name ?? null,
+      potAccount: row?.timo_pot_account ?? null,
+      potAltAccount: row?.timo_pot_alt_account ?? null,
+      potBankLabel: row?.timo_pot_bank_label ?? null,
+      ownerName: row?.timo_owner_name ?? null,
+      // Cảnh báo cái bẫy chí tử: điền tài khoản chính thay vì tài khoản riêng của hũ thì
+      // tiền không vào hũ, lịch sử hũ không thấy gì và không bao giờ tự xác nhận được.
+      accountMatchesPot: verifyCode && account && potAccount ? account === potAccount : null,
+      lastCheckedAt: row?.timo_last_checked_at ?? null,
+      lastOkAt: row?.timo_last_ok_at ?? null,
+      lastError: row?.timo_last_error ?? null,
+      recentTxns,
+    },
+  };
+}
+
+type TimoSeenTxnRow = {
+  txn_date: string | null;
+  amount: number | null;
+  txn_title: string | null;
+  txn_desc: string | null;
+  payment_id: string | null;
+  outcome: string;
+  seen_at: string;
+};
+
+async function recentTimoTxns(c: any, groupId: string) {
+  const rows = await c.env.DB.prepare(`
+    SELECT txn_date, amount, txn_title, txn_desc, payment_id, outcome, seen_at
+    FROM timo_seen_txn
+    WHERE group_id = ?
+    ORDER BY seen_at DESC
+    LIMIT 10
+  `)
+    .bind(groupId)
+    .all();
+
+  return ((rows.results ?? []) as TimoSeenTxnRow[]).map((row) => ({
+    date: row.txn_date,
+    amount: row.amount,
+    title: row.txn_title,
+    description: row.txn_desc,
+    paymentId: row.payment_id,
+    outcome: row.outcome,
+    seenAt: row.seen_at,
+  }));
+}
+
+groups.get("/:id/payment-settings", async (c) => {
+  const { id } = c.req.param();
+
+  const membership = await getMembership(c, id);
+  if (membership !== "admin") return c.json({ error: "Forbidden" }, 403);
+
+  await ensureTimoPotTables(c.env.DB);
+
+  const row = await loadPaymentSettings(c, id);
+  if (!row) return c.json({ error: "Group not found" }, 404);
+
+  return c.json(toPaymentSettings(row, await recentTimoTxns(c, id)));
+});
+
+groups.put("/:id/payment-settings", async (c) => {
+  const { id } = c.req.param();
+  const body = await c.req
+    .json<{
+      bankBin?: string;
+      bankAccountNumber?: string;
+      bankAccountName?: string;
+      shareUrl?: string;
+      passcode?: string;
+    }>()
+    .catch(() => null);
+  if (!body) return c.json({ error: "Invalid JSON body" }, 400);
+
+  const membership = await getMembership(c, id);
+  if (membership !== "admin") return c.json({ error: "Forbidden" }, 403);
+
+  await ensureTimoPotTables(c.env.DB);
+  const existing = await loadPaymentSettings(c, id);
+  if (!existing) return c.json({ error: "Group not found" }, 404);
+
+  // ── Tài khoản chung của nhóm ──
+  const bankBin = body.bankBin?.trim() ?? "";
+  const bankAccountNumber = body.bankAccountNumber?.trim() ?? "";
+  const bankAccountName = body.bankAccountName?.trim() ?? "";
+
+  if (bankBin && !/^\d{6}$/.test(bankBin)) {
+    return c.json({ error: "Mã ngân hàng (BIN) phải là 6 chữ số" }, 400);
+  }
+  // Số tài khoản hũ Timo có dạng chữ+số (vd TIMO90C0908A658) nên không ép chỉ chữ số.
+  if (bankAccountNumber && !/^[A-Za-z0-9]{4,32}$/.test(bankAccountNumber)) {
+    return c.json({ error: "Số tài khoản chỉ gồm chữ và số, 4-32 ký tự" }, 400);
+  }
+  if (bankAccountNumber && !bankBin) {
+    return c.json({ error: "Chọn ngân hàng cho số tài khoản của nhóm" }, 400);
+  }
+
+  // ── Hũ Timo (không bắt buộc) ──
+  const rawShare = body.shareUrl?.trim() ?? "";
+  const passcode = body.passcode?.trim() ?? "";
+  const clearTimo = body.shareUrl !== undefined && rawShare === "";
+
+  let verifyCode = existing.timo_verify_code?.trim() || null;
+  let securityHash = existing.timo_security_hash ?? null;
+  let potInfo: {
+    name: string | null;
+    account: string | null;
+    altAccount: string | null;
+    bankLabel: string | null;
+    owner: string | null;
+  } | null = null;
+  let warning: string | null = null;
+  let txnCount: number | null = null;
+
+  if (clearTimo) {
+    verifyCode = null;
+    securityHash = null;
+  } else if (rawShare) {
+    const parsed = parseShareCode(rawShare);
+    if (!/^[A-Za-z0-9_-]{4,64}$/.test(parsed)) {
+      return c.json({ error: "Link chia sẻ hũ không đúng định dạng" }, 400);
+    }
+
+    // Mật khẩu mới thì hash lại; giữ mật khẩu cũ nếu link không đổi và không nhập gì.
+    if (passcode) securityHash = await sha512Hex(passcode);
+    else if (parsed !== verifyCode) securityHash = null;
+    verifyCode = parsed;
+
+    // Xác minh thật với Timo ngay lúc lưu — sai thì báo luôn, đừng để cron lỗi âm thầm.
+    let aliasInfo;
+    let txnProbe;
+    try {
+      aliasInfo = await fetchAliasInfo(verifyCode, securityHash);
+      if (aliasInfo.code === TIMO_CODE.SUCCESS) {
+        txnProbe = await fetchTxnPage({
+          hashVerifyCode: await sha512Hex(verifyCode),
+          securityHash,
+        });
+      }
+    } catch (error) {
+      console.error("[payment-settings] gọi Timo lỗi", error);
+      return c.json({ error: "Không gọi được Timo, thử lại sau" }, 502);
+    }
+
+    if (aliasInfo.code !== TIMO_CODE.SUCCESS) {
+      return c.json({ error: timoErrorMessage(aliasInfo.code ?? 0) }, 400);
+    }
+    if (txnProbe && txnProbe.code !== TIMO_CODE.SUCCESS) {
+      return c.json({ error: timoErrorMessage(txnProbe.code ?? 0) }, 400);
+    }
+
+    const info = aliasInfo.data ?? {};
+    potInfo = {
+      name: info.sourceMoney ?? null,
+      account: info.accountNumber ?? null,
+      altAccount: info.altAccountNumber ?? null,
+      bankLabel: info.bankNameDomestic ?? info.bankName ?? info.bankShortName ?? null,
+      owner: info.fullName ?? null,
+    };
+    txnCount = flattenTxnPage(txnProbe?.data).length;
+
+    const effectiveAccount = normalizeAccountNumber(
+      bankAccountNumber || existing.group_bank_account_number
+    );
+    const potAccount = normalizeAccountNumber(potInfo.account);
+    if (effectiveAccount && potAccount && effectiveAccount !== potAccount) {
+      warning =
+        `Số tài khoản của nhóm (${effectiveAccount}) không phải số tài khoản riêng của hũ ` +
+        `(${potInfo.account}). Tiền sẽ không vào hũ nên không tự xác nhận được — ` +
+        `sửa lại số tài khoản của nhóm thành số của hũ.`;
+    }
+  }
+
+  const now = new Date().toISOString();
+  await c.env.DB.prepare(`
+    UPDATE groups
+    SET group_bank_bin = ?,
+        group_bank_account_number = ?,
+        group_bank_account_name = ?,
+        updated_at = ?
+    WHERE id = ?
+  `)
+    .bind(bankBin || null, bankAccountNumber || null, bankAccountName || null, now, id)
+    .run();
+
+  if (clearTimo) {
+    await c.env.DB.batch([
+      c.env.DB.prepare(`
+        UPDATE groups
+        SET timo_verify_code = NULL, timo_security_hash = NULL, timo_pot_name = NULL,
+            timo_pot_account = NULL, timo_pot_alt_account = NULL, timo_pot_bank_label = NULL,
+            timo_owner_name = NULL, timo_last_checked_at = NULL, timo_last_ok_at = NULL,
+            timo_last_error = NULL
+        WHERE id = ?
+      `).bind(id),
+      c.env.DB.prepare("DELETE FROM timo_seen_txn WHERE group_id = ?").bind(id),
+    ]);
+  } else if (potInfo) {
+    await c.env.DB.prepare(`
+      UPDATE groups
+      SET timo_verify_code = ?, timo_security_hash = ?, timo_pot_name = ?, timo_pot_account = ?,
+          timo_pot_alt_account = ?, timo_pot_bank_label = ?, timo_owner_name = ?,
+          timo_last_checked_at = ?, timo_last_ok_at = ?, timo_last_error = NULL
+      WHERE id = ?
+    `)
+      .bind(
+        verifyCode,
+        securityHash,
+        potInfo.name,
+        potInfo.account,
+        potInfo.altAccount,
+        potInfo.bankLabel,
+        potInfo.owner,
+        now,
+        now,
+        id
+      )
+      .run();
+  }
+
+  const saved = await loadPaymentSettings(c, id);
+  return c.json({
+    ...toPaymentSettings(saved, await recentTimoTxns(c, id)),
+    warning,
+    txnCount,
+  });
+});
+
+// "Kiểm tra ngay" — người trả bấm sau khi chuyển khoản, khỏi chờ hết nhịp cron 10 phút.
+// Mở cho mọi thành viên nhóm, chặn spam bằng mốc thời gian lần quét trước.
+groups.post("/:id/payment-settings/check", async (c) => {
+  const { id } = c.req.param();
+
+  const membership = await getMembership(c, id);
+  if (!membership) return c.json({ error: "Forbidden" }, 403);
+
+  await ensureTimoPotTables(c.env.DB);
+
+  const row = await loadPaymentSettings(c, id);
+  if (!row) return c.json({ error: "Group not found" }, 404);
+  if (!row.timo_verify_code?.trim()) {
+    return c.json({ error: "Nhóm chưa cấu hình link hũ Timo" }, 400);
+  }
+
+  const lastChecked = row.timo_last_checked_at ? Date.parse(row.timo_last_checked_at) : 0;
+  if (lastChecked && Date.now() - lastChecked < TIMO_CHECK_THROTTLE_MS) {
+    return c.json({ throttled: true, lastCheckedAt: row.timo_last_checked_at });
+  }
+
+  const summary = await pollGroupPot(c.env, row, {
+    defer: (task) => c.executionCtx?.waitUntil?.(task),
+  });
+
+  return c.json({ throttled: false, ...summary });
 });
 
 export default groups;
