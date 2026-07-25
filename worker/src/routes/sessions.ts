@@ -2366,6 +2366,23 @@ sessions.delete("/:id/costs/:costId", async (c) => {
 // khi ghi vào DB thì đổi thành NULL ở cột recipient_member_id.
 const POT_RECIPIENT = "__pot__";
 
+/**
+ * Id payment TẤT ĐỊNH theo (buổi, người nợ, người nhận). Rất nhiều chỗ xoá payment chưa trả
+ * rồi tính lại ở request sau; id random sẽ đổi mỗi lần, làm mã CLD trên QR đã phát cho người
+ * trả trở thành vô hiệu và đối soát ra "not_found". Hex 20 ký tự để nội dung chuyển khoản
+ * "CLD-<id>" vẫn ngắn, và vẫn khớp regex [A-Za-z0-9]{8,40}.
+ */
+async function stablePaymentId(sessionId: string, memberId: string, recipientKey: string) {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(`${sessionId}|${memberId}|${recipientKey}`)
+  );
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("")
+    .slice(0, 20);
+}
+
 // Lõi chia tiền — dùng chung cho route /recalculate và bot Messenger (add_cost).
 // Trả về message lỗi (tiếng Anh/Việt như route cũ) hoặc null nếu thành công.
 export async function recalcSessionPayments(env: Env, sessionId: string): Promise<string | null> {
@@ -2532,6 +2549,16 @@ export async function recalcSessionPayments(env: Env, sessionId: string): Promis
     confirmedMap.set(`${row.member_id}:${row.recipient_member_id ?? POT_RECIPIENT}`, row.confirmed_total);
   }
 
+  // GIỮ NGUYÊN id của payment chưa trả khi tính lại. Mã CLD trên QR đã phát cho người trả
+  // gắn với id này; sinh id mới thì họ chuyển tiền xong sẽ bị đối soát thành "not_found".
+  const existingUnpaid = await env.DB.prepare(
+    "SELECT id, member_id, recipient_member_id FROM payments WHERE session_id = ? AND paid = 0"
+  ).bind(sessionId).all<{ id: string; member_id: string; recipient_member_id: string | null }>();
+  const existingIdMap = new Map<string, string>();
+  for (const row of existingUnpaid.results) {
+    existingIdMap.set(`${row.member_id}:${row.recipient_member_id ?? POT_RECIPIENT}`, row.id);
+  }
+
   await env.DB.prepare("DELETE FROM payments WHERE session_id = ? AND paid = 0").bind(sessionId).run();
 
   const stmts: D1PreparedStatement[] = [];
@@ -2544,7 +2571,8 @@ export async function recalcSessionPayments(env: Env, sessionId: string): Promis
         INSERT INTO payments (id, session_id, member_id, recipient_member_id, amount_owed, paid)
         VALUES (?, ?, ?, ?, ?, 0)
       `).bind(
-        nanoid(),
+        // Ưu tiên id đang tồn tại (mã CLD đã phát trước đây vẫn dùng được), rồi tới id tất định.
+        existingIdMap.get(key) ?? (await stablePaymentId(sessionId, memberId, recipientMemberId)),
         sessionId,
         memberId,
         recipientMemberId === POT_RECIPIENT ? null : recipientMemberId,

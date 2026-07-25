@@ -167,8 +167,17 @@ export async function confirmPaymentTransfer(
     return { status: "wrong_group", sessionGroupId: row.group_id ?? null };
   }
 
+  // Thu về hũ: tiền vào tài khoản chung của nhóm nên payment CỐ TÌNH không có người nhận
+  // cá nhân — phải xét trước, đừng để guard "không có người nhận" bên dưới loại oan.
+  const potSession = row.payment_to_pot === 1;
+  if (opts.requirePotSession && !potSession) {
+    return { status: "not_pot_session" };
+  }
+
   const qrRecipient = getQrRecipient(row);
-  if (!qrRecipient.email && !qrRecipient.accountNumber) return { status: "no_recipient" };
+  if (!potSession && !qrRecipient.email && !qrRecipient.accountNumber) {
+    return { status: "no_recipient" };
+  }
 
   if (opts.requireRecipientEmail && qrRecipient.email !== normalizeEmail(opts.requireRecipientEmail)) {
     return {
@@ -176,10 +185,6 @@ export async function confirmPaymentTransfer(
       recipientEmail: qrRecipient.email,
       recipientAccount: qrRecipient.accountNumber,
     };
-  }
-
-  if (opts.requirePotSession && row.payment_to_pot !== 1) {
-    return { status: "not_pot_session" };
   }
 
   const expectedAmount = Math.ceil(Number(row.amount_owed));
