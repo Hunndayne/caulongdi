@@ -1374,7 +1374,7 @@ async function canAccessSession(c: any, session: SessionRow) {
   return isGroupMember(c, session.group_id);
 }
 
-async function canManageSession(c: any, session: SessionRow) {
+export async function canManageSession(c: any, session: SessionRow) {
   if (c.get("userRole") === "admin") return true;
 
   const userId = c.get("userId");
@@ -1765,6 +1765,10 @@ sessions.delete("/:id", async (c) => {
   // Vãng lai ephemeral của buổi: dọn trước khi xoá buổi (FK members trỏ về groups, không cascade theo session)
   // Bọc try-catch phòng khi migration patch-walkin chưa chạy trên môi trường đó
   try {
+    // Xoá tường minh session_members của vãng lai, không phụ thuộc FK cascade
+    await c.env.DB.prepare(
+      "DELETE FROM session_members WHERE session_id = ? AND member_id IN (SELECT id FROM members WHERE session_id = ? AND is_walkin = 1)"
+    ).bind(id, id).run();
     await c.env.DB.prepare("DELETE FROM members WHERE session_id = ? AND is_walkin = 1").bind(id).run();
   } catch {
     // ignore — columns may not exist yet on older DB instances
@@ -2036,10 +2040,14 @@ sessions.delete("/:id/members/:memberId", async (c) => {
     .run();
   await c.env.DB.prepare("DELETE FROM payments WHERE session_id = ? AND paid = 0").bind(id).run();
 
-  // Vãng lai là ephemeral: gỡ điểm danh = xoá luôn (FK cascade dọn payments/session_members còn lại)
+  // Vãng lai là ephemeral: gỡ điểm danh = xoá luôn
   await c.env.DB.prepare("DELETE FROM members WHERE id = ? AND is_walkin = 1 AND session_id = ?")
     .bind(memberId, id)
     .run();
+
+  // Đã xoá payments/attendance ở trên, tính lại cho khớp số người còn tham gia
+  const recalcError = await recalcSessionPayments(c.env, id);
+  if (recalcError) console.warn(`recalcSessionPayments after unattend (session ${id}):`, recalcError);
 
   return c.json({ success: true });
 });

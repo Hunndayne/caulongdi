@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { Env } from "../types";
 import { nanoid } from "../utils";
+import { canManageSession, recalcSessionPayments } from "./sessions";
 
 const members = new Hono<{ Bindings: Env; Variables: { userId: string; userRole: string } }>();
 
@@ -25,6 +26,15 @@ async function memberHasConfirmedPayments(c: any, memberId: string) {
     .first() as { id: string } | null;
 
   return Boolean(row);
+}
+
+// Vãng lai không có quyền admin toàn hệ thống riêng — quyền sửa/xoá đi theo quyền quản lý buổi sinh ra nó.
+async function canManageWalkinSession(c: any, sessionId: unknown) {
+  if (c.get("userRole") === "admin") return true;
+  if (!sessionId || typeof sessionId !== "string") return false;
+  const session = await c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(sessionId).first();
+  if (!session) return false;
+  return canManageSession(c, session);
 }
 
 members.get("/", async (c) => {
@@ -156,19 +166,30 @@ members.post("/", async (c) => {
 });
 
 members.put("/:id", async (c) => {
-  if (c.get("userRole") !== "admin") return c.json({ error: "Forbidden" }, 403);
   const { id } = c.req.param();
   const body = await c.req.json<{ name?: string; phone?: string; avatarColor?: string; isActive?: boolean }>();
-  const existing = await c.env.DB.prepare("SELECT * FROM members WHERE id = ?").bind(id).first();
+  const existing = await c.env.DB.prepare("SELECT * FROM members WHERE id = ?").bind(id).first<any>();
   if (!existing) return c.json({ error: "Not found" }, 404);
+
+  if (existing.is_walkin) {
+    if (!(await canManageWalkinSession(c, existing.session_id))) return c.json({ error: "Forbidden" }, 403);
+  } else if (c.get("userRole") !== "admin") {
+    return c.json({ error: "Forbidden" }, 403);
+  }
+
+  // Vãng lai là dữ liệu ephemeral của buổi: không cho đổi isActive qua route này
+  const nextIsActive = existing.is_walkin
+    ? existing.is_active
+    : (body.isActive !== undefined ? (body.isActive ? 1 : 0) : existing.is_active);
+
   await c.env.DB.prepare(
     "UPDATE members SET name = ?, phone = ?, avatar_color = ?, is_active = ? WHERE id = ?"
   )
     .bind(
-      body.name ?? (existing as any).name,
-      body.phone !== undefined ? body.phone : (existing as any).phone,
-      body.avatarColor ?? (existing as any).avatar_color,
-      body.isActive !== undefined ? (body.isActive ? 1 : 0) : (existing as any).is_active,
+      body.name ?? existing.name,
+      body.phone !== undefined ? body.phone : existing.phone,
+      body.avatarColor ?? existing.avatar_color,
+      nextIsActive,
       id
     )
     .run();
@@ -177,14 +198,36 @@ members.put("/:id", async (c) => {
 });
 
 members.delete("/:id", async (c) => {
-  if (c.get("userRole") !== "admin") return c.json({ error: "Forbidden" }, 403);
   const { id } = c.req.param();
+  const existing = await c.env.DB.prepare("SELECT * FROM members WHERE id = ?").bind(id).first<any>();
+  if (!existing) return c.json({ error: "Not found" }, 404);
+
+  if (existing.is_walkin) {
+    if (!(await canManageWalkinSession(c, existing.session_id))) return c.json({ error: "Forbidden" }, 403);
+  } else if (c.get("userRole") !== "admin") {
+    return c.json({ error: "Forbidden" }, 403);
+  }
+
   if (await memberHasConfirmedPayments(c, id)) {
     return c.json({
       error: "This member has confirmed payments and cannot be deleted",
     }, 409);
   }
-  await c.env.DB.prepare("DELETE FROM members WHERE id = ?").bind(id).run();
+
+  // Xoá tường minh theo thứ tự, không phụ thuộc FK cascade (D1 không đảm bảo luôn bật foreign_keys)
+  await c.env.DB.batch([
+    c.env.DB.prepare(
+      "DELETE FROM payments WHERE (member_id = ? OR recipient_member_id = ?) AND paid = 0 AND payer_marked_paid = 0"
+    ).bind(id, id),
+    c.env.DB.prepare("DELETE FROM session_members WHERE member_id = ?").bind(id),
+    c.env.DB.prepare("DELETE FROM members WHERE id = ?").bind(id),
+  ]);
+
+  if (existing.session_id) {
+    const recalcError = await recalcSessionPayments(c.env, existing.session_id);
+    if (recalcError) console.warn(`recalcSessionPayments after member delete (session ${existing.session_id}):`, recalcError);
+  }
+
   return c.json({ success: true });
 });
 
