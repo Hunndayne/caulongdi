@@ -6,6 +6,7 @@ import { Env } from "./types";
 import membersRouter from "./routes/members";
 import sessionsRouter from "./routes/sessions";
 import paymentsRouter from "./routes/payments";
+import potPaybacksRouter from "./routes/potPaybacks";
 import statsRouter from "./routes/stats";
 import chatRouter from "./routes/chat";
 import profilesRouter from "./routes/profiles";
@@ -232,6 +233,7 @@ app.use("/api/*", async (c, next) => {
 app.route("/api/members", membersRouter);
 app.route("/api/sessions", sessionsRouter);
 app.route("/api/payments", paymentsRouter);
+app.route("/api/pot-paybacks", potPaybacksRouter);
 app.route("/api/stats", statsRouter);
 app.route("/api/chat", chatRouter);
 app.route("/api/profiles", profilesRouter);

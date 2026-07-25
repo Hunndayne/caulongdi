@@ -41,7 +41,7 @@ import { formatCurrency, formatDate, formatSessionTimeRange, getSessionTitle } f
 import { useGroupsStore } from "@/stores/groupsStore";
 import { useMembersStore } from "@/stores/membersStore";
 import { useSessionsStore } from "@/stores/sessionsStore";
-import type { AiUsageStatus, Cost, Member, Payment, ReceiptParseResult, ReceiptParsedCost } from "@/types";
+import type { AiUsageStatus, Cost, Member, Payment, PotPayback, ReceiptParseResult, ReceiptParsedCost } from "@/types";
 
 const TABS = ["Điểm danh", "Chi phí", "Thanh toán"] as const;
 type Tab = (typeof TABS)[number];
@@ -421,8 +421,13 @@ export default function SessionDetailPage() {
   const [walkinName, setWalkinName] = useState("");
   const [walkinRefId, setWalkinRefId] = useState("");
   const [addingWalkin, setAddingWalkin] = useState(false);
+  const [editingWalkinId, setEditingWalkinId] = useState<string | null>(null);
+  const [editingWalkinName, setEditingWalkinName] = useState("");
+  const [busyWalkinId, setBusyWalkinId] = useState<string | null>(null);
   const [pendingAttendanceConfirmation, setPendingAttendanceConfirmation] = useState<PendingAttendanceConfirmation | null>(null);
   const [confirmingAttendanceChange, setConfirmingAttendanceChange] = useState(false);
+  const [potPaybacks, setPotPaybacks] = useState<PotPayback[]>([]);
+  const [potPaybackBusyId, setPotPaybackBusyId] = useState<string | null>(null);
   const [showEditDialog, setShowEditDialog] = useState(false);
   const [editForm, setEditForm] = useState<SessionEditFormState>(defaultSessionEditForm);
   const [savingEdit, setSavingEdit] = useState(false);
@@ -490,6 +495,28 @@ export default function SessionDetailPage() {
       cancelled = true;
     };
   }, [currentSession?.id, canManageSession, tab]);
+
+  // Trạng thái hũ đã hoàn tiền cho người ứng. Server tự lọc: quản lý buổi thấy hết,
+  // người ứng chỉ thấy dòng của mình.
+  useEffect(() => {
+    if (!currentSession?.id || !collectToPot) {
+      setPotPaybacks([]);
+      return;
+    }
+
+    let cancelled = false;
+    api.getPotPaybacks(currentSession.id)
+      .then((items) => {
+        if (!cancelled) setPotPaybacks(items);
+      })
+      .catch(() => {
+        if (!cancelled) setPotPaybacks([]);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentSession?.id, collectToPot]);
 
   const s = currentSession;
 
@@ -570,6 +597,25 @@ export default function SessionDetailPage() {
     .map(([payerId, amount]) => ({ payer: memberById.get(payerId) ?? null, amount }))
     .filter((row): row is { payer: Member; amount: number } => Boolean(row.payer))
     .sort((a, b) => b.amount - a.amount);
+
+  const potPaybackByMember = new Map(potPaybacks.map((item) => [item.memberId, item]));
+  // Người ứng tiền không quản lý buổi: server chỉ trả về dòng của họ, lấy dòng đầu là đủ.
+  const myPotPayback = myMember ? potPaybackByMember.get(myMember.id) ?? null : null;
+
+  const runPotPaybackAction = async (
+    memberId: string,
+    action: (sessionId: string, memberId: string) => Promise<{ success: boolean; items: PotPayback[] }>
+  ) => {
+    setPotPaybackBusyId(memberId);
+    try {
+      const result = await action(s.id, memberId);
+      setPotPaybacks(result.items);
+    } catch (error: any) {
+      alert(error.message);
+    } finally {
+      setPotPaybackBusyId(null);
+    }
+  };
 
   const handleSetRecipient = async (value: string) => {
     setRecipientId(value);
@@ -693,6 +739,42 @@ export default function SessionDetailPage() {
       await refresh(s.id);
     } catch (error: any) {
       alert(error.message);
+    }
+  };
+
+  const handleOpenRenameWalkin = (member: Member) => {
+    setEditingWalkinId(member.id);
+    setEditingWalkinName(member.name);
+  };
+
+  const handleRenameWalkin = async () => {
+    if (!editingWalkinId) return;
+    const name = editingWalkinName.trim();
+    if (!name) return;
+
+    setBusyWalkinId(editingWalkinId);
+    try {
+      await api.updateMember(editingWalkinId, { name });
+      setEditingWalkinId(null);
+      await refresh(s.id);
+    } catch (error: any) {
+      alert(error.message);
+    } finally {
+      setBusyWalkinId(null);
+    }
+  };
+
+  const handleDeleteWalkin = async (member: Member) => {
+    if (!window.confirm(`Xoá vãng lai "${member.name}" khỏi buổi này? Hành động này xoá hẳn khách khỏi buổi, khác với bỏ điểm danh.`)) return;
+
+    setBusyWalkinId(member.id);
+    try {
+      await api.deleteMember(member.id);
+      await refresh(s.id);
+    } catch (error: any) {
+      alert(error.message);
+    } finally {
+      setBusyWalkinId(null);
     }
   };
 
@@ -1939,6 +2021,29 @@ export default function SessionDetailPage() {
                       </span>
                     )}
                   </span>
+                  {isWalkin && canManageSession && (
+                    // stopPropagation: tránh bấm sửa/xoá làm toggle luôn điểm danh của dòng cha
+                    <div className="flex items-center gap-1" onClick={(event) => event.stopPropagation()}>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        disabled={busyWalkinId === member.id}
+                        onClick={() => handleOpenRenameWalkin(member)}
+                        className="text-gray-400 hover:text-gray-700"
+                      >
+                        <Pencil size={14} />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        disabled={busyWalkinId === member.id}
+                        onClick={() => handleDeleteWalkin(member)}
+                        className="text-red-400 hover:text-red-600"
+                      >
+                        <Trash2 size={14} />
+                      </Button>
+                    </div>
+                  )}
                   <div className={`flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full border-2 ${checked ? "border-green-600 bg-green-600" : "border-gray-300"}`}>
                     {checked && <Check size={12} className="text-white" />}
                   </div>
@@ -2439,7 +2544,15 @@ export default function SessionDetailPage() {
               </div>
               <div className="space-y-2">
                 {potPaybackRows.map(({ payer, amount }) => {
-                  const qrData = buildPaybackQrData(payer, amount);
+                  const status = potPaybackByMember.get(payer.id) ?? null;
+                  const transferred = Boolean(status?.transferredAt);
+                  const confirmed = Boolean(status?.confirmedAt);
+                  const busy = potPaybackBusyId === payer.id;
+                  // Chi phí đổi sau khi đã chuyển → số đã chuyển không còn khớp, phải báo để bù/đòi lại.
+                  const markedAmount = status?.markedAmount ?? null;
+                  const amountDrift = transferred && markedAmount !== null && Math.round(markedAmount) !== Math.round(amount);
+                  // Đã chuyển rồi thì không cần QR nữa, giữ thẻ gọn.
+                  const qrData = transferred ? null : buildPaybackQrData(payer, amount);
                   return (
                     <div key={payer.id} className="rounded-xl border border-gray-100 bg-white p-3">
                       <div className="flex items-center gap-3">
@@ -2448,6 +2561,54 @@ export default function SessionDetailPage() {
                           <div className="font-medium text-gray-900">{payer.name}</div>
                           <div className="mt-0.5 text-sm font-semibold text-gray-800">{formatCurrency(amount)}</div>
                         </div>
+                        {confirmed ? (
+                          <Badge variant="green">Đã nhận</Badge>
+                        ) : transferred ? (
+                          <Badge variant="yellow">Chờ xác nhận</Badge>
+                        ) : null}
+                      </div>
+
+                      {amountDrift && (
+                        <div className="mt-2 rounded-lg bg-amber-50 px-2 py-1.5 text-xs text-amber-700">
+                          Đã chuyển {formatCurrency(markedAmount!)} nhưng chi phí giờ là {formatCurrency(amount)} — cần bù hoặc thu lại phần chênh.
+                        </div>
+                      )}
+
+                      <div className="mt-3 flex flex-wrap justify-end gap-2">
+                        {!transferred && (
+                          <Button
+                            size="sm"
+                            disabled={busy}
+                            onClick={() => runPotPaybackAction(payer.id, api.markPotPaybackTransferred)}
+                          >
+                            <Check size={14} className="mr-1" />
+                            Đã chuyển
+                          </Button>
+                        )}
+                        {transferred && !confirmed && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            disabled={busy}
+                            onClick={() => runPotPaybackAction(payer.id, api.confirmPotPaybackReceived)}
+                          >
+                            Xác nhận đã nhận
+                          </Button>
+                        )}
+                        {transferred && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            disabled={busy}
+                            className="text-gray-500 hover:text-gray-700"
+                            onClick={() => {
+                              if (confirmed && !window.confirm(`Bỏ đánh dấu hoàn tiền cho ${payer.name}? Dòng này sẽ quay về trạng thái chưa hoàn.`)) return;
+                              runPotPaybackAction(payer.id, api.undoPotPayback);
+                            }}
+                          >
+                            Bỏ đánh dấu
+                          </Button>
+                        )}
                       </div>
 
                       {qrData ? (
@@ -2469,12 +2630,46 @@ export default function SessionDetailPage() {
                             </Button>
                           </div>
                         </div>
-                      ) : (
+                      ) : !transferred ? (
                         <div className="mt-2 text-xs text-amber-600">Chưa cập nhật số tài khoản.</div>
-                      )}
+                      ) : null}
                     </div>
                   );
                 })}
+              </div>
+            </div>
+          )}
+
+          {collectToPot && !canManageSession && myPotPayback && (
+            <div className="space-y-3 rounded-xl border border-blue-100 bg-blue-50/40 p-3">
+              <div>
+                <div className="text-sm font-semibold text-gray-900">Hũ hoàn lại tiền bạn đã ứng</div>
+                <p className="mt-0.5 text-xs text-gray-500">
+                  Bạn đã ứng {formatCurrency(myPotPayback.amount)} cho buổi này. Nhận được tiền từ quỹ thì bấm xác nhận để chốt.
+                </p>
+              </div>
+              <div className="rounded-xl border border-gray-100 bg-white p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-sm font-semibold text-gray-800">{formatCurrency(myPotPayback.amount)}</span>
+                  {myPotPayback.confirmedAt ? (
+                    <Badge variant="green">Đã nhận</Badge>
+                  ) : myPotPayback.transferredAt ? (
+                    <Badge variant="yellow">Quỹ báo đã chuyển</Badge>
+                  ) : (
+                    <Badge variant="gray">Chờ quỹ chuyển</Badge>
+                  )}
+                </div>
+                {myPotPayback.transferredAt && !myPotPayback.confirmedAt && (
+                  <Button
+                    size="sm"
+                    className="mt-3 w-full"
+                    disabled={potPaybackBusyId === myPotPayback.memberId}
+                    onClick={() => runPotPaybackAction(myPotPayback.memberId, api.confirmPotPaybackReceived)}
+                  >
+                    <Check size={14} className="mr-1" />
+                    Đã nhận được tiền
+                  </Button>
+                )}
               </div>
             </div>
           )}
@@ -2631,6 +2826,32 @@ export default function SessionDetailPage() {
             </Button>
             <Button onClick={handleAddWalkin} disabled={addingWalkin || !walkinRefId}>
               {addingWalkin ? "Đang thêm..." : "Thêm vãng lai"}
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(editingWalkinId)}
+        onClose={() => {
+          if (!busyWalkinId) setEditingWalkinId(null);
+        }}
+        title="Sửa tên vãng lai"
+        className="sm:max-w-md"
+      >
+        <div className="space-y-4">
+          <Input
+            value={editingWalkinName}
+            onChange={(event) => setEditingWalkinName(event.target.value)}
+            placeholder="Tên vãng lai"
+            disabled={busyWalkinId === editingWalkinId}
+          />
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setEditingWalkinId(null)} disabled={busyWalkinId === editingWalkinId}>
+              Hủy
+            </Button>
+            <Button onClick={handleRenameWalkin} disabled={busyWalkinId === editingWalkinId || !editingWalkinName.trim()}>
+              {busyWalkinId === editingWalkinId ? "Đang lưu..." : "Lưu"}
             </Button>
           </div>
         </div>

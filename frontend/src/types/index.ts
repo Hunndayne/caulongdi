@@ -159,6 +159,20 @@ export interface TimoPotCheckResult {
   lastCheckedAt?: string | null;
 }
 
+// Hũ hoàn lại tiền cho người ứng chi phí. Hai bước: người rút quỹ đánh dấu đã chuyển,
+// người ứng xác nhận đã nhận.
+export interface PotPayback {
+  memberId: string;
+  name: string;
+  /** Số tiền cần hoàn tính theo chi phí hiện tại. */
+  amount: number;
+  transferredAt: string | null;
+  transferredBy: string | null;
+  confirmedAt: string | null;
+  /** Số tiền lúc đánh dấu đã chuyển; lệch với amount nghĩa là chi phí đổi sau đó. */
+  markedAmount: number | null;
+}
+
 export interface Member {
   id: string;
   group_id?: string;

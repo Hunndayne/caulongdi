@@ -18,6 +18,7 @@ import type {
   ChatMessage,
   SendChatMessageResponse,
   GroupPaymentSettings,
+  PotPayback,
   TimoPotCheckResult,
 } from "@/types";
 
@@ -102,6 +103,25 @@ export const api = {
   // Payments
   togglePayment: (id: string) =>
     request<Payment>(`/api/payments/${id}/toggle`, { method: "POST" }),
+
+  // Hũ hoàn lại tiền cho người ứng chi phí
+  getPotPaybacks: (sessionId: string) =>
+    request<PotPayback[]>(`/api/pot-paybacks/${sessionId}`),
+  markPotPaybackTransferred: (sessionId: string, memberId: string) =>
+    request<{ success: boolean; items: PotPayback[] }>(
+      `/api/pot-paybacks/${sessionId}/${memberId}/transfer`,
+      { method: "POST" }
+    ),
+  confirmPotPaybackReceived: (sessionId: string, memberId: string) =>
+    request<{ success: boolean; items: PotPayback[] }>(
+      `/api/pot-paybacks/${sessionId}/${memberId}/confirm`,
+      { method: "POST" }
+    ),
+  undoPotPayback: (sessionId: string, memberId: string) =>
+    request<{ success: boolean; items: PotPayback[] }>(
+      `/api/pot-paybacks/${sessionId}/${memberId}`,
+      { method: "DELETE" }
+    ),
 
   // Stats
   getStats: (groupId?: string) =>
