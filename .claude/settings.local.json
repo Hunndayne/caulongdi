@@ -23,7 +23,12 @@
       "PowerShell(pnpm *)",
       "PowerShell(& D:\\\\code\\\\caulongdi\\\\bot\\\\.venv\\\\Scripts\\\\python.exe -m py_compile D:\\\\code\\\\caulongdi\\\\bot\\\\main.py D:\\\\code\\\\caulongdi\\\\bot\\\\worker_client.py D:\\\\code\\\\caulongdi\\\\bot\\\\messenger.py D:\\\\code\\\\caulongdi\\\\bot\\\\config.py; echo \"PY=$?\")",
       "Bash(echo \"exit: $?\")",
-      "WebFetch(domain:api-docs.deepseek.com)"
+      "WebFetch(domain:api-docs.deepseek.com)",
+      "Bash(curl -s -X POST 'https://app2.timo.vn/moneypots/public/alias/info' -H 'Content-Type: application/json; charset=UTF-8' --data '{\"hashVerifyCode\":\"deadbeef\",\"securityCode\":null}')",
+      "Bash(grep -oE '.{0,80}txnHistories.{0,600}' 516.2e97a4c66b9b9855.js)",
+      "Bash(grep -ohE '\\\\.\\(type|date|description|amount\\)[^A-Za-z].{0,120}' 516.2e97a4c66b9b9855.js)",
+      "Bash(grep -ohE 'u\\\\\\(\\\\\\)\\\\.shape\\\\\\(\\\\{amount.{0,300}' 516.2e97a4c66b9b9855.js)",
+      "Bash(openssl dgst *)"
     ]
   }
 }
