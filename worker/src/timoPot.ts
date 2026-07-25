@@ -379,8 +379,29 @@ export async function pollGroupPot(
 }
 
 // Nhịp quét định kỳ: 1 tiếng/nhóm, để không đụng rate limit của Timo. Người trả tiền bấm
-// "đã chuyển" thì có đường riêng (route .../payment-settings/check) không phải chờ nhịp này.
+// "đã chuyển" thì có đường riêng (pollPotForGroup) không phải chờ nhịp này.
 export const POT_POLL_INTERVAL_MS = 60 * 60 * 1000;
+
+/**
+ * Quét ngay hũ của một nhóm, BỎ QUA cửa 1 tiếng. Dùng khi người trả bấm "đã chuyển tiền".
+ * Trả null nếu nhóm chưa cấu hình hũ.
+ */
+export async function pollPotForGroup(
+  env: Env,
+  groupId: string,
+  opts?: { defer?: (task: Promise<unknown>) => void }
+) {
+  await ensureTimoPotTables(env.DB);
+
+  const group = await env.DB.prepare(
+    "SELECT id, timo_verify_code, timo_security_hash FROM groups WHERE id = ?"
+  )
+    .bind(groupId)
+    .first<TimoPotConfig>();
+
+  if (!group?.timo_verify_code?.trim()) return null;
+  return pollGroupPot(env, group, opts);
+}
 
 /**
  * Quét những nhóm đã quá hạn 1 tiếng. Gọi được từ cả cron lẫn request thường —

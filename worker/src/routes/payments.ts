@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { Env } from "../types";
 import { sendPaymentMarkedPaidForPayment, sendPaymentReceivedForPayment } from "../paymentNotifications";
+import { pollPotForGroup } from "../timoPot";
 
 const payments = new Hono<{ Bindings: Env; Variables: { userId: string; userRole: string } }>();
 
@@ -11,6 +12,7 @@ type PaymentRow = {
   recipient_member_id?: string | null;
   payer_marked_paid?: number;
   payer_marked_paid_at?: string | null;
+  payment_to_pot?: number | null;
   paid: number;
   created_by?: string | null;
   group_id?: string | null;
@@ -65,6 +67,7 @@ payments.post("/:id/toggle", async (c) => {
       s.created_by,
       s.group_id,
       s.managers,
+      s.payment_to_pot,
       debtor.user_id AS debtor_user_id,
       recipient.user_id AS recipient_user_id
     FROM payments p
@@ -99,11 +102,20 @@ payments.post("/:id/toggle", async (c) => {
 
     queueTask(c, sendPaymentMarkedPaidForPayment(c.env, id, { markedAt }), `payment-marked-paid:${id}`);
 
+    // Buổi thu về hũ: đối soát ngay, khỏi chờ nhịp 1 tiếng — người vừa chuyển thật thì
+    // payment được xác nhận luôn thay vì treo ở trạng thái "chờ xác nhận".
+    if (row.payment_to_pot === 1 && row.group_id) {
+      queueTask(c, pollPotForGroup(c.env, row.group_id), `pot-check:${id}`);
+    }
+
     const updated = await c.env.DB.prepare("SELECT * FROM payments WHERE id = ?").bind(id).first();
     return c.json(updated);
   }
 
-  if (!isRecipientUser) {
+  // Thu về hũ thì payment không có người nhận cá nhân (recipient_member_id NULL), nên người
+  // quản lý nhóm/buổi xác nhận thay — canTogglePayment ở trên đã lọc quyền.
+  const potMode = row.payment_to_pot === 1 && !row.recipient_member_id;
+  if (!isRecipientUser && !potMode) {
     return c.json({ error: "Only the payer or recipient can update this payment" }, 403);
   }
 

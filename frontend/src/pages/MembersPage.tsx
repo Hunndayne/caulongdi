@@ -983,12 +983,6 @@ export default function MembersPage() {
                         <span className="font-mono text-gray-800">{timoPot.timo.potAccount}</span>
                       </div>
                     )}
-                    {timoPot.timo.potAltAccount && (
-                      <div>
-                        Tài khoản chính của chủ hũ (không phải của hũ, đừng dùng số này):{" "}
-                        <span className="font-mono text-gray-800">{timoPot.timo.potAltAccount}</span>
-                      </div>
-                    )}
                     {timoPot.timo.shareUrl && (
                       <a
                         href={timoPot.timo.shareUrl}

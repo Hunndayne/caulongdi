@@ -1556,11 +1556,24 @@ sessions.post("/", async (c) => {
         return c.json({ error: "Forbidden" }, 403);
       }
 
+      // Nhóm đã khai tài khoản nhận chung thì buổi mới mặc định thu về hũ nhóm.
+      await ensureTimoPotTables(c.env.DB);
+      const paymentToPotInput = body.paymentToPot ?? body.payment_to_pot;
+      let paymentToPot = paymentToPotInput === undefined ? 0 : (paymentToPotInput ? 1 : 0);
+      if (paymentToPotInput === undefined) {
+        const groupAccount = await c.env.DB.prepare(
+          "SELECT group_bank_account_number FROM groups WHERE id = ?"
+        )
+          .bind(groupId)
+          .first<{ group_bank_account_number: string | null }>();
+        if (groupAccount?.group_bank_account_number?.trim()) paymentToPot = 1;
+      }
+
       await c.env.DB.prepare(`
-        INSERT INTO sessions (id, group_id, created_by, name, date, start_time, end_time, venue, location, note, status, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'upcoming', ?)
+        INSERT INTO sessions (id, group_id, created_by, name, date, start_time, end_time, venue, location, note, status, created_at, payment_to_pot)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'upcoming', ?, ?)
       `)
-        .bind(id, groupId, c.get("userId"), name, body.date, startTime, endTime || null, venue, body.location ?? null, body.note ?? null, now)
+        .bind(id, groupId, c.get("userId"), name, body.date, startTime, endTime || null, venue, body.location ?? null, body.note ?? null, now, paymentToPot)
         .run();
       notifyGroupId = groupId;
     } catch (error) {
@@ -2349,6 +2362,10 @@ sessions.delete("/:id/costs/:costId", async (c) => {
   return c.json({ success: true });
 });
 
+// Khoá tạm cho "hũ nhóm" trong paymentMap. Không thể là id member thật nên không đụng nhau;
+// khi ghi vào DB thì đổi thành NULL ở cột recipient_member_id.
+const POT_RECIPIENT = "__pot__";
+
 // Lõi chia tiền — dùng chung cho route /recalculate và bot Messenger (add_cost).
 // Trả về message lỗi (tiếng Anh/Việt như route cũ) hoặc null nếu thành công.
 export async function recalcSessionPayments(env: Env, sessionId: string): Promise<string | null> {
@@ -2380,11 +2397,15 @@ export async function recalcSessionPayments(env: Env, sessionId: string): Promis
   const fallbackRecipientId = normalizePaymentRecipient((session as any).payment_recipient as string | null | undefined);
   const forceCommonRecipient = Boolean((session as any).force_payment_recipient);
 
+  // Thu về hũ nhóm: mọi người nợ HŨ, KHÔNG cần người nhận chung cũng không cần người ứng tiền.
+  // recipient_member_id = NULL trong bảng payments nghĩa là "hũ của nhóm".
+  const paymentToPot = Number((session as any).payment_to_pot ?? 0) === 1;
+
   if (fallbackRecipientId && !eligibleMemberSet.has(fallbackRecipientId)) {
     return "Payment recipient must be an existing member";
   }
 
-  if (forceCommonRecipient && !fallbackRecipientId) {
+  if (!paymentToPot && forceCommonRecipient && !fallbackRecipientId) {
     return "Cần chọn người nhận chung trước khi bật chế độ này";
   }
 
@@ -2412,11 +2433,13 @@ export async function recalcSessionPayments(env: Env, sessionId: string): Promis
   };
 
   for (const cost of sharedCosts) {
-    const recipientId = forceCommonRecipient ? fallbackRecipientId : (cost.payer_id ?? fallbackRecipientId);
+    const recipientId = paymentToPot
+      ? POT_RECIPIENT
+      : (forceCommonRecipient ? fallbackRecipientId : (cost.payer_id ?? fallbackRecipientId));
     if (!recipientId) {
       return "Shared costs need a payer or a common payment recipient";
     }
-    if (!eligibleMemberSet.has(recipientId)) {
+    if (!paymentToPot && !eligibleMemberSet.has(recipientId)) {
       return "Payment recipient must be an existing member";
     }
 
@@ -2429,12 +2452,17 @@ export async function recalcSessionPayments(env: Env, sessionId: string): Promis
   }
 
   for (const cost of directCosts) {
-    const recipientId = forceCommonRecipient ? fallbackRecipientId : (cost.payer_id ?? fallbackRecipientId);
+    const recipientId = paymentToPot
+      ? POT_RECIPIENT
+      : (forceCommonRecipient ? fallbackRecipientId : (cost.payer_id ?? fallbackRecipientId));
     const consumerIds = getCostConsumerIds(cost);
     if (!recipientId || consumerIds.length === 0) {
       return "Direct costs need a consumer and either a payer or a common payment recipient";
     }
-    if (!eligibleMemberSet.has(recipientId) || consumerIds.some((consumerId) => !eligibleMemberSet.has(consumerId))) {
+    if (!paymentToPot && !eligibleMemberSet.has(recipientId)) {
+      return "Payer and consumer must both be existing members";
+    }
+    if (consumerIds.some((consumerId) => !eligibleMemberSet.has(consumerId))) {
       return "Payer and consumer must both be existing members";
     }
     const shares = splitAmountEvenly(cost.amount, consumerIds.length);
@@ -2443,8 +2471,26 @@ export async function recalcSessionPayments(env: Env, sessionId: string): Promis
     }
   }
 
+  // Thu về hũ: ai đã ứng chi phí thì được cấn trừ vào nợ hũ. Hũ không thể là bên NỢ trong sổ
+  // (payments.member_id NOT NULL), nên phần ứng dư ra là việc trưởng nhóm hoàn lại bằng QR
+  // cá nhân của người đó — không tạo payment row ngược.
+  if (paymentToPot) {
+    for (const cost of costs.results) {
+      if ((cost as any).consumer_pending) continue;
+      if (!cost.payer_id || !eligibleMemberSet.has(cost.payer_id)) continue;
+
+      const key = `${cost.payer_id}:${POT_RECIPIENT}`;
+      const owed = paymentMap.get(key);
+      if (!owed) continue;
+
+      const remaining = owed - Math.round(cost.amount);
+      if (remaining > 0) paymentMap.set(key, remaining);
+      else paymentMap.delete(key);
+    }
+  }
+
   // Khi force mode bật, người nhận chung cần trả lại cho từng người đã ứng tiền thực tế
-  if (forceCommonRecipient && fallbackRecipientId) {
+  if (!paymentToPot && forceCommonRecipient && fallbackRecipientId) {
     const paybackByPayer = new Map<string, number>();
     for (const cost of costs.results) {
       if ((cost as any).consumer_pending) continue;
@@ -2482,7 +2528,8 @@ export async function recalcSessionPayments(env: Env, sessionId: string): Promis
   ).bind(sessionId).all<{ member_id: string; recipient_member_id: string; confirmed_total: number }>();
   const confirmedMap = new Map<string, number>();
   for (const row of confirmedRows.results) {
-    confirmedMap.set(`${row.member_id}:${row.recipient_member_id}`, row.confirmed_total);
+    // recipient_member_id NULL trong DB = hũ nhóm → khớp với khoá POT_RECIPIENT.
+    confirmedMap.set(`${row.member_id}:${row.recipient_member_id ?? POT_RECIPIENT}`, row.confirmed_total);
   }
 
   await env.DB.prepare("DELETE FROM payments WHERE session_id = ? AND paid = 0").bind(sessionId).run();
@@ -2496,7 +2543,13 @@ export async function recalcSessionPayments(env: Env, sessionId: string): Promis
       stmts.push(env.DB.prepare(`
         INSERT INTO payments (id, session_id, member_id, recipient_member_id, amount_owed, paid)
         VALUES (?, ?, ?, ?, ?, 0)
-      `).bind(nanoid(), sessionId, memberId, recipientMemberId, remaining));
+      `).bind(
+        nanoid(),
+        sessionId,
+        memberId,
+        recipientMemberId === POT_RECIPIENT ? null : recipientMemberId,
+        remaining
+      ));
     }
   }
   if (stmts.length > 0) await env.DB.batch(stmts);

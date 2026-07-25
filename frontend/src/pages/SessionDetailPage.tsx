@@ -151,7 +151,8 @@ type PaymentQrData = {
   qrPayload: string;
   note: string;
   amount: number;
-  recipient: Member;
+  /** null khi buổi thu về hũ — lúc đó tiền vào tài khoản chung của nhóm, không của cá nhân nào. */
+  recipient: Member | null;
   recipientBankName: string;
   // Đích chuyển khoản thật sự — có thể là tài khoản chung của nhóm (hũ), khác recipient khi thu về nhóm.
   destBankBin: string;
@@ -1323,7 +1324,9 @@ export default function SessionDetailPage() {
   const paymentProgressTarget = totalCost > 0 ? totalCost : totalTransferAmount;
   const confirmedCostProgress = Math.min(confirmedTransferAmount, paymentProgressTarget);
 
-  const buildQrData = (paymentId: string, debtor: Member, recipient: Member, amount: number): PaymentQrData | null => {
+  // recipient có thể null khi buổi thu về hũ: lúc đó payment không có người nhận cá nhân.
+  const buildQrData = (paymentId: string, debtor: Member, recipient: Member | null, amount: number): PaymentQrData | null => {
+    if (!collectToPot && !recipient) return null;
     // Thu về nhóm → đích là tài khoản chung của nhóm (hũ), KHÔNG phải tài khoản cá nhân của recipient.
     const dest = collectToPot
       ? {
@@ -1334,17 +1337,17 @@ export default function SessionDetailPage() {
         isPot: true,
       }
       : {
-        bankBin: recipient.user_bank_bin ?? "",
-        accountNumber: recipient.user_bank_account_number ?? "",
-        accountName: recipient.user_bank_account_name ?? "",
-        label: recipient.name,
+        bankBin: recipient!.user_bank_bin ?? "",
+        accountNumber: recipient!.user_bank_account_number ?? "",
+        accountName: recipient!.user_bank_account_name ?? "",
+        label: recipient!.name,
         isPot: false,
       };
     if (!dest.bankBin || !dest.accountNumber || !dest.accountName) return null;
-    if (amount <= 0 || debtor.id === recipient.id) return null;
+    if (amount <= 0 || (recipient && debtor.id === recipient.id)) return null;
 
-    // Tự động (CLD): GIỮ mã để hệ thống đối soát lịch sử giao dịch hũ Timo. Thủ công (TT cũ):
-    // mã vô dụng (tiền không vào hũ) → thay bằng nội dung dễ đọc cho người nhận.
+    // Tự xác nhận (CLD): GIỮ mã để hệ thống đối soát lịch sử giao dịch hũ Timo.
+    // Không có hũ → nội dung chuyển khoản dạng câu thường cho người nhận dễ đọc.
     const note = potAutoConfirm
       ? `${PAYMENT_QR_PREFIX.autoConfirm}-${paymentId}`
       : buildManualTransferContent(debtor.name, s.venue, s.date);
@@ -1635,8 +1638,14 @@ export default function SessionDetailPage() {
                       onChange={() => handleSetPaymentTarget(0)}
                       className="border-gray-300"
                     />
-                    <span className="text-gray-700">Người nhận chung</span>
+                    <span className="text-gray-700">Người ứng tiền</span>
                   </label>
+                  {!collectToPot && (
+                    <p className="text-xs text-gray-400">
+                      Ai ứng chi phí thì người đó nhận lại. Muốn dồn hết về một người thì bật ô
+                      &quot;Tất cả tiền chuyển về người nhận chung&quot; bên dưới.
+                    </p>
+                  )}
                   {!groupAccountReady && (
                     <p className="text-xs text-gray-400">
                       Nhóm chưa khai tài khoản nhận chung — vào Cài đặt nhóm để thêm.
@@ -1649,7 +1658,10 @@ export default function SessionDetailPage() {
                   )}
                 </div>
 
-                <label className="block text-xs font-medium text-gray-700">Người nhận chung</label>
+                <label className="block text-xs font-medium text-gray-700">
+                  Người nhận chung
+                  {collectToPot && <span className="font-normal text-gray-400"> — không dùng khi thu về hũ</span>}
+                </label>
                 <select
                   value={recipientId}
                   onChange={(event) => handleSetRecipient(event.target.value)}
@@ -1668,7 +1680,7 @@ export default function SessionDetailPage() {
                       <input
                         type="checkbox"
                         checked={Boolean(currentSession?.force_payment_recipient)}
-                        disabled={!recipientId}
+                        disabled={!recipientId || collectToPot}
                         onChange={async () => {
                           const nextValue = currentSession?.force_payment_recipient ? 0 : 1;
                           setManagingSettings(true);
@@ -2240,13 +2252,18 @@ export default function SessionDetailPage() {
                 const debtorName = debtor?.name ?? payment.member_id;
                 const recipientName = recipient?.name ?? payment.recipient_member_id ?? "người nhận";
                 const recipientHasBank = hasBankInfo(recipient);
-                const qrRecipient = recipientHasBank
-                  ? recipient
-                  : (fallbackRecipientMember && fallbackRecipientMember.id !== payment.member_id ? fallbackRecipientMember : null);
+                // Thu về hũ thì không cần người nhận cá nhân — QR trỏ vào tài khoản chung của nhóm.
+                const qrRecipient = collectToPot
+                  ? null
+                  : (recipientHasBank
+                    ? recipient
+                    : (fallbackRecipientMember && fallbackRecipientMember.id !== payment.member_id ? fallbackRecipientMember : null));
                 // Vãng lai không đăng nhập được nên mọi người tham gia đều thấy QR để chuyển hộ.
                 const canViewQr = Boolean(currentUserId && (debtor?.user_id === currentUserId || debtor?.is_walkin));
-                const qrData = canViewQr && debtor && qrRecipient ? buildQrData(payment.id, debtor, qrRecipient, payment.amount_owed) : null;
-                const fallbackNotice = !recipientHasBank && qrRecipient && recipient
+                const qrData = canViewQr && debtor && (collectToPot || qrRecipient)
+                  ? buildQrData(payment.id, debtor, qrRecipient, payment.amount_owed)
+                  : null;
+                const fallbackNotice = !collectToPot && !recipientHasBank && qrRecipient && recipient
                   ? `Người ứng tiền chưa cập nhật STK, tạm chuyển qua ${qrRecipient.name}.`
                   : null;
                 const pendingNotice = payment.payer_marked_paid && !payment.paid
