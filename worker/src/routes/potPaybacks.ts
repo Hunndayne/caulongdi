@@ -5,11 +5,12 @@
 // payments.member_id NOT NULL nên hũ không thể là bên nợ.
 //
 // Hai bước giống nếp payments: người rút quỹ đánh dấu đã chuyển → người ứng xác nhận đã nhận.
+// Quyền rút quỹ chỉ thuộc về trưởng nhóm (canManageGroupPot), không phải quyền quản lý buổi.
 
 import { Hono } from "hono";
 import { Env } from "../types";
 import { ensurePotPaybackTable } from "../db/potPaybackTable";
-import { canManageSession } from "./sessions";
+import { canManageGroupPot } from "./sessions";
 
 const potPaybacks = new Hono<{ Bindings: Env; Variables: { userId: string; userRole: string } }>();
 
@@ -74,8 +75,8 @@ potPaybacks.get("/:sessionId", async (c) => {
   await ensurePotPaybackTable(c.env.DB);
   const items = await listPaybacks(c, sessionId);
 
-  // Người quản lý buổi thấy hết; người ứng tiền chỉ cần thấy dòng của mình để xác nhận đã nhận.
-  if (await canManageSession(c, session as any)) return c.json(items);
+  // Trưởng nhóm thấy hết; người ứng tiền chỉ cần thấy dòng của mình để xác nhận đã nhận.
+  if (await canManageGroupPot(c, session as any)) return c.json(items);
 
   const userId = c.get("userId");
   const own = await c.env.DB.prepare(
@@ -94,7 +95,7 @@ potPaybacks.post("/:sessionId/:memberId/transfer", async (c) => {
 
   const session = await loadSession(c, sessionId);
   if (!session) return c.json({ error: "Not found" }, 404);
-  if (!(await canManageSession(c, session as any))) return c.json({ error: "Forbidden" }, 403);
+  if (!(await canManageGroupPot(c, session as any))) return c.json({ error: "Forbidden" }, 403);
 
   await ensurePotPaybackTable(c.env.DB);
 
@@ -132,7 +133,7 @@ potPaybacks.post("/:sessionId/:memberId/confirm", async (c) => {
     .first<{ user_id: string | null }>();
 
   const isOwnMember = Boolean(member?.user_id && member.user_id === c.get("userId"));
-  if (!isOwnMember && !(await canManageSession(c, session as any))) {
+  if (!isOwnMember && !(await canManageGroupPot(c, session as any))) {
     return c.json({ error: "Forbidden" }, 403);
   }
 
@@ -160,7 +161,7 @@ potPaybacks.delete("/:sessionId/:memberId", async (c) => {
 
   const session = await loadSession(c, sessionId);
   if (!session) return c.json({ error: "Not found" }, 404);
-  if (!(await canManageSession(c, session as any))) return c.json({ error: "Forbidden" }, 403);
+  if (!(await canManageGroupPot(c, session as any))) return c.json({ error: "Forbidden" }, 403);
 
   await ensurePotPaybackTable(c.env.DB);
   await c.env.DB.prepare("DELETE FROM pot_paybacks WHERE session_id = ? AND member_id = ?")

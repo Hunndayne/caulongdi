@@ -1355,6 +1355,13 @@ async function canOverrideAttendanceLock(c: any, session: Pick<SessionRow, "grou
   return isGroupAdmin(c, session.group_id);
 }
 
+// Rút quỹ hũ ra hoàn lại cho người ứng tiền: tiền nằm ở tài khoản chung của NHÓM,
+// nên chỉ trưởng nhóm mới được đụng — tạo buổi hay quản lý buổi đều không đủ quyền.
+export async function canManageGroupPot(c: any, session: Pick<SessionRow, "group_id">) {
+  if (c.get("userRole") === "admin") return true;
+  return isGroupAdmin(c, session.group_id);
+}
+
 async function sessionHasCalculatedPayments(c: any, sessionId: string) {
   const row = await c.env.DB.prepare(`
     SELECT id
