@@ -62,31 +62,24 @@ mỗi `RESTART_HOURS` (mặc định 8h).
 
 ## systemd
 
-`/etc/systemd/system/tingting-bot.service`:
-
-```ini
-[Unit]
-Description=TingTing Messenger Bot
-After=network-online.target
-
-[Service]
-WorkingDirectory=/opt/caulongdi/bot
-ExecStart=/opt/caulongdi/bot/.venv/bin/python main.py
-Restart=always
-RestartSec=10
-MemoryMax=800M
-
-[Install]
-WantedBy=multi-user.target
-```
+Dùng luôn `tingting-bot.service` trong repo:
 
 ```bash
-sudo systemctl enable --now tingting-bot
+sudo cp /opt/caulongdi/bot/tingting-bot.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now tingting-bot
 journalctl -u tingting-bot -f
 ```
 
+`RestartSteps`/`RestartMaxDelaySec` cần systemd ≥ 254 (Ubuntu 24.04 trở lên) — bản cũ
+hơn chỉ cảnh báo "Unknown key" khi `daemon-reload`, bỏ hai dòng đó là chạy bình thường.
+
 ## Khi hỏng
 
+- Log lặp `could not bind on any address out of [(...)]` → không chiếm được cổng, bot
+  chết ngay lúc khởi động. Xem ai giữ cổng: `ss -ltnp | grep 8090`. Có tiến trình lạ →
+  còn bản bot chạy tay (tmux/screen) hoặc tiến trình mồ côi, kill nó. Không ai giữ cổng
+  → IP trong `API_HOST` không còn trên máy (`ip -4 addr`), sửa `.env` về `127.0.0.1`
+  (hoặc `0.0.0.0` nếu cần gọi từ LAN — nhớ `/send` không có xác thực).
 - `/healthz` trả `status: login_required` → cookie hết hạn, chạy lại `save_login.py` và scp lên.
 - Bot không thấy tin mới / không gửi được → FB đổi DOM; mọi selector nằm trong
   `messenger.py` (`_EXTRACT_JS`, `_TEXTBOX_SELECTOR`) — sửa ở đó, đặt `HEADLESS=false` để debug.

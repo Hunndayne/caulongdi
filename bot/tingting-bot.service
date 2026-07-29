@@ -2,12 +2,20 @@
 Description=TingTing Messenger Bot
 After=network-online.target
 Wants=network-online.target
+# Lỗi vĩnh viễn (cổng bận, cookie hỏng) không được đẩy unit vào failed rồi bỏ luôn —
+# bot phải tự dậy khi nguyên nhân được gỡ. Backoff bên dưới lo phần chống spam.
+StartLimitIntervalSec=0
 
 [Service]
 WorkingDirectory=/opt/caulongdi/bot
 ExecStart=/opt/caulongdi/bot/.venv/bin/python main.py
 Restart=always
 RestartSec=10
+# Backoff tăng dần 10s → 5 phút (systemd >= 254). Lỗi không tự khỏi thì trước đây
+# quay 10s/lần suốt nhiều ngày (đã từng đếm 9448 lần), ngập journal và mỗi vòng đẻ
+# một tiến trình Playwright.
+RestartSteps=5
+RestartMaxDelaySec=5min
 MemoryMax=800M
 
 [Install]

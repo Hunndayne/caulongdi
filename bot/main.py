@@ -13,6 +13,7 @@ Python chỉ làm I/O Facebook — mọi logic NLU/D1/format nằm ở Worker.
 import asyncio
 import logging
 import random
+import socket
 import time
 import unicodedata
 from contextlib import asynccontextmanager
@@ -455,5 +456,31 @@ async def send_manual(body: SendBody):
     return {"ok": True}
 
 
+def _bind_or_die() -> socket.socket:
+    """Chiếm cổng TRƯỚC khi uvicorn chạy lifespan (lifespan mở Playwright).
+
+    uvicorn bind SAU khi startup xong, nên mỗi lần cổng hỏng bot vẫn kịp đẻ một
+    tiến trình Playwright rồi mới chết, và log chỉ có "could not bind on any
+    address out of [...]" — không thấy errno, không biết vì sao. Bind sớm ở đây
+    để crash-loop rẻ và báo đúng nguyên nhân.
+    """
+    family = socket.AF_INET6 if ":" in config.API_HOST else socket.AF_INET
+    sock = socket.socket(family, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.bind((config.API_HOST, config.API_PORT))
+    except OSError as exc:
+        sock.close()
+        raise SystemExit(
+            f"Không bind được {config.API_HOST}:{config.API_PORT} — {exc.strerror} (errno {exc.errno}).\n"
+            "  • 'Address already in use': còn tiến trình bot cũ giữ cổng — xem `ss -ltnp | grep 8090`\n"
+            "    rồi kill nó (hay dừng bản chạy tay trong tmux/screen).\n"
+            "  • 'Cannot assign requested address': IP đặt trong API_HOST không còn trên máy\n"
+            "    (DHCP đổi IP) — sửa .env về API_HOST=127.0.0.1, hoặc 0.0.0.0 nếu cần truy cập LAN."
+        ) from exc
+    return sock
+
+
 if __name__ == "__main__":
-    uvicorn.run(app, host=config.API_HOST, port=config.API_PORT)
+    server = uvicorn.Server(uvicorn.Config(app, host=config.API_HOST, port=config.API_PORT))
+    server.run(sockets=[_bind_or_die()])
