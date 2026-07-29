@@ -591,18 +591,16 @@ export default function SessionDetailPage() {
       return b.payment.amount_owed - a.payment.amount_owed;
     });
 
-  // Thu về hũ: cộng dồn nguyên số tiền mỗi người đã ứng (không cấn trừ phần chia của họ) để trưởng nhóm hoàn lại.
-  const potPaybackTotals = new Map<string, number>();
-  for (const cost of s.costs) {
-    if (cost.consumer_pending === 1 || !cost.payer_id) continue;
-    potPaybackTotals.set(cost.payer_id, (potPaybackTotals.get(cost.payer_id) ?? 0) + cost.amount);
-  }
-  const potPaybackRows = Array.from(potPaybackTotals.entries())
-    .map(([payerId, amount]) => ({ payer: memberById.get(payerId) ?? null, amount }))
-    .filter((row): row is { payer: Member; amount: number } => Boolean(row.payer))
-    .sort((a, b) => b.amount - a.amount);
-
   const potPaybackByMember = new Map(potPaybacks.map((item) => [item.memberId, item]));
+  // Thu về hũ: số tiền hũ còn nợ người ứng đã được server cấn trừ phần họ phải chịu, nên lấy
+  // thẳng từ API — tính lại ở client theo chi phí sẽ ra số gộp và lệch với bảng thanh toán.
+  // payer null = người ứng đã bị gỡ khỏi Hội; vẫn phải hiện để trưởng nhóm trả nốt.
+  const potPaybackRows = potPaybacks.map((item) => ({
+    memberId: item.memberId,
+    name: memberById.get(item.memberId)?.name ?? item.name,
+    payer: memberById.get(item.memberId) ?? null,
+    amount: item.amount,
+  }));
   // Người ứng tiền không phải trưởng nhóm: server chỉ trả về dòng của họ, lấy dòng đầu là đủ.
   const myPotPayback = myMember ? potPaybackByMember.get(myMember.id) ?? null : null;
 
@@ -1427,7 +1425,9 @@ export default function SessionDetailPage() {
     (sum, row) => sum + (row.payment.paid ? row.payment.amount_owed : 0),
     0
   );
-  const paymentProgressTarget = totalCost > 0 ? totalCost : totalTransferAmount;
+  // Đích của tiến độ là tổng tiền THỰC SỰ phải chuyển, không phải tổng chi phí: sau khi cấn trừ
+  // số dư ròng, người ứng tiền không chuyển gì nên tổng chuyển luôn nhỏ hơn tổng chi.
+  const paymentProgressTarget = totalTransferAmount;
   const confirmedCostProgress = Math.min(confirmedTransferAmount, paymentProgressTarget);
 
   // recipient có thể null khi buổi thu về hũ: lúc đó payment không có người nhận cá nhân.
@@ -2211,6 +2211,12 @@ export default function SessionDetailPage() {
                 if (cost.consumer_pending) {
                   helperText = "Chưa rõ ai dùng — chưa tính vào chia tiền";
                   helperClass = "text-amber-500";
+                } else if (collectToPot) {
+                  // Thu về hũ: tiền không đi trực tiếp tới người ứng, hũ hoàn lại phần chênh.
+                  helperText = payerMember
+                    ? `${payerMember.name} ứng — hũ hoàn lại sau khi trừ suất của họ`
+                    : "Chi từ quỹ nhóm — cả nhóm nộp vào hũ";
+                  helperClass = "text-blue-500";
                 } else if (payerMember && consumerIds.length > 0) {
                   helperText = `${consumerLabel} trả lại cho ${payerMember.name}`;
                   helperClass = "text-orange-500";
@@ -2413,7 +2419,9 @@ export default function SessionDetailPage() {
             <div className="space-y-2">
               {paymentRows.map(({ payment, debtor, recipient }) => {
                 const debtorName = debtor?.name ?? payment.member_id;
-                const recipientName = recipient?.name ?? payment.recipient_member_id ?? "người nhận";
+                // Thu về hũ: recipient_member_id là NULL, đích là tài khoản chung của nhóm.
+                const recipientName = recipient?.name
+                  ?? (collectToPot ? "hũ nhóm" : payment.recipient_member_id ?? "người nhận");
                 const recipientHasBank = hasBankInfo(recipient);
                 // Thu về hũ thì không cần người nhận cá nhân — QR trỏ vào tài khoản chung của nhóm.
                 const qrRecipient = collectToPot
@@ -2450,7 +2458,9 @@ export default function SessionDetailPage() {
                         {debtor && <Avatar name={debtor.name} color={debtor.avatar_color} size="sm" />}
                         <div className="min-w-0">
                           <div className="font-medium text-gray-900">{debtorName}</div>
-                          <div className="text-sm text-gray-500">Trả cho {recipientName}</div>
+                          <div className="text-sm text-gray-500">
+                            {collectToPot ? `Nộp vào ${recipientName}` : `Trả cho ${recipientName}`}
+                          </div>
                           <div className="mt-0.5 text-sm font-semibold text-gray-800">
                             {formatCurrency(payment.amount_owed)}
                           </div>
@@ -2543,37 +2553,38 @@ export default function SessionDetailPage() {
               <div>
                 <div className="text-sm font-semibold text-gray-900">Hũ cần hoàn lại cho người ứng tiền</div>
                 <p className="mt-0.5 text-xs text-gray-500">
-                  Mọi người đã nộp đủ phần mình vào hũ, trưởng nhóm rút quỹ chuyển lại cho những người đã ứng tiền trước.
+                  Số tiền dưới đây đã trừ phần người ứng phải chịu, nên họ không phải nộp vào hũ nữa —
+                  trưởng nhóm rút quỹ chuyển đúng số này là xong.
                 </p>
               </div>
               <div className="space-y-2">
-                {potPaybackRows.map(({ payer, amount }) => {
-                  const status = potPaybackByMember.get(payer.id) ?? null;
+                {potPaybackRows.map(({ memberId, name, payer, amount }) => {
+                  const status = potPaybackByMember.get(memberId) ?? null;
                   const transferred = Boolean(status?.transferredAt);
                   const confirmed = Boolean(status?.confirmedAt);
-                  const busy = potPaybackBusyId === payer.id;
+                  const busy = potPaybackBusyId === memberId;
                   // Chi phí đổi sau khi đã chuyển → số đã chuyển không còn khớp, phải báo để bù/đòi lại.
                   const markedAmount = status?.markedAmount ?? null;
                   const amountDrift = transferred && markedAmount !== null && Math.round(markedAmount) !== Math.round(amount);
                   // Đã chuyển rồi thì không cần QR nữa, giữ thẻ gọn.
-                  const qrData = transferred ? null : buildPaybackQrData(payer, amount);
+                  const qrData = transferred || !payer ? null : buildPaybackQrData(payer, amount);
                   // Cùng nếp với danh sách chuyển khoản ở trên: một nút trạng thái ở góc phải,
                   // bấm vào nút xanh khi đã xong để gỡ đánh dấu.
                   const actionLabel = confirmed ? "Đã nhận ✓" : transferred ? "Xác nhận đã nhận" : "Đánh dấu đã chuyển";
                   const runAction = () => {
                     if (confirmed) {
-                      if (!window.confirm(`Bỏ đánh dấu hoàn tiền cho ${payer.name}? Dòng này sẽ quay về trạng thái chưa hoàn.`)) return;
-                      runPotPaybackAction(payer.id, api.undoPotPayback);
+                      if (!window.confirm(`Bỏ đánh dấu hoàn tiền cho ${name}? Dòng này sẽ quay về trạng thái chưa hoàn.`)) return;
+                      runPotPaybackAction(memberId, api.undoPotPayback);
                       return;
                     }
                     runPotPaybackAction(
-                      payer.id,
+                      memberId,
                       transferred ? api.confirmPotPaybackReceived : api.markPotPaybackTransferred
                     );
                   };
                   return (
                     <div
-                      key={payer.id}
+                      key={memberId}
                       className={`rounded-xl border p-3 transition-colors ${confirmed
                         ? "border-green-200 bg-green-50"
                         : transferred
@@ -2583,19 +2594,19 @@ export default function SessionDetailPage() {
                     >
                       <div className="flex items-start justify-between gap-3">
                         <div className="flex min-w-0 items-start gap-3">
-                          <Avatar name={payer.name} color={payer.avatar_color} size="sm" />
+                          <Avatar name={name} color={payer?.avatar_color ?? "#9ca3af"} size="sm" />
                           <div className="min-w-0">
-                            <div className="font-medium text-gray-900">{payer.name}</div>
-                            <div className="text-sm text-gray-500">Hũ hoàn lại tiền đã ứng</div>
+                            <div className="font-medium text-gray-900">{name}</div>
+                            <div className="text-sm text-gray-500">Hũ cần hoàn lại (đã trừ suất của họ)</div>
                             <div className="mt-0.5 text-sm font-semibold text-gray-800">{formatCurrency(amount)}</div>
                             {amountDrift && (
                               <div className="mt-1 text-xs text-amber-700">
-                                Đã chuyển {formatCurrency(markedAmount!)} nhưng chi phí giờ là {formatCurrency(amount)} — cần bù hoặc thu lại phần chênh.
+                                Đã chuyển {formatCurrency(markedAmount!)} nhưng số cần hoàn giờ là {formatCurrency(amount)} — cần bù hoặc thu lại phần chênh.
                               </div>
                             )}
                             {transferred && !confirmed && (
                               <div className="mt-1 text-xs text-amber-700">
-                                Quỹ đã báo chuyển, chờ {payer.name} xác nhận đã nhận.
+                                Quỹ đã báo chuyển, chờ {name} xác nhận đã nhận.
                               </div>
                             )}
                             {!transferred && !qrData && (
@@ -2623,7 +2634,7 @@ export default function SessionDetailPage() {
                           <button
                             disabled={busy}
                             className="text-xs text-gray-500 underline-offset-2 hover:text-gray-700 hover:underline disabled:text-gray-300"
-                            onClick={() => runPotPaybackAction(payer.id, api.undoPotPayback)}
+                            onClick={() => runPotPaybackAction(memberId, api.undoPotPayback)}
                           >
                             Bỏ đánh dấu
                           </button>
@@ -2634,7 +2645,7 @@ export default function SessionDetailPage() {
                         <div className="mt-3 flex flex-col items-center gap-2">
                           <img
                             src={qrData.qrUrl}
-                            alt={`QR hoàn tiền cho ${payer.name}`}
+                            alt={`QR hoàn tiền cho ${name}`}
                             className="h-auto w-48 rounded-lg border border-gray-200"
                             loading="lazy"
                           />
@@ -2665,7 +2676,8 @@ export default function SessionDetailPage() {
               <div>
                 <div className="text-sm font-semibold text-gray-900">Hũ hoàn lại tiền bạn đã ứng</div>
                 <p className="mt-0.5 text-xs text-gray-500">
-                  Bạn đã ứng {formatCurrency(myPotPayback.amount)} cho buổi này. Nhận được tiền từ quỹ thì bấm xác nhận để chốt.
+                  Bạn ứng tiền cho buổi này nên không phải nộp vào hũ; quỹ hoàn lại{" "}
+                  {formatCurrency(myPotPayback.amount)} là phần đã trừ suất của bạn. Nhận được tiền thì bấm xác nhận để chốt.
                 </p>
               </div>
               <div className="rounded-xl border border-gray-100 bg-white p-3">

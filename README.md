@@ -248,6 +248,15 @@ User đầu tiên đăng ký **tự động được set `role = admin`**.
 
 ---
 
+## Chia tiền
+
+Công nợ được chốt theo **số dư ròng** của từng người (`đã ứng − phần phải chịu`), không phải theo
+từng khoản chi: người ứng tiền không phải nộp rồi chờ rút ra, và vòng nợ A→B→C→A tự tan. Chi tiết
+ba chế độ chốt sổ, cách xử lý thanh toán đã xác nhận và ví dụ số cụ thể:
+[`docs/chia-tien-can-tru.md`](docs/chia-tien-can-tru.md).
+
+---
+
 ## API Endpoints
 
 ```
@@ -271,6 +280,11 @@ DELETE /api/sessions/:id/costs/:cid Xóa khoản chi (admin)
 POST   /api/sessions/:id/recalculate Tính lại payments (admin)
 
 POST   /api/payments/:id/toggle     Toggle đã trả / chưa trả
+
+GET    /api/pot-paybacks/:sid            Hũ còn nợ người ứng bao nhiêu (đã cấn trừ)
+POST   /api/pot-paybacks/:sid/:mid/transfer  Quỹ đánh dấu đã chuyển (trưởng nhóm)
+POST   /api/pot-paybacks/:sid/:mid/confirm   Người ứng xác nhận đã nhận
+DELETE /api/pot-paybacks/:sid/:mid           Bỏ đánh dấu (trưởng nhóm)
 
 GET    /api/groups/:id/timo-pot         Trạng thái hũ Timo của nhóm (admin nhóm)
 PUT    /api/groups/:id/timo-pot         Lưu link + mật mã hũ (admin nhóm)

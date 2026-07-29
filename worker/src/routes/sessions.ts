@@ -2377,9 +2377,238 @@ sessions.delete("/:id/costs/:costId", async (c) => {
   return c.json({ success: true });
 });
 
-// Khoá tạm cho "hũ nhóm" trong paymentMap. Không thể là id member thật nên không đụng nhau;
+// Khoá tạm cho "hũ nhóm" trong bảng lượt chuyển. Không thể là id member thật nên không đụng nhau;
 // khi ghi vào DB thì đổi thành NULL ở cột recipient_member_id.
 const POT_RECIPIENT = "__pot__";
+
+/**
+ * Kết quả chốt sổ một buổi.
+ *
+ * `transfers`: key `${người nợ}:${người nhận}` → số tiền. Người nhận là id member,
+ * hoặc POT_RECIPIENT nghĩa là hũ nhóm (ghi NULL vào recipient_member_id).
+ *
+ * `paybacks`: memberId → số tiền hũ/quỹ còn phải hoàn lại cho người ứng tiền, ĐÃ cấn trừ
+ * phần họ phải chịu. Chỉ có ở chế độ thu về hũ; chế độ khác thì khoản hoàn đã nằm trong
+ * `transfers` dưới dạng một dòng payment thật.
+ */
+export type SessionSettlement = {
+  transfers: Map<string, number>;
+  paybacks: Map<string, number>;
+};
+
+const bumpBalance = (map: Map<string, number>, key: string | null | undefined, amount: number) => {
+  if (!key || amount === 0) return;
+  map.set(key, (map.get(key) ?? 0) + amount);
+};
+
+/**
+ * Ghép người còn phải nộp với người được nhận lại sao cho ÍT lượt chuyển nhất: luôn lấy
+ * khoản nợ lớn nhất ghép với khoản nhận lớn nhất, mỗi lần ghép triệt tiêu hẳn một bên nên
+ * ra tối đa (số người − 1) lượt. Nhờ đó vòng nợ A→B→C→A tự biến mất thay vì cả ba người
+ * phải chuyển qua chuyển lại.
+ *
+ * Sắp xếp có tie-break theo id để cùng dữ liệu luôn ra cùng kết quả: id payment (và mã CLD
+ * in trên QR) sinh ra từ cặp người nợ–người nhận, đổi cặp là QR đã phát thành vô hiệu.
+ */
+function matchDebtorsToCreditors(net: Map<string, number>) {
+  const byAmountThenId = (a: { id: string; amount: number }, b: { id: string; amount: number }) =>
+    b.amount - a.amount || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  const debtors = [...net.entries()]
+    .filter(([, value]) => value < 0)
+    .map(([id, value]) => ({ id, amount: -value }))
+    .sort(byAmountThenId);
+  const creditors = [...net.entries()]
+    .filter(([, value]) => value > 0)
+    .map(([id, value]) => ({ id, amount: value }))
+    .sort(byAmountThenId);
+
+  const transfers = new Map<string, number>();
+  let debtorIndex = 0;
+  let creditorIndex = 0;
+  while (debtorIndex < debtors.length && creditorIndex < creditors.length) {
+    const debtor = debtors[debtorIndex];
+    const creditor = creditors[creditorIndex];
+    const amount = Math.min(debtor.amount, creditor.amount);
+    bumpBalance(transfers, `${debtor.id}:${creditor.id}`, amount);
+    debtor.amount -= amount;
+    creditor.amount -= amount;
+    if (debtor.amount === 0) debtorIndex += 1;
+    if (creditor.amount === 0) creditorIndex += 1;
+  }
+  return transfers;
+}
+
+/**
+ * Dồn hết qua một đầu mối (hũ nhóm hoặc người nhận chung): ai còn nợ thì nộp cho đầu mối,
+ * ai được nhận lại thì đầu mối trả. Đầu mối tự cân bằng qua các lượt vào/ra nên bỏ khỏi
+ * cả hai danh sách.
+ */
+function routeThroughHub(net: Map<string, number>, hubId: string) {
+  const transfers = new Map<string, number>();
+  const paybacks = new Map<string, number>();
+  for (const [memberId, value] of net.entries()) {
+    if (memberId === hubId) continue;
+    if (value < 0) bumpBalance(transfers, `${memberId}:${hubId}`, -value);
+    else if (value > 0) bumpBalance(paybacks, memberId, value);
+  }
+  return { transfers, paybacks };
+}
+
+/**
+ * Lõi chốt sổ: quy mọi khoản chi về SỐ DƯ RÒNG của từng người rồi mới sinh lượt chuyển.
+ *
+ *   net = (số đã ứng ra) − (phần phải chịu)
+ *   net < 0 → còn phải nộp |net| ;  net > 0 → được nhận lại net
+ *
+ * Tổng net bằng 0 (mọi đồng ứng ra đều có người chịu), nên chỉ cần ghép hai bên là xong.
+ * Trước đây mỗi khoản chi sinh nợ riêng theo người ứng khoản đó, nên người ứng gần hết
+ * tiền vẫn phải nộp phần mình vào rồi chờ rút ra — và vòng nợ A→B→C→A thì cả ba đều
+ * phải chuyển. Cấn trừ theo số dư ròng xử lý cả hai chuyện đó.
+ *
+ * Thanh toán ĐÃ xác nhận (paid = 1) được cộng thẳng vào số dư ròng thay vì trừ theo từng
+ * cặp như trước: tiền đã chuyển thì người trả bớt nợ, người nhận bớt phần được nhận, và
+ * phần còn lại được ghép lại từ đầu — nhờ vậy đổi cách ghép cặp không làm ai trả hai lần.
+ */
+export async function computeSessionSettlement(
+  env: Env,
+  sessionId: string
+): Promise<{ error: string; settlement: null } | { error: null; settlement: SessionSettlement }> {
+  const fail = (message: string) => ({ error: message, settlement: null } as const);
+
+  const session = await env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(sessionId).first<SessionRow>();
+  if (!session) return fail("Not found");
+
+  const attendees = await env.DB.prepare(
+    "SELECT member_id FROM session_members WHERE session_id = ? AND attended = 1"
+  ).bind(sessionId).all<{ member_id: string }>();
+  const eligibleMembers = session.group_id
+    ? await env.DB.prepare("SELECT id FROM members WHERE group_id = ?")
+      .bind(session.group_id)
+      .all<{ id: string }>()
+    : await env.DB.prepare("SELECT id FROM members")
+      .all<{ id: string }>();
+
+  const count = attendees.results.length;
+  if (count === 0) return fail("No attendees");
+
+  const attendeeIds = attendees.results.map((item) => item.member_id);
+  const eligibleMemberSet = new Set(eligibleMembers.results.map((item) => item.id));
+  const costs = await env.DB.prepare(
+    "SELECT id, amount, payer_id, consumer_id, consumer_ids, consumer_pending FROM costs WHERE session_id = ?"
+  ).bind(sessionId).all<CostRow>();
+
+  const payableCosts = costs.results.filter((cost) => !cost.consumer_pending);
+  const sharedCosts = payableCosts.filter((cost) => getCostConsumerIds(cost).length === 0);
+  const directCosts = payableCosts.filter((cost) => getCostConsumerIds(cost).length > 0);
+  const fallbackRecipientId = normalizePaymentRecipient((session as any).payment_recipient as string | null | undefined);
+  const forceCommonRecipient = Boolean((session as any).force_payment_recipient);
+
+  // Thu về hũ nhóm: mọi người nợ HŨ, KHÔNG cần người nhận chung cũng không cần người ứng tiền.
+  // recipient_member_id = NULL trong bảng payments nghĩa là "hũ của nhóm".
+  const paymentToPot = Number((session as any).payment_to_pot ?? 0) === 1;
+
+  if (fallbackRecipientId && !eligibleMemberSet.has(fallbackRecipientId)) {
+    return fail("Payment recipient must be an existing member");
+  }
+
+  if (!paymentToPot && forceCommonRecipient && !fallbackRecipientId) {
+    return fail("Cần chọn người nhận chung trước khi bật chế độ này");
+  }
+
+  // Vãng lai: 'self' = vãng lai tự nợ; 'ref' = dồn nợ của vãng lai sang người ref bảo lãnh.
+  const walkinDebtMode = ((session as any).walkin_debt_mode as string | null) === "ref" ? "ref" : "self";
+  const walkinRows = await env.DB.prepare(
+    "SELECT id, ref_member_id FROM members WHERE session_id = ? AND is_walkin = 1"
+  ).bind(sessionId).all<{ id: string; ref_member_id: string | null }>();
+  const walkinRefMap = new Map<string, string>();
+  if (walkinDebtMode === "ref") {
+    for (const walkin of walkinRows.results) {
+      if (walkin.ref_member_id && eligibleMemberSet.has(walkin.ref_member_id)) {
+        walkinRefMap.set(walkin.id, walkin.ref_member_id);
+      }
+    }
+  }
+  const resolveDebtor = (memberId: string) => walkinRefMap.get(memberId) ?? memberId;
+
+  // Ai ứng khoản này. Không thu về hũ mà khoản không có người ứng thì coi như người nhận
+  // chung đã ứng — giống hệt cách cũ (cả nhóm nợ người nhận chung khoản đó).
+  const advancerOf = (cost: CostRow) => cost.payer_id ?? (paymentToPot ? null : fallbackRecipientId);
+
+  // Giữ nguyên bộ kiểm tra cũ để thông báo lỗi không đổi.
+  for (const cost of sharedCosts) {
+    const recipientId = paymentToPot
+      ? POT_RECIPIENT
+      : (forceCommonRecipient ? fallbackRecipientId : (cost.payer_id ?? fallbackRecipientId));
+    if (!recipientId) return fail("Shared costs need a payer or a common payment recipient");
+    if (!paymentToPot && !eligibleMemberSet.has(recipientId)) {
+      return fail("Payment recipient must be an existing member");
+    }
+  }
+
+  for (const cost of directCosts) {
+    const recipientId = paymentToPot
+      ? POT_RECIPIENT
+      : (forceCommonRecipient ? fallbackRecipientId : (cost.payer_id ?? fallbackRecipientId));
+    const consumerIds = getCostConsumerIds(cost);
+    if (!recipientId || consumerIds.length === 0) {
+      return fail("Direct costs need a consumer and either a payer or a common payment recipient");
+    }
+    if (!paymentToPot && !eligibleMemberSet.has(recipientId)) {
+      return fail("Payer and consumer must both be existing members");
+    }
+    if (consumerIds.some((consumerId) => !eligibleMemberSet.has(consumerId))) {
+      return fail("Payer and consumer must both be existing members");
+    }
+  }
+
+  // Phần phải chịu: khoản chung chia cho người điểm danh, khoản riêng chia cho người dùng.
+  // splitAmountEvenly trả về số nguyên và tổng đúng bằng khoản chi, nên không rơi rớt lẻ.
+  const net = new Map<string, number>();
+  for (const cost of sharedCosts) {
+    const shares = splitAmountEvenly(cost.amount, count);
+    for (let index = 0; index < attendeeIds.length; index += 1) {
+      bumpBalance(net, resolveDebtor(attendeeIds[index]), -shares[index]);
+    }
+  }
+  for (const cost of directCosts) {
+    const consumerIds = getCostConsumerIds(cost);
+    const shares = splitAmountEvenly(cost.amount, consumerIds.length);
+    for (let index = 0; index < consumerIds.length; index += 1) {
+      bumpBalance(net, resolveDebtor(consumerIds[index]), -shares[index]);
+    }
+  }
+  for (const cost of payableCosts) {
+    bumpBalance(net, advancerOf(cost), Math.round(cost.amount));
+  }
+
+  // Tiền đã chuyển và ĐÃ xác nhận thì trừ khỏi số dư ròng của cả hai bên (recipient NULL =
+  // hũ nhóm, phía hũ không cần theo dõi vì hũ không nằm trong danh sách ghép cặp).
+  const confirmedRows = await env.DB.prepare(
+    "SELECT member_id, recipient_member_id, SUM(amount_owed) AS confirmed_total FROM payments WHERE session_id = ? AND paid = 1 GROUP BY member_id, recipient_member_id"
+  ).bind(sessionId).all<{ member_id: string; recipient_member_id: string | null; confirmed_total: number }>();
+  for (const row of confirmedRows.results) {
+    const amount = Math.round(row.confirmed_total);
+    bumpBalance(net, row.member_id, amount);
+    bumpBalance(net, row.recipient_member_id, -amount);
+  }
+
+  if (paymentToPot) {
+    // Hũ là đầu mối bắt buộc: tiền phải chạy qua tài khoản chung của nhóm mới đối soát được
+    // với lịch sử giao dịch hũ Timo, nên không ghép trực tiếp người với người.
+    return { error: null, settlement: routeThroughHub(net, POT_RECIPIENT) };
+  }
+
+  if (forceCommonRecipient && fallbackRecipientId) {
+    // "Dồn hết về một người" là lựa chọn có chủ ý của nhóm — giữ đầu mối, chỉ cấn trừ số tiền.
+    const { transfers, paybacks } = routeThroughHub(net, fallbackRecipientId);
+    for (const [memberId, amount] of paybacks.entries()) {
+      bumpBalance(transfers, `${fallbackRecipientId}:${memberId}`, amount);
+    }
+    return { error: null, settlement: { transfers, paybacks: new Map() } };
+  }
+
+  return { error: null, settlement: { transfers: matchDebtorsToCreditors(net), paybacks: new Map() } };
+}
 
 /**
  * Id payment TẤT ĐỊNH theo (buổi, người nợ, người nhận). Rất nhiều chỗ xoá payment chưa trả
@@ -2401,186 +2630,54 @@ async function stablePaymentId(sessionId: string, memberId: string, recipientKey
 // Lõi chia tiền — dùng chung cho route /recalculate và bot Messenger (add_cost).
 // Trả về message lỗi (tiếng Anh/Việt như route cũ) hoặc null nếu thành công.
 export async function recalcSessionPayments(env: Env, sessionId: string): Promise<string | null> {
-  const session = await env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(sessionId).first<SessionRow>();
-  if (!session) return "Not found";
-
-  const attendees = await env.DB.prepare(
-    "SELECT member_id FROM session_members WHERE session_id = ? AND attended = 1"
-  ).bind(sessionId).all<{ member_id: string }>();
-  const eligibleMembers = session.group_id
-    ? await env.DB.prepare("SELECT id FROM members WHERE group_id = ?")
-      .bind(session.group_id)
-      .all<{ id: string }>()
-    : await env.DB.prepare("SELECT id FROM members")
-      .all<{ id: string }>();
-
-  const count = attendees.results.length;
-  if (count === 0) return "No attendees";
-
-  const attendeeIds = attendees.results.map((item) => item.member_id);
-  const eligibleMemberSet = new Set(eligibleMembers.results.map((item) => item.id));
-  const costs = await env.DB.prepare(
-    "SELECT id, amount, payer_id, consumer_id, consumer_ids, consumer_pending FROM costs WHERE session_id = ?"
-  ).bind(sessionId).all<CostRow>();
-
-  const payableCosts = costs.results.filter((cost) => !cost.consumer_pending);
-  const sharedCosts = payableCosts.filter((cost) => getCostConsumerIds(cost).length === 0);
-  const directCosts = payableCosts.filter((cost) => getCostConsumerIds(cost).length > 0);
-  const fallbackRecipientId = normalizePaymentRecipient((session as any).payment_recipient as string | null | undefined);
-  const forceCommonRecipient = Boolean((session as any).force_payment_recipient);
-
-  // Thu về hũ nhóm: mọi người nợ HŨ, KHÔNG cần người nhận chung cũng không cần người ứng tiền.
-  // recipient_member_id = NULL trong bảng payments nghĩa là "hũ của nhóm".
-  const paymentToPot = Number((session as any).payment_to_pot ?? 0) === 1;
-
-  if (fallbackRecipientId && !eligibleMemberSet.has(fallbackRecipientId)) {
-    return "Payment recipient must be an existing member";
-  }
-
-  if (!paymentToPot && forceCommonRecipient && !fallbackRecipientId) {
-    return "Cần chọn người nhận chung trước khi bật chế độ này";
-  }
-
-  // Vãng lai: 'self' = vãng lai tự nợ; 'ref' = dồn nợ của vãng lai sang người ref bảo lãnh.
-  const walkinDebtMode = ((session as any).walkin_debt_mode as string | null) === "ref" ? "ref" : "self";
-  const walkinRows = await env.DB.prepare(
-    "SELECT id, ref_member_id FROM members WHERE session_id = ? AND is_walkin = 1"
-  ).bind(sessionId).all<{ id: string; ref_member_id: string | null }>();
-  const walkinRefMap = new Map<string, string>();
-  if (walkinDebtMode === "ref") {
-    for (const walkin of walkinRows.results) {
-      if (walkin.ref_member_id && eligibleMemberSet.has(walkin.ref_member_id)) {
-        walkinRefMap.set(walkin.id, walkin.ref_member_id);
-      }
-    }
-  }
-  const resolveDebtor = (memberId: string) => walkinRefMap.get(memberId) ?? memberId;
-
-  const paymentMap = new Map<string, number>();
-  const addPayment = (memberId: string | null | undefined, recipientMemberId: string | null | undefined, amount: number) => {
-    const debtor = memberId ? resolveDebtor(memberId) : memberId;
-    if (!debtor || !recipientMemberId || debtor === recipientMemberId || amount <= 0) return;
-    const key = `${debtor}:${recipientMemberId}`;
-    paymentMap.set(key, (paymentMap.get(key) ?? 0) + amount);
-  };
-
-  for (const cost of sharedCosts) {
-    const recipientId = paymentToPot
-      ? POT_RECIPIENT
-      : (forceCommonRecipient ? fallbackRecipientId : (cost.payer_id ?? fallbackRecipientId));
-    if (!recipientId) {
-      return "Shared costs need a payer or a common payment recipient";
-    }
-    if (!paymentToPot && !eligibleMemberSet.has(recipientId)) {
-      return "Payment recipient must be an existing member";
-    }
-
-    const shares = splitAmountEvenly(cost.amount, count);
-    for (let index = 0; index < attendeeIds.length; index += 1) {
-      const attendeeId = attendeeIds[index];
-      const share = shares[index];
-      addPayment(attendeeId, recipientId, share);
-    }
-  }
-
-  for (const cost of directCosts) {
-    const recipientId = paymentToPot
-      ? POT_RECIPIENT
-      : (forceCommonRecipient ? fallbackRecipientId : (cost.payer_id ?? fallbackRecipientId));
-    const consumerIds = getCostConsumerIds(cost);
-    if (!recipientId || consumerIds.length === 0) {
-      return "Direct costs need a consumer and either a payer or a common payment recipient";
-    }
-    if (!paymentToPot && !eligibleMemberSet.has(recipientId)) {
-      return "Payer and consumer must both be existing members";
-    }
-    if (consumerIds.some((consumerId) => !eligibleMemberSet.has(consumerId))) {
-      return "Payer and consumer must both be existing members";
-    }
-    const shares = splitAmountEvenly(cost.amount, consumerIds.length);
-    for (let index = 0; index < consumerIds.length; index += 1) {
-      addPayment(consumerIds[index], recipientId, shares[index]);
-    }
-  }
-
-  // Thu về hũ: KHÔNG cấn trừ tiền người ứng vào nợ hũ của họ. Ai cũng nộp đủ phần mình vào
-  // hũ, rồi hũ hoàn lại người ứng ĐÚNG số đã ứng. Nhiều hơn một lượt chuyển nhưng số tiền
-  // cần hoàn là con số chính xác (tổng chi phí họ ứng), không phụ thuộc phần chia nên không
-  // lệch làm tròn — trưởng nhóm rút quỹ trả lại theo QR cá nhân của người đó.
-
-  // Khi force mode bật, người nhận chung cần trả lại cho từng người đã ứng tiền thực tế
-  if (!paymentToPot && forceCommonRecipient && fallbackRecipientId) {
-    const paybackByPayer = new Map<string, number>();
-    for (const cost of costs.results) {
-      if ((cost as any).consumer_pending) continue;
-      if (!cost.payer_id || cost.payer_id === fallbackRecipientId) continue;
-      if (!eligibleMemberSet.has(cost.payer_id)) continue;
-      paybackByPayer.set(cost.payer_id, (paybackByPayer.get(cost.payer_id) ?? 0) + Math.round(cost.amount));
-    }
-    for (const [payerId, total] of paybackByPayer.entries()) {
-      addPayment(fallbackRecipientId, payerId, total);
-    }
-  }
-
-  // Net payments ngược chiều: nếu A nợ B và B nợ A thì chỉ giữ chiều chênh lệch
-  for (const key of [...paymentMap.keys()]) {
-    if (!paymentMap.has(key)) continue;
-    const [memberId, recipientMemberId] = key.split(":");
-    const reverseKey = `${recipientMemberId}:${memberId}`;
-    const reverseAmount = paymentMap.get(reverseKey);
-    if (!reverseAmount) continue;
-    const forwardAmount = paymentMap.get(key)!;
-    if (forwardAmount > reverseAmount) {
-      paymentMap.set(key, forwardAmount - reverseAmount);
-      paymentMap.delete(reverseKey);
-    } else if (reverseAmount > forwardAmount) {
-      paymentMap.set(reverseKey, reverseAmount - forwardAmount);
-      paymentMap.delete(key);
-    } else {
-      paymentMap.delete(key);
-      paymentMap.delete(reverseKey);
-    }
-  }
-
-  const confirmedRows = await env.DB.prepare(
-    "SELECT member_id, recipient_member_id, SUM(amount_owed) as confirmed_total FROM payments WHERE session_id = ? AND paid = 1 GROUP BY member_id, recipient_member_id"
-  ).bind(sessionId).all<{ member_id: string; recipient_member_id: string; confirmed_total: number }>();
-  const confirmedMap = new Map<string, number>();
-  for (const row of confirmedRows.results) {
-    // recipient_member_id NULL trong DB = hũ nhóm → khớp với khoá POT_RECIPIENT.
-    confirmedMap.set(`${row.member_id}:${row.recipient_member_id ?? POT_RECIPIENT}`, row.confirmed_total);
-  }
+  const result = await computeSessionSettlement(env, sessionId);
+  if (result.error !== null) return result.error;
 
   // GIỮ NGUYÊN id của payment chưa trả khi tính lại. Mã CLD trên QR đã phát cho người trả
   // gắn với id này; sinh id mới thì họ chuyển tiền xong sẽ bị đối soát thành "not_found".
-  const existingUnpaid = await env.DB.prepare(
-    "SELECT id, member_id, recipient_member_id FROM payments WHERE session_id = ? AND paid = 0"
-  ).bind(sessionId).all<{ id: string; member_id: string; recipient_member_id: string | null }>();
+  const existingRows = await env.DB.prepare(
+    "SELECT id, member_id, recipient_member_id, paid FROM payments WHERE session_id = ?"
+  ).bind(sessionId).all<{ id: string; member_id: string; recipient_member_id: string | null; paid: number }>();
   const existingIdMap = new Map<string, string>();
-  for (const row of existingUnpaid.results) {
+  const takenIds = new Set<string>();
+  for (const row of existingRows.results) {
+    if (row.paid === 1) {
+      // Dòng đã trả không bị xoá, id của nó vẫn chiếm chỗ trong bảng.
+      takenIds.add(row.id);
+      continue;
+    }
     existingIdMap.set(`${row.member_id}:${row.recipient_member_id ?? POT_RECIPIENT}`, row.id);
   }
 
   await env.DB.prepare("DELETE FROM payments WHERE session_id = ? AND paid = 0").bind(sessionId).run();
 
   const stmts: D1PreparedStatement[] = [];
-  for (const [key, calculatedAmount] of paymentMap.entries()) {
-    const confirmedAmount = confirmedMap.get(key) ?? 0;
-    const remaining = calculatedAmount - confirmedAmount;
-    if (remaining > 0) {
-      const [memberId, recipientMemberId] = key.split(":");
-      stmts.push(env.DB.prepare(`
-        INSERT INTO payments (id, session_id, member_id, recipient_member_id, amount_owed, paid)
-        VALUES (?, ?, ?, ?, ?, 0)
-      `).bind(
-        // Ưu tiên id đang tồn tại (mã CLD đã phát trước đây vẫn dùng được), rồi tới id tất định.
-        existingIdMap.get(key) ?? (await stablePaymentId(sessionId, memberId, recipientMemberId)),
-        sessionId,
-        memberId,
-        recipientMemberId === POT_RECIPIENT ? null : recipientMemberId,
-        remaining
-      ));
+  // Phần đã trả đã được cấn vào số dư ròng trong computeSessionSettlement, nên số ở đây
+  // chính là phần CÒN LẠI phải chuyển.
+  for (const [key, amount] of result.settlement.transfers.entries()) {
+    if (amount <= 0) continue;
+    const [memberId, recipientMemberId] = key.split(":");
+
+    // Ưu tiên id đang tồn tại (mã CLD đã phát trước đây vẫn dùng được), rồi tới id tất định.
+    // Chi phí tăng sau khi một cặp đã trả xong thì cặp đó lại phát sinh phần còn lại, mà id
+    // tất định của cặp đúng bằng id dòng đã trả — phải đổi salt, không thì INSERT trùng khoá
+    // chính và cả batch fail.
+    let paymentId = existingIdMap.get(key) ?? (await stablePaymentId(sessionId, memberId, recipientMemberId));
+    for (let attempt = 1; takenIds.has(paymentId); attempt += 1) {
+      paymentId = await stablePaymentId(sessionId, memberId, `${recipientMemberId}#${attempt}`);
     }
+    takenIds.add(paymentId);
+
+    stmts.push(env.DB.prepare(`
+      INSERT INTO payments (id, session_id, member_id, recipient_member_id, amount_owed, paid)
+      VALUES (?, ?, ?, ?, ?, 0)
+    `).bind(
+      paymentId,
+      sessionId,
+      memberId,
+      recipientMemberId === POT_RECIPIENT ? null : recipientMemberId,
+      amount
+    ));
   }
   if (stmts.length > 0) await env.DB.batch(stmts);
   return null;

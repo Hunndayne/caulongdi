@@ -164,7 +164,7 @@ export interface TimoPotCheckResult {
 export interface PotPayback {
   memberId: string;
   name: string;
-  /** Số tiền cần hoàn tính theo chi phí hiện tại. */
+  /** Số dư ròng hũ còn nợ họ: tổng đã ứng TRỪ phần họ phải chịu (nên họ không nộp vào hũ nữa). */
   amount: number;
   transferredAt: string | null;
   transferredBy: string | null;

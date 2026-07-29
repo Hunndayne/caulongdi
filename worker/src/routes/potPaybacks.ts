@@ -10,60 +10,84 @@
 import { Hono } from "hono";
 import { Env } from "../types";
 import { ensurePotPaybackTable } from "../db/potPaybackTable";
-import { canManageGroupPot } from "./sessions";
+import { canManageGroupPot, computeSessionSettlement } from "./sessions";
 
 const potPaybacks = new Hono<{ Bindings: Env; Variables: { userId: string; userRole: string } }>();
 
-type PotPaybackRow = {
+type PotPaybackStateRow = {
   member_id: string;
   name: string;
-  user_id: string | null;
-  amount: number;
   transferred_at: string | null;
   transferred_by: string | null;
   confirmed_at: string | null;
   marked_amount: number | null;
 };
 
-// Số tiền cần hoàn = tổng chi phí người đó đã ứng cho buổi. Tính ở server, không tin client.
-// Bỏ chi phí chưa rõ người dùng (consumer_pending) cho khớp lõi chia tiền.
-const PAYBACK_QUERY = `
+// Trạng thái hai bước đã ghi nhận cho buổi. Giữ cả những dòng mà số cần hoàn giờ đã về 0
+// (chi phí bị sửa/xoá sau khi quỹ đã chuyển) để trưởng nhóm còn thấy mà thu lại phần chênh.
+const PAYBACK_STATE_QUERY = `
   SELECT
-    c.payer_id AS member_id,
+    pb.member_id,
     m.name,
-    m.user_id,
-    SUM(c.amount) AS amount,
     pb.transferred_at,
     pb.transferred_by,
     pb.confirmed_at,
     pb.amount AS marked_amount
-  FROM costs c
-  JOIN members m ON m.id = c.payer_id
-  LEFT JOIN pot_paybacks pb ON pb.session_id = c.session_id AND pb.member_id = c.payer_id
-  WHERE c.session_id = ?
-    AND c.payer_id IS NOT NULL
-    AND COALESCE(c.consumer_pending, 0) != 1
-  GROUP BY c.payer_id
-  ORDER BY SUM(c.amount) DESC
+  FROM pot_paybacks pb
+  JOIN members m ON m.id = pb.member_id
+  WHERE pb.session_id = ?
 `;
 
 async function loadSession(c: any, sessionId: string) {
   return c.env.DB.prepare("SELECT * FROM sessions WHERE id = ?").bind(sessionId).first();
 }
 
+/**
+ * Số tiền cần hoàn = số dư RÒNG của người ứng (đã ứng − phần họ phải chịu), lấy từ đúng lõi
+ * chốt sổ mà bảng payments dùng. Không phải tổng chi phí họ ứng: họ đã không nộp phần mình
+ * vào hũ nữa, nên hoàn nguyên số đã ứng là trả thừa.
+ */
 async function listPaybacks(c: any, sessionId: string) {
-  const rows = await c.env.DB.prepare(PAYBACK_QUERY).bind(sessionId).all();
+  const settlement = await computeSessionSettlement(c.env, sessionId);
+  const amounts = settlement.settlement?.paybacks ?? new Map<string, number>();
 
-  return ((rows.results ?? []) as PotPaybackRow[]).map((row) => ({
-    memberId: row.member_id,
-    name: row.name,
-    amount: Math.round(row.amount),
-    transferredAt: row.transferred_at,
-    transferredBy: row.transferred_by,
-    confirmedAt: row.confirmed_at,
-    // Số tiền lúc đánh dấu — lệch với amount hiện tại nghĩa là chi phí đã đổi sau khi chuyển.
-    markedAmount: row.marked_amount === null ? null : Math.round(row.marked_amount),
-  }));
+  const stateRows = await c.env.DB.prepare(PAYBACK_STATE_QUERY).bind(sessionId).all();
+  const stateByMember = new Map<string, PotPaybackStateRow>(
+    ((stateRows.results ?? []) as PotPaybackStateRow[]).map((row) => [row.member_id, row])
+  );
+
+  // Người cần hoàn theo tính toán mới + người đã có dòng trạng thái cũ.
+  const memberIds = new Set<string>([...amounts.keys(), ...stateByMember.keys()]);
+  if (memberIds.size === 0) return [];
+
+  const nameRows = await c.env.DB.prepare(
+    `SELECT id, name FROM members WHERE id IN (${[...memberIds].map(() => "?").join(", ")})`
+  )
+    .bind(...memberIds)
+    .all();
+  const nameById = new Map<string, string>(
+    ((nameRows.results ?? []) as { id: string; name: string }[]).map((row) => [row.id, row.name])
+  );
+
+  return [...memberIds]
+    .map((memberId) => {
+      const state = stateByMember.get(memberId) ?? null;
+      return {
+        memberId,
+        name: nameById.get(memberId) ?? state?.name ?? memberId,
+        amount: Math.round(amounts.get(memberId) ?? 0),
+        transferredAt: state?.transferred_at ?? null,
+        transferredBy: state?.transferred_by ?? null,
+        confirmedAt: state?.confirmed_at ?? null,
+        // Số tiền lúc đánh dấu — lệch với amount hiện tại nghĩa là chi phí đã đổi sau khi chuyển.
+        markedAmount: state?.marked_amount === null || state?.marked_amount === undefined
+          ? null
+          : Math.round(state.marked_amount),
+      };
+    })
+    // Bỏ người vừa không còn phải hoàn, vừa chưa từng được đánh dấu — không có gì để làm.
+    .filter((item) => item.amount > 0 || item.transferredAt !== null)
+    .sort((a, b) => b.amount - a.amount || a.name.localeCompare(b.name, "vi"));
 }
 
 potPaybacks.get("/:sessionId", async (c) => {
@@ -101,7 +125,9 @@ potPaybacks.post("/:sessionId/:memberId/transfer", async (c) => {
 
   const items = await listPaybacks(c, sessionId);
   const target = items.find((item) => item.memberId === memberId);
-  if (!target) return c.json({ error: "Người này không ứng chi phí nào trong buổi" }, 400);
+  if (!target || target.amount <= 0) {
+    return c.json({ error: "Hũ không còn nợ người này khoản nào (đã cấn trừ phần họ phải chịu)" }, 400);
+  }
 
   const now = new Date().toISOString();
   await c.env.DB.prepare(`
