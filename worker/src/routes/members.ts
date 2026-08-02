@@ -43,6 +43,9 @@ members.get("/", async (c) => {
     SELECT
       m.*,
       u.email AS user_email,
+      -- Tên/ảnh thật từ hồ sơ: members.name là bản chụp lúc tạo, chỉ site-admin sửa được.
+      u.name AS user_name,
+      u.avatar_url AS user_avatar_url,
       u.bank_bin AS user_bank_bin,
       u.bank_account_number AS user_bank_account_number,
       u.bank_account_name AS user_bank_account_name

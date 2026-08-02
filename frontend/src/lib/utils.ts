@@ -36,3 +36,29 @@ export function getInitials(name: string): string {
     .join("")
     .toUpperCase();
 }
+
+/**
+ * Chuẩn hoá tên + ảnh của thành viên về ĐÚNG hồ sơ thật.
+ *
+ * members.name/avatar_color chỉ là bản chụp lúc tạo thành viên, và với người đã có tài khoản
+ * thì chỉ site-admin mới sửa được — nên khi người dùng tự đổi tên/ảnh trong hồ sơ, bản chụp
+ * trôi lại phía sau mà nhóm không tự sửa nổi. Ưu tiên dữ liệu hồ sơ khi member gắn tài khoản;
+ * vãng lai không có user_id nên giữ nguyên tên đã nhập cho buổi đó.
+ *
+ * Gọi MỘT lần lúc dựng danh sách rồi dùng lại, đừng chép logic này ra từng chỗ hiển thị.
+ */
+export function withRealIdentity<T extends {
+  name: string;
+  user_id?: string;
+  user_name?: string | null;
+  user_avatar_url?: string | null;
+}>(member: T): T {
+  if (!member.user_id) return member;
+  const realName = member.user_name?.trim();
+  return realName && realName !== member.name ? { ...member, name: realName } : member;
+}
+
+/** URL ảnh đại diện thật; rỗng thì trả undefined để Avatar tự vẽ chữ cái đầu. */
+export function memberAvatarUrl(member: { user_avatar_url?: string | null }): string | undefined {
+  return member.user_avatar_url?.trim() || undefined;
+}

@@ -195,6 +195,10 @@ export interface Member {
   session_id?: string | null;
   created_at: string;
   user_email?: string;
+  /** Tên thật trong hồ sơ. members.name chỉ là bản chụp lúc tạo nên có thể đã cũ. */
+  user_name?: string | null;
+  /** Ảnh đại diện thật trong hồ sơ; vãng lai/chưa có tài khoản thì rỗng. */
+  user_avatar_url?: string | null;
   user_bank_bin?: string;
   user_bank_account_number?: string;
   user_bank_account_name?: string;

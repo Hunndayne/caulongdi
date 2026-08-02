@@ -37,7 +37,7 @@ import {
 import { useSession } from "@/lib/auth-client";
 import banksData from "@/lib/banks.json";
 import { isAdminUser } from "@/lib/permissions";
-import { formatCurrency, formatDate, formatSessionTimeRange, getSessionTitle } from "@/lib/utils";
+import { formatCurrency, formatDate, formatSessionTimeRange, getSessionTitle, memberAvatarUrl, withRealIdentity } from "@/lib/utils";
 import { useGroupsStore } from "@/stores/groupsStore";
 import { useMembersStore } from "@/stores/membersStore";
 import { useSessionsStore } from "@/stores/sessionsStore";
@@ -539,7 +539,9 @@ export default function SessionDetailPage() {
   const canOverrideAttendanceLock = isAdminUser(authSession?.user) || groupRole === "admin";
   const attendanceLeaveLocked = hasCalculatedPayments && !canOverrideAttendanceLock;
 
-  const allMembers = [...members, ...s.members];
+  // Chuẩn hoá NGAY tại nguồn: mọi chỗ đọc .name phía dưới (công nợ, chi phí, xuất Excel,
+  // danh sách điểm danh) tự lấy tên hồ sơ thật, khỏi phải sửa rải rác từng chỗ hiển thị.
+  const allMembers = [...members, ...s.members].map(withRealIdentity);
   const memberById = new Map<string, Member>();
   for (const member of allMembers) {
     const existing = memberById.get(member.id);
@@ -2016,7 +2018,7 @@ export default function SessionDetailPage() {
                   disabled={!canManageSession || leaveLocked}
                   className={`flex w-full items-center gap-3 rounded-xl border p-3 transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${checked ? "border-green-200 bg-green-50" : "border-gray-100 bg-white"}`}
                 >
-                  <Avatar name={member.name} color={member.avatar_color} size="sm" />
+                  <Avatar name={member.name} color={member.avatar_color} size="sm" imageUrl={memberAvatarUrl(member)} />
                   <span className="flex-1 text-left">
                     <span className="font-medium text-gray-900">{member.name}</span>
                     {isWalkin && (
@@ -2455,7 +2457,9 @@ export default function SessionDetailPage() {
                   >
                     <div className="flex items-start justify-between gap-3">
                       <div className="flex min-w-0 items-start gap-3">
-                        {debtor && <Avatar name={debtor.name} color={debtor.avatar_color} size="sm" />}
+                        {debtor && (
+                          <Avatar name={debtor.name} color={debtor.avatar_color} size="sm" imageUrl={memberAvatarUrl(debtor)} />
+                        )}
                         <div className="min-w-0">
                           <div className="font-medium text-gray-900">{debtorName}</div>
                           <div className="text-sm text-gray-500">
@@ -2594,7 +2598,12 @@ export default function SessionDetailPage() {
                     >
                       <div className="flex items-start justify-between gap-3">
                         <div className="flex min-w-0 items-start gap-3">
-                          <Avatar name={name} color={payer?.avatar_color ?? "#9ca3af"} size="sm" />
+                          <Avatar
+                            name={name}
+                            color={payer?.avatar_color ?? "#9ca3af"}
+                            size="sm"
+                            imageUrl={payer ? memberAvatarUrl(payer) : undefined}
+                          />
                           <div className="min-w-0">
                             <div className="font-medium text-gray-900">{name}</div>
                             <div className="text-sm text-gray-500">Hũ cần hoàn lại (đã trừ suất của họ)</div>

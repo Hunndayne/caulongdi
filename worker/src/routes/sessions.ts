@@ -1673,6 +1673,10 @@ sessions.get("/:id", async (c) => {
   const members = await c.env.DB.prepare(`
     SELECT m.*, sm.attended,
       u.email AS user_email,
+      -- members.name/avatar_color chỉ là bản chụp lúc tạo và chỉ site-admin sửa được, nên nó
+      -- trôi khỏi hồ sơ thật khi người dùng tự đổi tên/ảnh. Trả kèm bản thật để UI ưu tiên.
+      u.name AS user_name,
+      u.avatar_url AS user_avatar_url,
       u.bank_bin AS user_bank_bin,
       u.bank_account_number AS user_bank_account_number,
       u.bank_account_name AS user_bank_account_name
