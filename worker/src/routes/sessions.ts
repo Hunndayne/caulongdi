@@ -1091,8 +1091,9 @@ async function normalizeReceiptLabelsVi(c: any, items: ReceiptParsedCost[]): Pro
           { role: "user", content: JSON.stringify(labels) },
         ],
         // Thinking mode không nhận temperature; max_tokens nâng lên để chừa chỗ cho chuỗi suy luận.
+        // Hóa đơn nhiều dòng thì map nhãn trả về dài — nới trần để không bị cắt cụt giữa JSON.
         thinking: { type: "enabled" },
-        max_tokens: 1400,
+        max_tokens: 16000,
         response_format: { type: "json_object" },
         stream: false,
       }),

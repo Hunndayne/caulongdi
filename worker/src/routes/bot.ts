@@ -789,8 +789,12 @@ async function classifyWithAI(
       ],
       // Bật thinking cho bước phân loại/rút dữ liệu — dễ sai (vd nhầm giờ bắt đầu/kết thúc)
       // nên đánh đổi thêm token + độ trễ lấy độ chính xác. Thinking mode không nhận temperature.
+      // effort=max: bước này quyết định thao tác nào được chạy trên web (tạo/sửa/hủy buổi, ghi
+      // khoản chi) nên ưu tiên đúng hơn nhanh. max_tokens phải nới theo vì chuỗi suy luận ăn
+      // chung budget với JSON trả về — thiếu chỗ là content rỗng, parse fail, tụt về regex.
       thinking: { type: "enabled" },
-      max_tokens: 1000,
+      reasoning_effort: "max",
+      max_tokens: 16000,
       response_format: { type: "json_object" },
       stream: false,
     }),
@@ -919,8 +923,11 @@ async function replyNaturalChat(
         },
       ],
       // Thinking mode không nhận temperature.
+      // effort=low: chỉ tán ngẫu 1-4 câu và người dùng đang ngồi đợi trong group chat nên ưu
+      // tiên phản hồi nhanh; luồng này không thao tác dữ liệu nên sai cũng không hỏng gì.
       thinking: { type: "enabled" },
-      max_tokens: 900,
+      reasoning_effort: "low",
+      max_tokens: 4000,
       stream: false,
     }),
   });
@@ -1421,8 +1428,10 @@ async function pickSessionWithAI(
           },
         ],
         // Thinking mode không nhận temperature; max_tokens nâng lên để chừa chỗ cho chuỗi suy luận.
+        // effort=max: chọn nhầm id là sửa/hủy nhầm buổi của cả nhóm nên ưu tiên đúng hơn nhanh.
         thinking: { type: "enabled" },
-        max_tokens: 600,
+        reasoning_effort: "max",
+        max_tokens: 16000,
         response_format: { type: "json_object" },
         stream: false,
       }),
@@ -3230,8 +3239,9 @@ bot.post("/summarize", async (c) => {
         { role: "user", content: userContent },
       ],
       // Thinking mode không nhận temperature; max_tokens nâng cao để chừa chỗ cho chuỗi suy luận + bản tóm tắt chi tiết.
+      // Chạy nền theo cron nên độ trễ không ảnh hưởng người dùng — giữ effort mặc định (high).
       thinking: { type: "enabled" },
-      max_tokens: 3000,
+      max_tokens: 16000,
       response_format: { type: "json_object" },
       stream: false,
     }),

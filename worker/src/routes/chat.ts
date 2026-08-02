@@ -286,8 +286,9 @@ async function generateGroupSummaryWithAI(
           { role: "user", content: `Đoạn chat:\n${chatLog}` },
         ],
         // Thinking mode không nhận temperature; max_tokens nâng cao để chừa chỗ cho chuỗi suy luận + bản tóm tắt chi tiết.
+        // Chạy nền, không ai ngồi đợi — giữ effort mặc định (high).
         thinking: { type: "enabled" },
-        max_tokens: 3000,
+        max_tokens: 16000,
         response_format: { type: "json_object" },
         stream: false,
       }),
