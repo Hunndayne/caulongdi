@@ -17,7 +17,7 @@ import { cn, getInitials } from "@/lib/utils";
 const navItems = [
   { to: "/", icon: Home, label: "Trang chủ", exact: true },
   { to: "/sessions", icon: Calendar, label: "Buổi chơi" },
-  { to: "/members", icon: Users, label: "Thành viên" },
+  { to: "/members", icon: Users, label: "Nhóm" },
   { to: "/debt", icon: CreditCard, label: "Công nợ" },
   { to: "/chat", icon: MessageCircle, label: "Chat" },
   { to: "/profile", icon: UserCircle, label: "Hồ sơ" },
