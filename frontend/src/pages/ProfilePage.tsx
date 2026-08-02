@@ -230,7 +230,7 @@ export default function ProfilePage() {
         </div>
         {!activeGroupId ? (
           <div className="rounded-xl border border-gray-100 bg-white p-4 text-sm text-gray-500">
-            Chọn nhóm ở trang Thành viên để xem danh sách hồ sơ.
+            Chọn nhóm ở trang Nhóm để xem danh sách hồ sơ.
           </div>
         ) : otherProfiles.length === 0 ? (
           <div className="rounded-xl border border-gray-100 bg-white p-4 text-sm text-gray-500">

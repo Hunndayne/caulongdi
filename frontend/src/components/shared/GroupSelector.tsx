@@ -61,7 +61,7 @@ export function GroupSelector({
       </div>
       {(error || groups.length === 0) && (
         <div className="px-6 pb-2 text-xs text-[#71717a]">
-          {error ?? "Quản lý nhóm và lời mời ở trang Thành viên."}
+          {error ?? "Quản lý nhóm và lời mời ở trang Nhóm."}
         </div>
       )}
     </div>

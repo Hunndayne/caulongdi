@@ -64,7 +64,7 @@ export default function JoinPage() {
           <h1 className="text-xl font-bold text-gray-900">Không tìm thấy lời mời</h1>
           <p className="text-sm text-gray-500">{error || "Link mời không hợp lệ hoặc đã hết hạn."}</p>
           <Button variant="outline" onClick={() => navigate("/members", { replace: true })}>
-            Quay về trang thành viên
+            Quay về trang Nhóm
           </Button>
         </div>
       </div>
