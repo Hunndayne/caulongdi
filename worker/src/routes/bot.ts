@@ -32,6 +32,7 @@ type Intent =
   | "add_cost"
   | "update_cost"
   | "mark_paid"
+  | "my_debts"
   | "stats"
   | "chat";
 
@@ -242,6 +243,7 @@ function helpText() {
     '• "hủy kèo ngày mai" — hủy buổi (bot hỏi xác nhận trước khi xóa)',
     '• "tháng này đánh mấy buổi" / "ai đi nhiều nhất" — thống kê',
     '• "chi phí buổi vừa rồi" / "ai nợ ai" — xem tổng tiền và công nợ của buổi',
+    '• "tôi còn nợ buổi nào" / "ai nợ tôi" / "Nam còn nợ gì không" — công nợ còn lại của một người qua mọi buổi',
     '• "tiền sân 240k" / "3 ống cầu 270k Nam trả" — ghi khoản chi vào buổi (mặc định chia đều)',
     '• "nem nướng 348k Phát trả, chia cho Phát, Hậu, Vinh" — ghi khoản chỉ chia cho vài người',
     '• "khoản cầu để Nam trả" / "đổi tiền nước thành 80k" / "xóa khoản cầu" — sửa/xóa khoản đã ghi',
@@ -586,11 +588,24 @@ function isAddCostLike(text: string): boolean {
   return /\b(tien|phi|chi phi|khoan|san|nuoc|cau|bong|bill|an|nem|ve|nuoc uong|do an)\b/.test(t);
 }
 
+// Lưới an toàn cho my_debts — cố tình HẸP vì AI mới là bộ phân loại chính.
+// Tránh bắt bare "no": bỏ dấu thì "nợ" trùng "nó", nên "nó bao nhiêu tiền" sẽ lọt.
+function asksForMyDebts(t: string): boolean {
+  if (/\bcong no\b/.test(t)) return true; // "công nợ của tôi"
+  if (/\bai (dang )?no (toi|minh|tui|em|tao)\b/.test(t)) return true; // "ai nợ tôi"
+  if (/\b(toi|minh|tui|em|tao) no bao nhieu\b/.test(t)) return true; // "tôi nợ bao nhiêu"
+  // "còn nợ" + phạm vi nhiều buổi/hỏi tổng — "còn nó" gần như không có nghĩa nên an toàn.
+  return /\bcon no\b/.test(t) && /\b(buoi nao|nhung buoi|bao nhieu|gi khong|khong)\b/.test(t);
+}
+
 function detectIntentByRegex(text: string): Intent | null {
   const t = removeDiacritics(text.toLowerCase()).trim();
   const sessionContext = hasSessionContext(t);
   const scheduleQuestion = asksForSchedule(t);
   if (/^\/help\b/.test(t) || /\b(huong dan|cac lenh|menu)\b/.test(t)) return "help";
+  // Phải đứng TRƯỚC asksForCosts: "ai nợ tôi" cũng khớp mẫu công nợ của costs,
+  // nhưng nó hỏi qua mọi buổi chứ không phải một buổi.
+  if (asksForMyDebts(t)) return "my_debts";
   if (asksForCosts(t)) return "costs";
   if (sessionContext && asksForAttendees(t)) {
     return "list_attendees";
@@ -625,6 +640,7 @@ function normalizeIntent(value: unknown): Intent | null {
     "add_cost",
     "update_cost",
     "mark_paid",
+    "my_debts",
     "stats",
     "help",
     "chat",
@@ -771,12 +787,14 @@ async function classifyWithAI(
     'Nếu người dùng muốn SỬA/ĐỔI/XÓA một khoản chi ĐÃ ghi (đổi người trả, đổi số tiền, đổi người chia, hoặc xóa khoản — vd "khoản cầu để Nam trả", "tiền sân tôi trả", "đổi tiền nước thành 80k", "xóa khoản cầu") thì intent là update_cost. cost.label là tên khoản CẦN SỬA, các trường còn lại (amount/payerName/consumerNames) là GIÁ TRỊ MỚI; KHÔNG điền field nào nếu không đổi nó.',
     'PHÂN BIỆT người TRẢ với người DÙNG/HƯỞNG: người đứng trước "trả/ứng/bao" là payerName; người đứng trước "dùng/ăn/uống/xài" hoặc sau "chia cho/của" là consumerNames. Vd "Hậu dùng nem nướng, Vinh trả" → label="nem nướng", consumerNames=["Hậu"], payerName="Vinh" (KHÔNG đặt Hậu là payer).',
     'Nếu người dùng muốn ĐÁNH DẤU/XÁC NHẬN đã trả tiền/đã chuyển khoản công nợ ("tôi trả Nam rồi", "đánh dấu đã trả", "Nam chuyển cho tôi rồi") thì intent là mark_paid.',
+    'Nếu người dùng hỏi công nợ của MỘT NGƯỜI trải trên NHIỀU buổi — "tôi còn nợ buổi nào", "tôi nợ bao nhiêu", "còn nợ những buổi nào", "ai nợ tôi", "Nam còn nợ gì không" — thì intent là my_debts. Nếu hỏi về người khác thì names là người đó, hỏi về chính mình thì names rỗng [].',
+    'PHÂN BIỆT my_debts với costs: costs là công nợ TRONG MỘT BUỔI cụ thể ("ai nợ ai buổi hôm qua", "chi phí buổi vừa rồi"); my_debts là công nợ CÒN LẠI của một người qua MỌI buổi, không gắn với buổi nào.',
     "Only classify today/week/upcoming/next/recent/list_attendees when the user clearly asks about badminton sessions, schedule, court, or players; casual chat that happens to mention time words must be unknown.",
     "Bạn phân tích câu của người dùng về lịch chơi cầu lông của một nhóm và TRẢ VỀ JSON.",
     'Định dạng JSON: {"intent": "...", "names": ["..."], "session": {"date": "YYYY-MM-DD", "startTime": "HH:MM", "endTime": "HH:MM", "venue": "..."}, "changes": {"date": "...", "startTime": "...", "endTime": "...", "venue": "..."}, "cost": {"label": "...", "amount": 0, "quantity": 1, "payerName": "...", "consumerNames": ["..."]}}.',
     "intent là MỘT trong: next, upcoming, today, week, recent, list_members, list_attendees, add_member, remove_member, create_session, update_session, cancel_session, costs, add_cost, update_cost, mark_paid, stats, help, unknown.",
     "Ý nghĩa: next=buổi sắp tới gần nhất; upcoming=danh sách buổi sắp tới; today=hôm nay; week=tuần này; recent=các buổi gần đây/lịch sử;",
-    "list_members=liệt kê thành viên nhóm; list_attendees=ai tham gia buổi; add_member=thêm người vào buổi; create_session=tạo buổi/kèo mới; costs=xem chi phí/công nợ buổi; add_cost=ghi một khoản chi mới; update_cost=sửa/xóa khoản chi đã ghi; mark_paid=xác nhận đã trả nợ; help=hướng dẫn; unknown=không liên quan.",
+    "list_members=liệt kê thành viên nhóm; list_attendees=ai tham gia buổi; add_member=thêm người vào buổi; create_session=tạo buổi/kèo mới; costs=xem chi phí/công nợ buổi; add_cost=ghi một khoản chi mới; update_cost=sửa/xóa khoản chi đã ghi; mark_paid=xác nhận đã trả nợ; my_debts=công nợ còn lại của một người qua mọi buổi; help=hướng dẫn; unknown=không liên quan.",
     `cost điền khi intent=add_cost hoặc update_cost: label là tên khoản (vd "tiền sân", "ống cầu", "tiền ăn"), amount là số VND tuyệt đối (240k → 240000, 1tr2 → 1200000), quantity mặc định 1.`,
     `Trong cost, payerName là người ỨNG/TRẢ tiền: các cách nói "X trả", "X ứng", "X bao", "trả lại cho X", "gửi lại X", "lại cho X" đều nghĩa là X ứng tiền nên payerName=X ("${SELF_NAME_TOKEN}" nếu người gửi tự trả).`,
     `Trong cost, consumerNames là DANH SÁCH người được CHIA khoản này khi câu có liệt kê người hưởng ("cho A, B, C", "của A B C", "A B C ăn", "phần của A B"); nếu KHÔNG liệt kê ai cụ thể thì để consumerNames rỗng [] (chia đều cả buổi). consumerNames là người HƯỞNG, khác payerName là người trả — một người có thể vừa trả vừa nằm trong danh sách hưởng.`,
@@ -1755,6 +1773,8 @@ async function handleQuery(
       return replyUpdateCost(env, groupId, groupName, text, actor, parsed.cost, parsed.session, aliases, context);
     case "mark_paid":
       return replyMarkPaid(env, groupId, groupName, text, parsed.session);
+    case "my_debts":
+      return replyMyDebts(env, groupId, groupName, actor, parsed.names, aliases);
     case "chat":
       return replyNaturalChat(env, groupName, text, actor, context, groupSummary);
     default:
@@ -1804,6 +1824,8 @@ export async function handleGroupBotQuery(
       return replyUpdateCost(env, groupId, groupName, text, actor, parsed.cost, parsed.session, undefined, context);
     case "mark_paid":
       return replyMarkPaid(env, groupId, groupName, text, parsed.session);
+    case "my_debts":
+      return replyMyDebts(env, groupId, groupName, actor, parsed.names, undefined);
     case "chat":
       return replyNaturalChat(env, groupName, text, actor, context, groupSummary);
     default:
@@ -2030,6 +2052,95 @@ async function replyMarkPaid(
       'Xem nhanh công nợ tại đây thì gõ "ai nợ ai".',
     ].join("\n"),
   };
+}
+
+type DebtRow = {
+  session_id: string;
+  date: string;
+  start_time: string;
+  venue: string;
+  session_name?: string | null;
+  amount_owed: number;
+  payer_marked_paid: number;
+  counterpart?: string | null;
+};
+
+// Công nợ CHÉO BUỔI của MỘT người ("tôi còn nợ buổi nào", "Nam nợ những buổi nào").
+// Khác replyCosts: chỗ kia là một buổi × mọi người, chỗ này là một người × mọi buổi.
+async function replyMyDebts(
+  env: Env,
+  groupId: string,
+  groupName: string,
+  actor?: BotActor,
+  names?: string[],
+  aliases?: Map<string, string>
+): Promise<BotReply> {
+  const members =
+    (await env.DB.prepare("SELECT id, name FROM members WHERE group_id = ? AND is_active = 1")
+      .bind(groupId)
+      .all<{ id: string; name: string }>()).results ?? [];
+
+  // Mặc định hỏi về chính người gửi; có nêu tên người khác thì tra người đó.
+  const named = (names ?? []).find((n) => n && n !== SELF_NAME_TOKEN);
+  const target = named ? resolveMemberByName(members, named, aliases) : resolveSelfMember(members, actor);
+
+  if (!target) {
+    return {
+      ok: true,
+      reply: named
+        ? `Không tìm thấy "${named}" trong nhóm ${groupName}. Gõ "thành viên" để xem danh sách tên.`
+        : "Mình chưa biết bạn là ai trên web. Gõ /alias <tên trên web> để ghép tên Messenger với thành viên nhé.",
+    };
+  }
+
+  const selectDebts = (side: "owes" | "owed") => `
+    SELECT p.session_id, s.date, s.start_time, s.venue, s.name AS session_name,
+      p.amount_owed, p.payer_marked_paid,
+      counterpart.name AS counterpart
+    FROM payments p
+    JOIN sessions s ON s.id = p.session_id
+    LEFT JOIN members counterpart ON counterpart.id = p.${side === "owes" ? "recipient_member_id" : "member_id"}
+    WHERE p.${side === "owes" ? "member_id" : "recipient_member_id"} = ?
+      AND s.group_id = ? AND p.paid = 0 AND p.amount_owed > 0
+    ORDER BY s.date DESC, s.start_time DESC`;
+
+  const [owesRes, owedRes] = await Promise.all([
+    env.DB.prepare(selectDebts("owes")).bind(target.id, groupId).all<DebtRow>(),
+    env.DB.prepare(selectDebts("owed")).bind(target.id, groupId).all<DebtRow>(),
+  ]);
+  const owes = owesRes.results ?? [];
+  const owed = owedRes.results ?? [];
+
+  const sum = (rows: DebtRow[]) => rows.reduce((t, r) => t + (Number(r.amount_owed) || 0), 0);
+  const line = (r: DebtRow, arrow: string) => {
+    const title = r.session_name?.trim() || r.venue;
+    // payer_marked_paid = người nợ đã báo chuyển nhưng bên nhận chưa xác nhận.
+    const pending = r.payer_marked_paid ? " ⏳ đã báo chuyển, chờ xác nhận" : "";
+    return `• ${formatDate(r.date)} • ${r.start_time} • ${title} — ${formatMoney(r.amount_owed)} ${arrow} ${
+      r.counterpart || "?"
+    }${pending}`;
+  };
+
+  const who = named ? target.name : "Bạn";
+  const lines = [`💸 Công nợ của ${target.name} ở ${groupName}`];
+
+  if (!owes.length && !owed.length) {
+    lines.push(`✅ ${who} không còn nợ ai, cũng không ai nợ ${named ? target.name : "bạn"}.`);
+    return { ok: true, reply: lines.join("\n") };
+  }
+
+  if (owes.length) {
+    lines.push("", `🔴 ${who} còn nợ (${owes.length} buổi, tổng ${formatMoney(sum(owes))}):`);
+    for (const r of owes) lines.push(line(r, "→"));
+  }
+  if (owed.length) {
+    lines.push("", `🟢 Người khác nợ ${named ? target.name : "bạn"} (${owed.length} buổi, tổng ${formatMoney(sum(owed))}):`);
+    for (const r of owed) lines.push(line(r, "←"));
+  }
+
+  const base = (env.FRONTEND_URL || "https://caulong.hunn.io.vn").replace(/\/+$/, "");
+  lines.push("", `👉 Xác nhận đã trả trên web: ${base}`);
+  return { ok: true, reply: lines.join("\n") };
 }
 
 // Buổi mặc định để ghi chi phí: hôm nay → gần nhất đã qua → sắp tới gần nhất.
