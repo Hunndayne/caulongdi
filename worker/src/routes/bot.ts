@@ -723,10 +723,22 @@ function normalizeAiTime(value: unknown): string | undefined {
   return `${String(hour).padStart(2, "0")}:${match[2]}`;
 }
 
+// Danh sách tên thành viên để nhét vào prompt NLU (cùng bộ lọc với addNamesToSession).
+async function loadGroupMemberNames(env: Env, groupId: string): Promise<string[]> {
+  const rows =
+    (await env.DB.prepare(
+      "SELECT name FROM members WHERE group_id = ? AND is_active = 1 AND is_walkin = 0 ORDER BY name LIMIT 200"
+    )
+      .bind(groupId)
+      .all<{ name: string }>()).results ?? [];
+  return rows.map((r) => r.name?.trim()).filter((n): n is string => !!n);
+}
+
 // Gọi DeepSeek (API tương thích OpenAI) để phân loại ý định + rút tên người + thông tin buổi.
 async function classifyWithAI(
   env: Env,
   text: string,
+  groupId?: string,
   actor?: BotActor,
   context?: BotContextMessage[]
 ): Promise<ParsedIntent | null> {
@@ -734,6 +746,10 @@ async function classifyWithAI(
   if (!apiKey) return null;
   const baseUrl = (env.DEEPSEEK_BASE_URL?.trim() || DEFAULT_DEEPSEEK_BASE_URL).replace(/\/+$/, "");
   const model = env.DEEPSEEK_MODEL?.trim() || DEFAULT_DEEPSEEK_MODEL;
+
+  // Cho AI biết danh sách thành viên để nó trả về ĐÚNG tên đang lưu trên web, thay vì trả
+  // nguyên văn rồi bắt matcher đoán. Gỡ được đảo thứ tự họ tên, gọi tên tắt, gõ thiếu dấu.
+  const roster = groupId ? await loadGroupMemberNames(env, groupId).catch(() => []) : [];
 
   const now = vnNow();
   const weekdayNames = ["Chủ nhật", "Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7"];
@@ -765,6 +781,13 @@ async function classifyWithAI(
     `Trong cost, payerName là người ỨNG/TRẢ tiền: các cách nói "X trả", "X ứng", "X bao", "trả lại cho X", "gửi lại X", "lại cho X" đều nghĩa là X ứng tiền nên payerName=X ("${SELF_NAME_TOKEN}" nếu người gửi tự trả).`,
     `Trong cost, consumerNames là DANH SÁCH người được CHIA khoản này khi câu có liệt kê người hưởng ("cho A, B, C", "của A B C", "A B C ăn", "phần của A B"); nếu KHÔNG liệt kê ai cụ thể thì để consumerNames rỗng [] (chia đều cả buổi). consumerNames là người HƯỞNG, khác payerName là người trả — một người có thể vừa trả vừa nằm trong danh sách hưởng.`,
     'names điền khi intent=add_member/remove_member (người cần thêm/rút) hoặc create_session (người tham gia nhắc trong câu, vd "gồm có tôi và An"), ví dụ ["An","Bình"]. Các intent khác để names rỗng [].',
+    ...(roster.length
+      ? [
+          `DANH SÁCH THÀNH VIÊN của nhóm trên web: ${roster.join("; ")}.`,
+          'Khi điền names (và payerName/consumerNames trong cost), nếu nhận ra người dùng đang nói tới MỘT người trong DANH SÁCH trên thì PHẢI ghi lại ĐÚNG NGUYÊN VĂN tên trong danh sách — kể cả khi họ gõ thiếu dấu, sai thứ tự họ tên, hay gọi tên tắt. Vd danh sách có "An Nguyễn Văn" mà người dùng gõ "Nguyễn Văn An" / "an" / "An" thì trả đúng "An Nguyễn Văn".',
+          "Nếu KHÔNG chắc người đó là ai trong danh sách, hoặc danh sách có NHIỀU người cùng khớp, thì giữ NGUYÊN VĂN người dùng gõ. TUYỆT ĐỐI không bịa ra tên không có trong danh sách.",
+        ]
+      : []),
     "changes CHỈ điền khi intent=update_session.",
     "session điền khi câu nói về MỘT buổi cụ thể (tạo mới hoặc tham chiếu buổi nào đó, kể cả buổi nhắc trong ngữ cảnh trước): quy đổi 'ngày mai', 'thứ 7'... thành ngày cụ thể theo hôm nay; startTime dạng 24h; venue là tên sân/địa điểm.",
     "Trong session, trường nào người dùng (hoặc ngữ cảnh) KHÔNG nhắc tới thì BỎ QUA, tuyệt đối không tự đoán.",
@@ -1051,7 +1074,13 @@ function slashCommandIntent(text: string, context?: BotContextMessage[]): Parsed
   return null;
 }
 
-async function resolveIntent(env: Env, text: string, actor?: BotActor, context?: BotContextMessage[]): Promise<ParsedIntent> {
+async function resolveIntent(
+  env: Env,
+  text: string,
+  groupId?: string,
+  actor?: BotActor,
+  context?: BotContextMessage[]
+): Promise<ParsedIntent> {
   const t = removeDiacritics(text.toLowerCase()).trim();
 
   // Các lệnh slash rõ nghĩa: regex đủ chắc, không cần AI (tránh AI phân loại nhầm).
@@ -1065,7 +1094,7 @@ async function resolveIntent(env: Env, text: string, actor?: BotActor, context?:
   let ai: ParsedIntent | null = null;
   if (env.DEEPSEEK_API_KEY?.trim()) {
     try {
-      ai = await classifyWithAI(env, text, actor, context);
+      ai = await classifyWithAI(env, text, groupId, actor, context);
     } catch (error) {
       console.error("[bot-nlu]", error);
     }
@@ -1697,7 +1726,7 @@ async function handleQuery(
     actor = { ...actor, memberId: aliases.get(normalizeName(actor.name)) };
   }
 
-  const parsed = await resolveIntent(env, text, actor, context);
+  const parsed = await resolveIntent(env, text, groupId, actor, context);
 
   switch (parsed.intent) {
     case "help":
@@ -1746,7 +1775,7 @@ export async function handleGroupBotQuery(
     .first<{ name: string }>();
   const groupName = group?.name ?? "nhom";
 
-  const parsed = await resolveIntent(env, text, actor, context);
+  const parsed = await resolveIntent(env, text, groupId, actor, context);
 
   switch (parsed.intent) {
     case "help":
@@ -2494,11 +2523,9 @@ async function addNamesToSession(
         }
       }
       if (actor?.name) {
-        const actorName = normalizeName(actor.name);
-        let matches = members.filter((m) => normalizeName(m.name) === actorName);
-        if (matches.length === 0) matches = members.filter((m) => normalizeName(m.name).includes(actorName));
-        if (matches.length === 1) {
-          queueMember(matches[0]);
+        const self = resolveMemberByName(members, actor.name, aliases);
+        if (self) {
+          queueMember(self);
           continue;
         }
       }
@@ -2506,15 +2533,11 @@ async function addNamesToSession(
       continue;
     }
 
-    const q = normalizeName(raw);
-    if (!q) continue;
-    let matches = members.filter((m) => normalizeName(m.name) === q);
-    if (matches.length === 0) matches = members.filter((m) => normalizeName(m.name).includes(q));
-    if (matches.length === 0 && aliases?.has(q)) {
-      // Tên gọi theo Messenger ("thêm Hunn") — tra alias của thread.
-      const aliased = members.find((m) => m.id === aliases.get(q));
-      if (aliased) matches = [aliased];
-    }
+    if (!normalizeName(raw)) continue;
+    // Dùng chung matchMembersByName với luồng rút người: bản inline cũ chỉ có exact + includes
+    // nên trượt khi người dùng đảo thứ tự họ tên ("thêm Nguyễn Văn An" trong khi web lưu
+    // "An Nguyễn Văn") — cùng một tên mà rút được nhưng thêm thì báo không tìm thấy.
+    const matches = matchMembersByName(members, raw, aliases);
     if (matches.length === 0) {
       notFound.push(raw);
       continue;
@@ -3030,9 +3053,9 @@ async function handleAlias(env: Env, threadId: string, senderName: string | null
     (await env.DB.prepare("SELECT id, name FROM members WHERE group_id = ? AND is_active = 1 AND is_walkin = 0")
       .bind(link.group_id)
       .all<{ id: string; name: string }>()).results ?? [];
-  const q = normalizeName(arg);
-  let matches = members.filter((m) => normalizeName(m.name) === q);
-  if (!matches.length) matches = members.filter((m) => normalizeName(m.name).includes(q));
+  // Dùng chung matcher với add/remove: /alias là lệnh để SỬA lệch tên nên bản thân nó
+  // càng không được trượt vì đảo thứ tự họ tên.
+  const matches = matchMembersByName(members, arg);
   if (!matches.length) {
     return { ok: false, reply: `Không tìm thấy thành viên "${arg}" trên web. Gõ "thành viên" để xem danh sách tên.` };
   }
