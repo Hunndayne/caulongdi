@@ -86,13 +86,18 @@ export async function ensureBotTables(db: D1Database) {
   // DB đã tồn tại từ trước sẽ thiếu cột human_summary — thêm idempotent (bỏ qua lỗi trùng cột).
   await ensureColumn(db, "group_chat_summaries", "human_summary");
 
+  // Nhắc công nợ định kỳ vào group chat — trưởng nhóm bật/tắt và chọn giờ trong Cài đặt nhóm.
+  // Mặc định TẮT: nhóm đang dùng không tự dưng bị bot nhắc nợ sau khi deploy.
+  await ensureColumn(db, "groups", "debt_reminder_enabled", "INTEGER NOT NULL DEFAULT 0");
+  await ensureColumn(db, "groups", "debt_reminder_time", "TEXT");
+
   ensured = true;
 }
 
-// Thêm cột TEXT NOT NULL DEFAULT '' nếu chưa có. Bỏ qua lỗi "duplicate column".
-async function ensureColumn(db: D1Database, table: string, column: string) {
+// Thêm cột nếu chưa có. Bỏ qua lỗi "duplicate column".
+async function ensureColumn(db: D1Database, table: string, column: string, type = "TEXT NOT NULL DEFAULT ''") {
   try {
-    await db.prepare(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT NOT NULL DEFAULT ''`).run();
+    await db.prepare(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`).run();
   } catch {
     // Cột đã tồn tại — không sao.
   }

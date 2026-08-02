@@ -1400,4 +1400,81 @@ groups.post("/:id/payment-settings/check", async (c) => {
   return c.json({ throttled: false, ...summary });
 });
 
+// ─── Nhắc công nợ định kỳ qua group chat Messenger ─────────────
+// Cron 10'/lần trong botOutbox.ts đọc hai cột này; nhóm chưa liên kết thread thì
+// enqueueBotMessage tự bỏ qua nên không cần chặn ở đây.
+
+const DEBT_REMINDER_DEFAULT_TIME = "20:00";
+
+type DebtReminderRow = {
+  debt_reminder_enabled?: number | null;
+  debt_reminder_time?: string | null;
+  thread_id?: string | null;
+};
+
+function toDebtReminder(row: DebtReminderRow) {
+  return {
+    enabled: Boolean(row.debt_reminder_enabled),
+    time: (row.debt_reminder_time ?? "").trim() || DEBT_REMINDER_DEFAULT_TIME,
+    // Bật mà chưa liên kết Messenger thì chẳng có nơi nào nhận tin — UI cảnh báo dựa vào cờ này.
+    messengerLinked: Boolean(row.thread_id),
+  };
+}
+
+groups.get("/:id/debt-reminder", async (c) => {
+  const { id } = c.req.param();
+
+  const membership = await getMembership(c, id);
+  if (membership !== "admin") return c.json({ error: "Forbidden" }, 403);
+
+  await ensureBotTables(c.env.DB);
+
+  const row = await c.env.DB.prepare(
+    `SELECT g.debt_reminder_enabled, g.debt_reminder_time, l.thread_id
+     FROM groups g
+     LEFT JOIN bot_thread_links l ON l.group_id = g.id
+     WHERE g.id = ?`
+  )
+    .bind(id)
+    .first<DebtReminderRow>();
+  if (!row) return c.json({ error: "Group not found" }, 404);
+
+  return c.json(toDebtReminder(row));
+});
+
+groups.put("/:id/debt-reminder", async (c) => {
+  const { id } = c.req.param();
+
+  const membership = await getMembership(c, id);
+  if (membership !== "admin") return c.json({ error: "Forbidden" }, 403);
+
+  const body = await c.req.json<{ enabled?: boolean; time?: string }>().catch(() => null);
+  if (!body) return c.json({ error: "Invalid JSON body" }, 400);
+
+  const time = (body.time ?? "").trim() || DEBT_REMINDER_DEFAULT_TIME;
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) {
+    return c.json({ error: 'Giờ nhắc phải theo dạng "HH:MM", ví dụ 20:00' }, 400);
+  }
+
+  await ensureBotTables(c.env.DB);
+
+  const result = await c.env.DB.prepare(
+    "UPDATE groups SET debt_reminder_enabled = ?, debt_reminder_time = ?, updated_at = ? WHERE id = ?"
+  )
+    .bind(body.enabled ? 1 : 0, time, new Date().toISOString(), id)
+    .run();
+  if (!result.meta?.changes) return c.json({ error: "Group not found" }, 404);
+
+  const row = await c.env.DB.prepare(
+    `SELECT g.debt_reminder_enabled, g.debt_reminder_time, l.thread_id
+     FROM groups g
+     LEFT JOIN bot_thread_links l ON l.group_id = g.id
+     WHERE g.id = ?`
+  )
+    .bind(id)
+    .first<DebtReminderRow>();
+
+  return c.json(toDebtReminder(row ?? {}));
+});
+
 export default groups;

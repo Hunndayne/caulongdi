@@ -18,6 +18,7 @@ import type {
   ChatMessage,
   SendChatMessageResponse,
   GroupPaymentSettings,
+  GroupDebtReminder,
   PotPayback,
   TimoPotCheckResult,
 } from "@/types";
@@ -194,6 +195,15 @@ export const api = {
   // Messenger bot
   createBotLinkCode: (groupId: string) =>
     request<{ code: string; expiresAt: string; ttlSeconds: number }>(`/api/groups/${groupId}/bot-link-code`, { method: "POST" }),
+
+  // Nhắc công nợ định kỳ vào group chat — cron của worker gửi, web chỉ bật/tắt và đặt giờ.
+  getDebtReminder: (groupId: string) =>
+    request<GroupDebtReminder>(`/api/groups/${groupId}/debt-reminder`),
+  saveDebtReminder: (groupId: string, data: { enabled: boolean; time: string }) =>
+    request<GroupDebtReminder>(`/api/groups/${groupId}/debt-reminder`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
 
   // Profiles
   getProfiles: (groupId: string) => request<UserProfile[]>(`/api/profiles?groupId=${encodeURIComponent(groupId)}`),

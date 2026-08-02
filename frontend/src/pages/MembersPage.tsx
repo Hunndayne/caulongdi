@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import {
+  BellRing,
   Bot,
   Check,
   Copy,
@@ -30,7 +31,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { EmptyState } from "@/components/shared/EmptyState";
-import type { GroupInvite, GroupMember, GroupPaymentSettings, GroupSearchResult } from "@/types";
+import type { GroupDebtReminder, GroupInvite, GroupMember, GroupPaymentSettings, GroupSearchResult } from "@/types";
 import banksData from "@/lib/banks.json";
 
 const banks = (banksData as any).data.filter((b: any) => b.transferSupported === 1);
@@ -102,6 +103,9 @@ export default function MembersPage() {
   const [botLinkLoading, setBotLinkLoading] = useState(false);
   const [botLinkCopied, setBotLinkCopied] = useState(false);
   const [timoPot, setTimoPot] = useState<GroupPaymentSettings | null>(null);
+  const [debtReminder, setDebtReminder] = useState<GroupDebtReminder | null>(null);
+  const [debtReminderTime, setDebtReminderTime] = useState("20:00");
+  const [debtReminderSaving, setDebtReminderSaving] = useState(false);
   const [groupBankBin, setGroupBankBin] = useState("");
   const [groupBankAccountNumber, setGroupBankAccountNumber] = useState("");
   const [groupBankAccountName, setGroupBankAccountName] = useState("");
@@ -144,6 +148,8 @@ export default function MembersPage() {
     setBotLinkExpiresAt(null);
     // Cài đặt thanh toán cũng theo nhóm — tránh hiện dữ liệu của nhóm trước
     setTimoPot(null);
+    setDebtReminder(null);
+    setDebtReminderTime("20:00");
     setGroupBankBin("");
     setGroupBankAccountNumber("");
     setGroupBankAccountName("");
@@ -167,6 +173,14 @@ export default function MembersPage() {
     api.getGroupInvites(activeGroupId)
       .then(setPendingInvites)
       .catch((err) => setError(err instanceof Error ? err.message : "Không tải được lời mời"));
+
+    // Nuốt lỗi: cài đặt phụ, hỏng thì cũng không nên chắn cả trang thành viên.
+    api.getDebtReminder(activeGroupId)
+      .then((settings) => {
+        setDebtReminder(settings);
+        setDebtReminderTime(settings.time);
+      })
+      .catch(() => {});
   }, [activeGroupId, canManageGroup]);
 
   useEffect(() => {
@@ -300,6 +314,21 @@ export default function MembersPage() {
       setError(err instanceof Error ? err.message : "Không tạo được mã liên kết bot");
     } finally {
       setBotLinkLoading(false);
+    }
+  };
+
+  const handleSaveDebtReminder = async (enabled: boolean, time: string) => {
+    if (!activeGroupId) return;
+    setDebtReminderSaving(true);
+    setError(null);
+    try {
+      const saved = await api.saveDebtReminder(activeGroupId, { enabled, time });
+      setDebtReminder(saved);
+      setDebtReminderTime(saved.time);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Không lưu được cài đặt nhắc công nợ");
+    } finally {
+      setDebtReminderSaving(false);
     }
   };
 
@@ -883,6 +912,60 @@ export default function MembersPage() {
                   <Bot size={15} className="mr-1.5" />
                   {botLinkLoading ? "Đang tạo..." : "Tạo mã liên kết"}
                 </Button>
+              )}
+            </div>
+          )}
+
+          {canManageGroup && (
+            <div className="space-y-2 border-t border-gray-100 pt-4">
+              <div className="flex items-center gap-2 text-sm font-semibold text-gray-900">
+                <BellRing size={16} className="text-green-600" />
+                Nhắc công nợ qua Messenger
+              </div>
+              <p className="text-xs text-gray-500">
+                Mỗi ngày vào giờ đã đặt, bot đăng vào group chat danh sách ai còn nợ bao nhiêu.
+                Cả nhóm sạch nợ thì bot im lặng, không nhắn gì.
+              </p>
+              {debtReminder && !debtReminder.messengerLinked && (
+                <p className="rounded-lg bg-amber-50 px-2.5 py-2 text-xs text-amber-700">
+                  Nhóm chưa liên kết group chat Messenger nên bật cũng chưa có nơi nhận tin — làm ở
+                  mục "Kết nối Messenger" phía trên trước nhé.
+                </p>
+              )}
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  type="time"
+                  value={debtReminderTime}
+                  onChange={(event) => setDebtReminderTime(event.target.value)}
+                  className="rounded-lg border border-gray-200 px-2.5 py-1.5 text-sm text-gray-900"
+                />
+                <Button
+                  size="sm"
+                  variant={debtReminder?.enabled ? "default" : "outline"}
+                  disabled={debtReminderSaving}
+                  onClick={() => handleSaveDebtReminder(!debtReminder?.enabled, debtReminderTime)}
+                >
+                  {debtReminderSaving
+                    ? "Đang lưu..."
+                    : debtReminder?.enabled
+                      ? "Đang bật — bấm để tắt"
+                      : "Bật nhắc"}
+                </Button>
+                {debtReminder?.enabled && debtReminderTime !== debtReminder.time && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={debtReminderSaving}
+                    onClick={() => handleSaveDebtReminder(true, debtReminderTime)}
+                  >
+                    Lưu giờ mới
+                  </Button>
+                )}
+              </div>
+              {debtReminder?.enabled && (
+                <p className="text-xs text-gray-400">
+                  Đang nhắc hằng ngày lúc {debtReminder.time} (giờ Việt Nam).
+                </p>
               )}
             </div>
           )}

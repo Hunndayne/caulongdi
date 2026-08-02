@@ -103,6 +103,15 @@ export interface JoinLinkPreview {
 }
 
 // Cài đặt thanh toán của nhóm: tài khoản nhận tiền chung + hũ Timo (tuỳ chọn) để tự xác nhận.
+/** Nhắc công nợ định kỳ vào group chat Messenger (cron worker gửi, không phải web). */
+export interface GroupDebtReminder {
+  enabled: boolean;
+  /** Giờ Việt Nam, dạng "HH:MM". */
+  time: string;
+  /** Chưa liên kết Messenger thì bật cũng không có nơi nhận tin. */
+  messengerLinked: boolean;
+}
+
 export interface GroupPaymentSettings {
   bankBin: string | null;
   bankAccountNumber: string | null;

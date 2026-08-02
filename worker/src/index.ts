@@ -13,7 +13,7 @@ import profilesRouter from "./routes/profiles";
 import groupsRouter from "./routes/groups";
 import paymentWebhooksRouter from "./routes/paymentWebhooks";
 import botRouter from "./routes/bot";
-import { enqueueSessionReminders } from "./botOutbox";
+import { enqueueSessionReminders, enqueueDebtReminders } from "./botOutbox";
 import { pollStalePots } from "./timoPot";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -249,6 +249,14 @@ export default {
           if (queued > 0) console.log(`[cron] đã xếp ${queued} tin nhắc kèo vào outbox`);
         })
         .catch((error) => console.error("[cron] enqueueSessionReminders", error))
+    );
+
+    ctx.waitUntil(
+      enqueueDebtReminders(env)
+        .then((queued) => {
+          if (queued > 0) console.log(`[cron] đã xếp ${queued} tin nhắc công nợ vào outbox`);
+        })
+        .catch((error) => console.error("[cron] enqueueDebtReminders", error))
     );
 
     ctx.waitUntil(
