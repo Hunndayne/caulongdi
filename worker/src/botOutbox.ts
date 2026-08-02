@@ -117,9 +117,11 @@ type DebtGroupRow = { id: string; name: string; debt_reminder_time: string | nul
 
 type MemberDebtRow = {
   member_name: string;
+  /** Chỉ tính khoản CHƯA bấm "đã chuyển" — đúng phần người này còn phải làm. */
   total: number;
   session_count: number;
-  marked_count: number;
+  /** Khoản đã báo chuyển, đang chờ bên nhận xác nhận. Không nhắc người nợ nữa. */
+  pending_count: number;
 };
 
 function formatMoneyVn(amount: number) {
@@ -161,11 +163,13 @@ export async function enqueueDebtReminders(env: Env): Promise<number> {
     // Cố tình KHÔNG cho cửa sổ vắt qua nửa đêm: giữ dedupe key gọn trong đúng một ngày.
     if (nowMin < targetMin || nowMin >= targetMin + DEBT_REMINDER_WINDOW_MINUTES) continue;
 
+    // Khoản đã bấm "đã chuyển" KHÔNG tính vào tiền nhắc: người nợ làm xong phần của họ rồi,
+    // còn lại là việc của bên nhận. Gộp cả hai vế vào một truy vấn bằng SUM có điều kiện.
     const debts = await env.DB.prepare(
       `SELECT m.name AS member_name,
-        SUM(p.amount_owed) AS total,
-        COUNT(*) AS session_count,
-        SUM(p.payer_marked_paid) AS marked_count
+        SUM(CASE WHEN p.payer_marked_paid = 0 THEN p.amount_owed ELSE 0 END) AS total,
+        SUM(CASE WHEN p.payer_marked_paid = 0 THEN 1 ELSE 0 END) AS session_count,
+        SUM(CASE WHEN p.payer_marked_paid = 1 THEN 1 ELSE 0 END) AS pending_count
        FROM payments p
        JOIN sessions s ON s.id = p.session_id
        JOIN members m ON m.id = p.member_id
@@ -177,18 +181,20 @@ export async function enqueueDebtReminders(env: Env): Promise<number> {
       .all<MemberDebtRow>();
 
     const rows = debts.results ?? [];
-    // Không ai nợ thì im lặng — nhắc "cả nhóm sạch nợ" mỗi ngày chỉ tổ gây nhiễu.
-    if (!rows.length) continue;
+    const owing = rows.filter((r) => Number(r.session_count) > 0);
+    const pendingCount = rows.reduce((total, r) => total + (Number(r.pending_count) || 0), 0);
+
+    // Không còn ai thực sự cần nhắc thì im lặng — kể cả khi vẫn còn khoản chờ xác nhận,
+    // vì nhắc mỗi ngày về việc của người khác cũng chỉ tổ gây nhiễu.
+    if (!owing.length) continue;
 
     const lines = [`💸 Nhắc công nợ nhóm ${group.name} (${formatDateVn(today)})`, ""];
-    for (const r of rows) {
-      // Đã bấm "đã chuyển" hết mà bên nhận chưa xác nhận → đánh dấu để khỏi bị nhắc oan.
-      const allMarked = Number(r.marked_count) >= Number(r.session_count);
-      lines.push(
-        `• ${r.member_name} — ${formatMoneyVn(r.total)} (${r.session_count} buổi)${
-          allMarked ? " ⏳ đã báo chuyển, chờ xác nhận" : ""
-        }`
-      );
+    for (const r of owing) {
+      lines.push(`• ${r.member_name} — ${formatMoneyVn(r.total)} (${r.session_count} buổi)`);
+    }
+    if (pendingCount > 0) {
+      // Một dòng gộp thay vì mỗi người một dòng — đây là việc của bên NHẬN tiền.
+      lines.push("", `⏳ ${pendingCount} khoản đã báo chuyển, chờ người nhận xác nhận trên web.`);
     }
     lines.push("", 'Chi tiết từng buổi thì nhắn "tôi còn nợ buổi nào" nhé.');
 
