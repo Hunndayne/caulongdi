@@ -2214,10 +2214,12 @@ export default function SessionDetailPage() {
                   helperText = "Chưa rõ ai dùng — chưa tính vào chia tiền";
                   helperClass = "text-amber-500";
                 } else if (collectToPot) {
-                  // Thu về hũ: tiền không đi trực tiếp tới người ứng, hũ hoàn lại phần chênh.
+                  // Thu về hũ: tiền không đi thẳng tới người ứng, nhưng thẻ vẫn phải nói rõ
+                  // AI ỨNG và AI DÙNG món đó — không có tên người dùng thì đọc bảng chia tiền mù.
+                  const whoUsed = consumerIds.length > 0 ? consumerLabel : "cả nhóm";
                   helperText = payerMember
-                    ? `${payerMember.name} ứng — hũ hoàn lại sau khi trừ suất của họ`
-                    : "Chi từ quỹ nhóm — cả nhóm nộp vào hũ";
+                    ? `${payerMember.name} ứng — ${whoUsed} dùng`
+                    : `Quỹ nhóm chi — ${whoUsed} dùng`;
                   helperClass = "text-blue-500";
                 } else if (payerMember && consumerIds.length > 0) {
                   helperText = `${consumerLabel} trả lại cho ${payerMember.name}`;

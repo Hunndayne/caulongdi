@@ -2717,6 +2717,8 @@ sessions.post("/:id/recalculate", async (c) => {
     .all<PaymentNotificationRow>();
 
   const isStrictManager = await canManageSessionStrict(c, session);
+  // Thu về hũ: payment không có người nhận cá nhân, đích là tài khoản chung của nhóm.
+  const notifyRecipientFallback = Number((session as any).payment_to_pot ?? 0) === 1 ? "hũ nhóm" : "người nhận";
 
   if (isStrictManager && paymentNotificationRows.results.length > 0) {
     const grouped = new Map<string, { debtorName: string; lines: { recipientName: string; amount: number }[] }>();
@@ -2726,7 +2728,7 @@ sessions.post("/:id/recalculate", async (c) => {
       if (!email) continue;
       const existing = grouped.get(email) ?? { debtorName: item.debtor_name, lines: [] };
       existing.lines.push({
-        recipientName: item.recipient_name?.trim() || "người nhận",
+        recipientName: item.recipient_name?.trim() || notifyRecipientFallback,
         amount: item.amount_owed,
       });
       grouped.set(email, existing);
@@ -2796,7 +2798,7 @@ sessions.post("/:id/recalculate", async (c) => {
         existing.walkins.push({
           walkinName: row.walkin_name,
           amount,
-          recipientName: row.recipient_name?.trim() || "người nhận",
+          recipientName: row.recipient_name?.trim() || notifyRecipientFallback,
           qrImageUrl,
         });
         groupedWalkins.set(email, existing);

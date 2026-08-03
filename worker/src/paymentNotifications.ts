@@ -12,6 +12,7 @@ type PaymentReceivedRow = {
   debtor_email?: string | null;
   recipient_name?: string | null;
   recipient_email?: string | null;
+  payment_to_pot?: number | null;
 };
 
 export async function sendPaymentReceivedForPayment(
@@ -27,6 +28,7 @@ export async function sendPaymentReceivedForPayment(
       s.venue,
       s.date,
       s.start_time,
+      s.payment_to_pot,
       debtor_member.name AS debtor_name,
       debtor_user.email AS debtor_email,
       recipient_member.name AS recipient_name,
@@ -48,7 +50,11 @@ export async function sendPaymentReceivedForPayment(
   await sendPaymentReceivedNotification(env, {
     debtorEmail,
     debtorName: row.debtor_name,
-    recipientName: options?.recipientName?.trim() || row.recipient_name?.trim() || "người nhận",
+    // Thu về hũ: payment không có người nhận cá nhân — đích là tài khoản chung của nhóm.
+    recipientName:
+      options?.recipientName?.trim() ||
+      row.recipient_name?.trim() ||
+      (Number(row.payment_to_pot ?? 0) === 1 ? "hũ nhóm" : "người nhận"),
     amount: row.amount_owed,
     venue: row.venue,
     date: row.date,

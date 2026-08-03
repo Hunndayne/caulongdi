@@ -2006,12 +2006,14 @@ function formatCostScope(cost: CostSummaryRow, memberNames: Map<string, string>)
   return `dùng: ${names}`;
 }
 
-function formatCostLine(cost: CostSummaryRow, memberNames: Map<string, string>) {
+function formatCostLine(cost: CostSummaryRow, memberNames: Map<string, string>, toPot: boolean) {
   const label = cost.label?.trim() || "Chi phí";
   const qty = Number(cost.quantity ?? 1);
   const quantity = Number.isFinite(qty) && qty > 1 ? ` x${qty}` : "";
-  const payer = cost.payer_name?.trim() || (cost.payer_id ? memberNames.get(cost.payer_id) : "") || "người nhận chung/quỹ";
-  return `• ${label}${quantity}: ${formatMoney(cost.amount)} (${payer} trả; ${formatCostScope(cost, memberNames)})`;
+  // Buổi thu về hũ không có người nhận chung, khoản không ai ứng là quỹ nhóm chi thẳng.
+  const noPayer = toPot ? "quỹ nhóm" : "người nhận chung/quỹ";
+  const payer = cost.payer_name?.trim() || (cost.payer_id ? memberNames.get(cost.payer_id) : "") || noPayer;
+  return `• ${label}${quantity}: ${formatMoney(cost.amount)} (${payer} ứng; ${formatCostScope(cost, memberNames)})`;
 }
 
 function formatPaymentStatus(payment: PaymentSummaryRow) {
@@ -2031,7 +2033,7 @@ export async function replyCosts(
   const session = await findSessionForCosts(env, groupId, text, selector, context);
   if (!session) return { ok: true, reply: `${groupName}: chưa tìm thấy buổi để xem chi phí.` };
 
-  const [costRows, paymentRows, memberRows] = await Promise.all([
+  const [costRows, paymentRows, memberRows, potRow] = await Promise.all([
     env.DB.prepare(
       `SELECT c.id, c.label, c.amount, c.quantity, c.type, c.payer_id, c.consumer_id, c.consumer_ids, c.consumer_pending,
         payer.name AS payer_name
@@ -2057,10 +2059,16 @@ export async function replyCosts(
     env.DB.prepare("SELECT id, name FROM members WHERE group_id = ?")
       .bind(groupId)
       .all<{ id: string; name: string }>(),
+    // Thu về hũ: payments.recipient_member_id CỐ TÌNH để NULL (đích là tài khoản chung của
+    // nhóm), nên phải biết cờ này mới gọi đúng tên đích thay vì fallback "người nhận".
+    env.DB.prepare("SELECT payment_to_pot FROM sessions WHERE id = ?")
+      .bind(session.id)
+      .first<{ payment_to_pot?: number | null }>(),
   ]);
 
   const costs = costRows.results ?? [];
   const payments = paymentRows.results ?? [];
+  const toPot = Number(potRow?.payment_to_pot ?? 0) === 1;
   const memberNames = new Map((memberRows.results ?? []).map((m) => [m.id, m.name]));
   const total = costs.reduce((sum, item) => sum + Math.round(Number(item.amount) || 0), 0);
   const pendingTotal = costs
@@ -2074,7 +2082,7 @@ export async function replyCosts(
   if (!costs.length) {
     lines.push("Chưa có khoản chi nào được nhập.");
   } else {
-    const visibleCosts = costs.slice(0, 8).map((cost) => formatCostLine(cost, memberNames));
+    const visibleCosts = costs.slice(0, 8).map((cost) => formatCostLine(cost, memberNames, toPot));
     lines.push("", "Các khoản:", ...visibleCosts);
     if (costs.length > visibleCosts.length) lines.push(`• ... còn ${costs.length - visibleCosts.length} khoản nữa`);
   }
@@ -2082,10 +2090,10 @@ export async function replyCosts(
   if (payments.length) {
     const visiblePayments = payments.slice(0, 10).map((payment) => {
       const debtor = payment.debtor_name?.trim() || "người trả";
-      const recipient = payment.recipient_name?.trim() || "người nhận";
+      const recipient = payment.recipient_name?.trim() || (toPot ? "hũ nhóm" : "người nhận chung");
       return `• ${debtor} → ${recipient}: ${formatMoney(payment.amount_owed)} (${formatPaymentStatus(payment)})`;
     });
-    lines.push("", "Cần chuyển:", ...visiblePayments);
+    lines.push("", toPot ? "Cần chuyển (buổi này thu về hũ nhóm):" : "Cần chuyển:", ...visiblePayments);
     if (payments.length > visiblePayments.length) lines.push(`• ... còn ${payments.length - visiblePayments.length} dòng nữa`);
   } else if (costs.length) {
     lines.push("", "Chưa thấy dòng công nợ cần chuyển. Nếu vừa sửa chi phí, bấm tính lại chia tiền trên web để cập nhật payments.");
