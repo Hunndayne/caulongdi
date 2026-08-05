@@ -58,6 +58,9 @@ type ParsedIntent = {
   names: string[];
   session?: SessionDraft;
   cost?: CostDraft;
+  // Một tin nhắn liệt kê nhiều khoản ("revive 10k x2 Hùng dùng + nước 6k Tí dùng").
+  // Có costs thì ghi từng khoản riêng; cost chỉ còn dùng cho tin một khoản.
+  costs?: CostDraft[];
   // update_session: session = buổi đang nói tới (giá trị cũ), changes = giá trị mới
   changes?: SessionDraft;
 };
@@ -94,6 +97,7 @@ export type BotActor = {
 const SELF_NAME_TOKEN = "__ting_self__";
 const MEMBER_COLORS = ["#22c55e", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4"];
 const MAX_CONTEXT_MESSAGES_FOR_AI = 8;
+const MAX_COSTS_PER_MESSAGE = 20;
 
 // Messenger KHÔNG render Markdown → bỏ cú pháp Markdown để không lòi ra ký tự thô (**, #, `, [](...)).
 // Chỉ dùng cho đầu ra Messenger; web chat giữ nguyên. Bảo thủ: chỉ đụng cú pháp chắc chắn là Markdown,
@@ -821,11 +825,15 @@ async function classifyWithAI(
     'PHÂN BIỆT my_debts với costs: costs là công nợ TRONG MỘT BUỔI cụ thể ("ai nợ ai buổi hôm qua", "chi phí buổi vừa rồi"); my_debts là công nợ CÒN LẠI của một người qua MỌI buổi, không gắn với buổi nào.',
     "Only classify today/week/upcoming/next/recent/list_attendees when the user clearly asks about badminton sessions, schedule, court, or players; casual chat that happens to mention time words must be unknown.",
     "Bạn phân tích câu của người dùng về lịch chơi cầu lông của một nhóm và TRẢ VỀ JSON.",
-    'Định dạng JSON: {"intent": "...", "names": ["..."], "session": {"date": "YYYY-MM-DD", "startTime": "HH:MM", "endTime": "HH:MM", "venue": "..."}, "changes": {"date": "...", "startTime": "...", "endTime": "...", "venue": "..."}, "cost": {"label": "...", "amount": 0, "quantity": 1, "payerName": "...", "consumerNames": ["..."]}}.',
+    'Định dạng JSON: {"intent": "...", "names": ["..."], "session": {"date": "YYYY-MM-DD", "startTime": "HH:MM", "endTime": "HH:MM", "venue": "..."}, "changes": {"date": "...", "startTime": "...", "endTime": "...", "venue": "..."}, "cost": {"label": "...", "amount": 0, "quantity": 1, "payerName": "...", "consumerNames": ["..."]}, "costs": [{"label": "...", "amount": 0, "quantity": 1, "payerName": "...", "consumerNames": ["..."]}]}.',
     "intent là MỘT trong: next, upcoming, today, week, recent, list_members, list_attendees, add_member, remove_member, create_session, update_session, cancel_session, costs, add_cost, update_cost, mark_paid, stats, help, unknown.",
     "Ý nghĩa: next=buổi sắp tới gần nhất; upcoming=danh sách buổi sắp tới; today=hôm nay; week=tuần này; recent=các buổi gần đây/lịch sử;",
     "list_members=liệt kê thành viên nhóm; list_attendees=ai tham gia buổi; add_member=thêm người vào buổi; create_session=tạo buổi/kèo mới; costs=xem chi phí/công nợ buổi; add_cost=ghi một khoản chi mới; update_cost=sửa/xóa khoản chi đã ghi; mark_paid=xác nhận đã trả nợ; my_debts=công nợ còn lại của một người qua mọi buổi; help=hướng dẫn; unknown=không liên quan.",
     `cost điền khi intent=add_cost hoặc update_cost: label là tên khoản (vd "tiền sân", "ống cầu", "tiền ăn"), amount là số VND tuyệt đối (240k → 240000, 1tr2 → 1200000), quantity mặc định 1.`,
+    `amount luôn là TỔNG TIỀN của khoản đó, không phải đơn giá. Khi câu ghi đơn giá kèm số lượng ("revive 10k x2", "nước ép 25k x5") thì quantity là số lượng và amount = đơn giá × số lượng (10k x2 → amount=20000, quantity=2). Khi câu ghi số lượng rồi tới tổng tiền ("3 ống cầu 270k") thì quantity=3, amount=270000.`,
+    'MỘT tin nhắn có thể liệt kê NHIỀU khoản chi cùng lúc, ngăn nhau bởi dấu phẩy, dấu +, hoặc xuống dòng. Khi có từ 2 khoản trở lên thì intent vẫn là add_cost nhưng PHẢI trả về mảng costs, mỗi khoản một phần tử, ĐỦ MỌI khoản — tuyệt đối không gộp nhiều khoản thành một, không bỏ sót khoản nào, và khi đó bỏ trống cost. Chỉ có đúng 1 khoản thì điền cost, bỏ trống costs.',
+    'Trong costs, consumerNames của mỗi khoản CHỈ lấy những người nói ngay cạnh khoản đó, KHÔNG lây sang khoản khác. Vd "revive 10k x2 Hùng và Duy dùng + nước 6k Hùng dùng + nước ép 25k x5" → 3 phần tử: revive (consumerNames=["Hùng","Duy"]), nước (["Hùng"]), nước ép (consumerNames=[] vì không nêu ai → chia đều).',
+    'Câu chốt chung kiểu "toàn bộ do X trả", "X trả hết", "tất cả X ứng" thì payerName=X cho MỌI phần tử trong costs; khoản nào tự nêu người trả riêng thì giữ người của khoản đó.',
     `Trong cost, payerName là người ỨNG/TRẢ tiền: các cách nói "X trả", "X ứng", "X bao", "trả lại cho X", "gửi lại X", "lại cho X" đều nghĩa là X ứng tiền nên payerName=X ("${SELF_NAME_TOKEN}" nếu người gửi tự trả).`,
     `Trong cost, consumerNames là DANH SÁCH người được CHIA khoản này khi câu có liệt kê người hưởng ("cho A, B, C", "của A B C", "A B C ăn", "phần của A B"); nếu KHÔNG liệt kê ai cụ thể thì để consumerNames rỗng [] (chia đều cả buổi). consumerNames là người HƯỞNG, khác payerName là người trả — một người có thể vừa trả vừa nằm trong danh sách hưởng.`,
     'names điền khi intent=add_member/remove_member (người cần thêm/rút) hoặc create_session (người tham gia nhắc trong câu, vd "gồm có tôi và An"), ví dụ ["An","Bình"]. Các intent khác để names rỗng [].',
@@ -909,11 +917,15 @@ async function classifyWithAI(
   const session = parseAiDraft(obj?.session);
   const changes = parseAiDraft((obj as { changes?: unknown })?.changes);
 
-  let cost: CostDraft | undefined;
-  if ((obj as { cost?: unknown }).cost && typeof (obj as { cost?: unknown }).cost === "object") {
-    const raw = (obj as {
-      cost: { label?: unknown; amount?: unknown; quantity?: unknown; payerName?: unknown; consumerNames?: unknown };
-    }).cost;
+  const parseAiCost = (value: unknown): CostDraft | undefined => {
+    if (!value || typeof value !== "object") return undefined;
+    const raw = value as {
+      label?: unknown;
+      amount?: unknown;
+      quantity?: unknown;
+      payerName?: unknown;
+      consumerNames?: unknown;
+    };
     const amount = Math.round(Number(raw.amount));
     const quantity = Math.floor(Number(raw.quantity));
     const consumerNames = Array.isArray(raw.consumerNames)
@@ -921,17 +933,28 @@ async function classifyWithAI(
           .filter((n): n is string => typeof n === "string" && n.trim().length > 0)
           .map((n) => n.trim())
       : [];
-    cost = {
+    const draft: CostDraft = {
       label: typeof raw.label === "string" && raw.label.trim() ? raw.label.trim().slice(0, 80) : undefined,
       amount: Number.isFinite(amount) && amount > 0 ? amount : undefined,
       quantity: Number.isFinite(quantity) && quantity >= 1 ? quantity : undefined,
       payerName: typeof raw.payerName === "string" && raw.payerName.trim() ? raw.payerName.trim() : undefined,
       consumerNames: consumerNames.length ? consumerNames : undefined,
     };
-    if (!cost.label && !cost.amount && !cost.payerName && !cost.consumerNames) cost = undefined;
-  }
+    if (!draft.label && !draft.amount && !draft.payerName && !draft.consumerNames) return undefined;
+    return draft;
+  };
 
-  return { intent, names, session, cost, changes };
+  const cost = parseAiCost((obj as { cost?: unknown }).cost);
+  // Chặn trần để một tin nhắn hỏng không đẻ ra hàng trăm dòng chi phí.
+  const rawCosts = (obj as { costs?: unknown }).costs;
+  const costs = Array.isArray(rawCosts)
+    ? rawCosts
+        .slice(0, MAX_COSTS_PER_MESSAGE)
+        .map(parseAiCost)
+        .filter((item): item is CostDraft => Boolean(item))
+    : [];
+
+  return { intent, names, session, cost, costs: costs.length ? costs : undefined, changes };
 }
 
 function naturalChatFallback(groupName: string, text = "", actor?: BotActor) {
@@ -1043,15 +1066,26 @@ function enrichAiIntent(ai: ParsedIntent, text: string, context?: BotContextMess
 
   if (ai.intent === "add_cost") {
     const pc = parsePayerConsumer(text);
+    // Nhiều khoản trong một tin: regex chạy trên CẢ câu nên không biết số tiền/người dùng nào
+    // thuộc khoản nào — đè vào là hỏng. Chỉ bù người ứng cho khoản AI bỏ trống (câu chốt
+    // "toàn bộ do X trả"), còn lại giữ nguyên những gì AI đã tách theo từng khoản.
+    if (ai.costs && ai.costs.length > 1) {
+      return {
+        ...ai,
+        costs: ai.costs.map((item) => ({ ...item, payerName: item.payerName ?? pc.payerName })),
+        session: mergeSession(ai.session, parseSessionReference(text, context)),
+      };
+    }
     return {
       ...ai,
+      costs: undefined,
       cost: {
-        ...ai.cost,
-        amount: ai.cost?.amount ?? parseMoneyVn(text),
+        ...(ai.costs?.[0] ?? ai.cost),
+        amount: (ai.costs?.[0] ?? ai.cost)?.amount ?? parseMoneyVn(text),
         // payer: marker "trả/ứng/bao" rõ nghĩa hơn AI (AI hay lẫn người dùng thành người trả).
         // consumer: ưu tiên AI (tách danh sách "A, B và C" tốt hơn), regex chỉ bù khi AI trống.
-        payerName: pc.payerName ?? ai.cost?.payerName,
-        consumerNames: ai.cost?.consumerNames ?? pc.consumerNames,
+        payerName: pc.payerName ?? (ai.costs?.[0] ?? ai.cost)?.payerName,
+        consumerNames: (ai.costs?.[0] ?? ai.cost)?.consumerNames ?? pc.consumerNames,
       },
       session: mergeSession(ai.session, parseSessionReference(text, context)),
     };
@@ -1816,7 +1850,7 @@ async function handleQuery(
     case "costs":
       return replyCosts(env, groupId, groupName, text, parsed.session, context);
     case "add_cost":
-      return replyAddCost(env, groupId, groupName, text, actor, parsed.cost, parsed.session, aliases);
+      return replyAddCost(env, groupId, groupName, text, actor, parsed.cost, parsed.session, aliases, parsed.costs);
     case "update_cost":
       return replyUpdateCost(env, groupId, groupName, text, actor, parsed.cost, parsed.session, aliases, context);
     case "mark_paid":
@@ -1884,7 +1918,7 @@ export async function handleGroupBotQuery(
     case "costs":
       return replyCosts(env, groupId, groupName, text, parsed.session, context);
     case "add_cost":
-      return replyAddCost(env, groupId, groupName, text, actor, parsed.cost, parsed.session);
+      return replyAddCost(env, groupId, groupName, text, actor, parsed.cost, parsed.session, undefined, parsed.costs);
     case "update_cost":
       return replyUpdateCost(env, groupId, groupName, text, actor, parsed.cost, parsed.session, undefined, context);
     case "mark_paid":
@@ -2291,14 +2325,23 @@ export async function replyAddCost(
   actor?: BotActor,
   cost?: CostDraft,
   selector?: SessionDraft,
-  aliases?: Map<string, string>
+  aliases?: Map<string, string>,
+  costs?: CostDraft[]
 ): Promise<BotReply> {
   // Bắt buộc tin nhắn hiện tại phải có số tiền (chữ số hoặc "nghìn/triệu/trăm")
   // — tránh AI bịa số tiền từ ngữ cảnh trước (vd "cầu t trả" không có tiền mà
   // vẫn ghi nhầm 50k của câu trước).
   const hasMoneyInText = /\d/.test(text) || /\b(nghin|ngan|trieu|tram|chuc)\b/.test(normalizeName(text));
-  const amount = hasMoneyInText ? cost?.amount ?? parseMoneyVn(text) : undefined;
-  if (!amount || amount < 1000) {
+  // Tin một khoản: số tiền còn được vá bằng regex trên cả câu. Tin nhiều khoản thì không —
+  // regex không biết số nào của khoản nào, khoản nào AI không ra tiền thì bỏ qua kèm cảnh báo.
+  const multi = (costs?.length ?? 0) > 1;
+  const drafts: CostDraft[] = multi
+    ? costs!
+    : [{ ...(costs?.[0] ?? cost), amount: hasMoneyInText ? (costs?.[0] ?? cost)?.amount ?? parseMoneyVn(text) : undefined }];
+
+  const usable = hasMoneyInText ? drafts.filter((item) => (item.amount ?? 0) >= 1000) : [];
+  const skipped = drafts.length - usable.length;
+  if (!usable.length) {
     return { ok: false, reply: 'Mình chưa rõ số tiền. Ví dụ: "tiền sân 240k" hoặc "3 ống cầu 270k Nam trả".' };
   }
 
@@ -2319,79 +2362,103 @@ export async function replyAddCost(
       .bind(groupId)
       .all<{ id: string; name: string }>()).results ?? [];
 
-  // Người trả: nhắc tên → match; "tôi trả" → alias người gửi; không nói gì → coi như người gửi ứng.
-  let payer: { id: string; name: string } | null = null;
-  let payerFallbackNote = "";
-  const namedPayer =
-    cost?.payerName && cost.payerName !== SELF_NAME_TOKEN && !isSelfReference(cost.payerName) ? cost.payerName : null;
-  if (namedPayer) {
-    payer = resolveMemberByName(members, namedPayer, aliases);
-    // Nêu tên nhưng không khớp (vd người ngoài nhóm) → tạm gán người gửi để vẫn
-    // chia được tiền (shared cost cần có người ứng), kèm cảnh báo sửa lại trên web.
-    if (!payer) {
-      const self = resolveSelfMember(members, actor);
-      if (self) {
-        payer = self;
-        payerFallbackNote = `⚠️ Không tìm thấy "${namedPayer}" trong nhóm — tạm ghi ${self.name} trả, sửa lại trên web nếu cần.`;
-      }
-    }
-  } else {
-    payer = resolveSelfMember(members, actor);
-  }
-
-  // Phạm vi chia: người dùng liệt kê người hưởng ("cho A, B, C") → chỉ chia cho họ;
-  // không liệt kê ai → để trống = chia đều cả buổi.
-  const consumerIds: string[] = [];
+  const self = resolveSelfMember(members, actor);
+  const payerFallbackNotes: string[] = [];
   const unresolvedConsumers: string[] = [];
-  for (const name of cost?.consumerNames ?? []) {
-    const m =
-      name === SELF_NAME_TOKEN || isSelfReference(name)
-        ? resolveSelfMember(members, actor)
-        : resolveMemberByName(members, name, aliases);
-    if (m) {
-      if (!consumerIds.includes(m.id)) consumerIds.push(m.id);
-    } else {
-      unresolvedConsumers.push(name === SELF_NAME_TOKEN ? "bạn" : name);
-    }
-  }
-  const consumerNamesResolved = consumerIds
-    .map((id) => members.find((mem) => mem.id === id)?.name)
-    .filter((n): n is string => !!n);
+  let missingPayer = false;
+  const echoLines: string[] = [];
+  const inserts: D1PreparedStatement[] = [];
 
-  const label = cost?.label?.trim() || "Chi phí";
-  const quantity = cost?.quantity && cost.quantity >= 1 ? Math.floor(cost.quantity) : 1;
-  const costId = crypto.randomUUID();
-  await env.DB.prepare(
+  const insertSql = env.DB.prepare(
     `INSERT INTO costs (id, session_id, label, amount, quantity, type, payer_id, consumer_id, consumer_ids, consumer_pending)
      VALUES (?, ?, ?, ?, ?, 'other', ?, ?, ?, 0)`
-  )
-    .bind(
-      costId,
-      session.id,
-      label,
-      Math.round(amount),
-      quantity,
-      payer?.id ?? null,
-      consumerIds[0] ?? null,
-      consumerIds.length ? JSON.stringify(consumerIds) : null
-    )
-    .run();
+  );
+
+  for (const draft of usable) {
+    // Người trả: nhắc tên → match; "tôi trả" → alias người gửi; không nói gì → coi như người gửi ứng.
+    let payer: { id: string; name: string } | null = null;
+    const namedPayer =
+      draft.payerName && draft.payerName !== SELF_NAME_TOKEN && !isSelfReference(draft.payerName)
+        ? draft.payerName
+        : null;
+    if (namedPayer) {
+      payer = resolveMemberByName(members, namedPayer, aliases);
+      // Nêu tên nhưng không khớp (vd người ngoài nhóm) → tạm gán người gửi để vẫn
+      // chia được tiền (shared cost cần có người ứng), kèm cảnh báo sửa lại trên web.
+      if (!payer && self) {
+        payer = self;
+        const note = `⚠️ Không tìm thấy "${namedPayer}" trong nhóm — tạm ghi ${self.name} trả, sửa lại trên web nếu cần.`;
+        if (!payerFallbackNotes.includes(note)) payerFallbackNotes.push(note);
+      }
+    } else {
+      payer = self;
+    }
+    if (!payer) missingPayer = true;
+
+    // Phạm vi chia: người dùng liệt kê người hưởng ("cho A, B, C") → chỉ chia cho họ;
+    // không liệt kê ai → để trống = chia đều cả buổi.
+    const consumerIds: string[] = [];
+    for (const name of draft.consumerNames ?? []) {
+      const m =
+        name === SELF_NAME_TOKEN || isSelfReference(name)
+          ? self
+          : resolveMemberByName(members, name, aliases);
+      if (m) {
+        if (!consumerIds.includes(m.id)) consumerIds.push(m.id);
+      } else {
+        const shown = name === SELF_NAME_TOKEN ? "bạn" : name;
+        if (!unresolvedConsumers.includes(shown)) unresolvedConsumers.push(shown);
+      }
+    }
+    const consumerNamesResolved = consumerIds
+      .map((id) => members.find((mem) => mem.id === id)?.name)
+      .filter((n): n is string => !!n);
+
+    const label = draft.label?.trim() || "Chi phí";
+    const quantity = draft.quantity && draft.quantity >= 1 ? Math.floor(draft.quantity) : 1;
+    const amount = Math.round(draft.amount!);
+    inserts.push(
+      insertSql.bind(
+        crypto.randomUUID(),
+        session.id,
+        label,
+        amount,
+        quantity,
+        payer?.id ?? null,
+        consumerIds[0] ?? null,
+        consumerIds.length ? JSON.stringify(consumerIds) : null
+      )
+    );
+
+    // Echo đầy đủ — tiền bạc phải nhìn thấy được mình vừa ghi gì.
+    const scope = consumerNamesResolved.length ? `chia cho ${consumerNamesResolved.join(", ")}` : "chia đều";
+    echoLines.push(
+      `• ${label}${quantity > 1 ? ` x${quantity}` : ""}: ${formatMoney(amount)} (${
+        payer ? `${payer.name} ứng` : "chưa rõ ai ứng"
+      }, ${scope})`
+    );
+  }
+
+  await env.DB.batch(inserts);
 
   const recalcError = await recalcSessionPayments(env, session.id);
   const totalRow = await env.DB.prepare("SELECT SUM(amount) AS total FROM costs WHERE session_id = ?")
     .bind(session.id)
     .first<{ total: number | null }>();
 
-  // Echo đầy đủ — tiền bạc phải nhìn thấy được mình vừa ghi gì.
-  const scope = consumerNamesResolved.length ? `chia cho ${consumerNamesResolved.join(", ")}` : "chia đều";
+  const addedTotal = usable.reduce((sum, item) => sum + Math.round(item.amount!), 0);
   const lines = [
-    `🧾 Đã ghi vào buổi ${sessionSummaryLine(session)}:`,
-    `• ${label}${quantity > 1 ? ` x${quantity}` : ""}: ${formatMoney(amount)} (${payer ? `${payer.name} trả` : "chưa rõ ai trả"}, ${scope})`,
-    `Tổng buổi này: ${formatMoney(Number(totalRow?.total) || 0)}`,
+    `🧾 Đã ghi ${usable.length > 1 ? `${usable.length} khoản ` : ""}vào buổi ${sessionSummaryLine(session)}:`,
+    ...echoLines,
   ];
-  if (payerFallbackNote) {
-    lines.push(payerFallbackNote);
-  } else if (!payer) {
+  if (usable.length > 1) lines.push(`Vừa ghi: ${formatMoney(addedTotal)}`);
+  lines.push(`Tổng buổi này: ${formatMoney(Number(totalRow?.total) || 0)}`);
+  if (skipped > 0) {
+    lines.push(`⚠️ Bỏ qua ${skipped} khoản vì không đọc được số tiền — ghi lại rõ số cho mấy khoản đó nhé.`);
+  }
+  if (payerFallbackNotes.length) {
+    lines.push(...payerFallbackNotes);
+  } else if (missingPayer) {
     lines.push('⚠️ Chưa xác định được người trả — gán lại trên web, hoặc /alias rồi nhắn kiểu "tiền sân 240k tôi trả".');
   }
   if (unresolvedConsumers.length) {
