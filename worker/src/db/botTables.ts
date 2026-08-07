@@ -90,6 +90,11 @@ export async function ensureBotTables(db: D1Database) {
   // Mặc định TẮT: nhóm đang dùng không tự dưng bị bot nhắc nợ sau khi deploy.
   await ensureColumn(db, "groups", "debt_reminder_enabled", "INTEGER NOT NULL DEFAULT 0");
   await ensureColumn(db, "groups", "debt_reminder_time", "TEXT");
+  // Chu kỳ nhắc (patch-debt-reminder-cycle.sql). NULL = 'daily' — nhóm cũ giữ nguyên nhịp hằng ngày.
+  await ensureColumn(db, "groups", "debt_reminder_cycle", "TEXT");
+  await ensureColumn(db, "groups", "debt_reminder_interval_days", "INTEGER");
+  await ensureColumn(db, "groups", "debt_reminder_weekday", "INTEGER");
+  await ensureColumn(db, "groups", "debt_reminder_anchor_date", "TEXT");
 
   // Chatbot chạy bằng AI agent (tool-calling) thay cho phân loại intent cứng — bật/tắt theo từng
   // nhóm trong Cài đặt nhóm. Mặc định TẮT: nhóm đang chạy vẫn dùng luồng cũ tới khi tự bật.

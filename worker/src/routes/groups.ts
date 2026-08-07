@@ -6,6 +6,21 @@ import { ensureBotTables } from "../db/botTables";
 import { ensureTimoPotTables } from "../db/timoTables";
 import { normalizeAccountNumber } from "../paymentConfirm";
 import {
+  DEBT_REMINDER_CYCLES,
+  DEBT_REMINDER_DEFAULT_INTERVAL_DAYS,
+  DEBT_REMINDER_DEFAULT_TIME,
+  DEBT_REMINDER_DEFAULT_WEEKDAY,
+  DEBT_REMINDER_MAX_INTERVAL_DAYS,
+  DEBT_REMINDER_MIN_INTERVAL_DAYS,
+  DebtReminderColumns,
+  isValidReminderTime,
+  nextRunDate,
+  normalizeIntervalDays,
+  normalizeWeekday,
+  readDebtReminder,
+  vnDateString,
+} from "../debtReminder";
+import {
   TIMO_CODE,
   fetchAliasInfo,
   fetchTxnPage,
@@ -1401,21 +1416,30 @@ groups.post("/:id/payment-settings/check", async (c) => {
 });
 
 // ─── Nhắc công nợ định kỳ qua group chat Messenger ─────────────
-// Cron 10'/lần trong botOutbox.ts đọc hai cột này; nhóm chưa liên kết thread thì
+// Cron 10'/lần trong botOutbox.ts đọc các cột debt_reminder_*; nhóm chưa liên kết thread thì
 // enqueueBotMessage tự bỏ qua nên không cần chặn ở đây.
+// Luật chu kỳ (daily / every_n_days / weekly / monthly_end) nằm trong ../debtReminder.ts,
+// dùng chung với cron để hai bên không hiểu khác nhau.
 
-const DEBT_REMINDER_DEFAULT_TIME = "20:00";
+type DebtReminderRow = DebtReminderColumns & { thread_id?: string | null };
 
-type DebtReminderRow = {
-  debt_reminder_enabled?: number | null;
-  debt_reminder_time?: string | null;
-  thread_id?: string | null;
-};
+const DEBT_REMINDER_SELECT = `SELECT g.debt_reminder_enabled, g.debt_reminder_time, g.debt_reminder_cycle,
+    g.debt_reminder_interval_days, g.debt_reminder_weekday, g.debt_reminder_anchor_date, l.thread_id
+   FROM groups g
+   LEFT JOIN bot_thread_links l ON l.group_id = g.id
+   WHERE g.id = ?`;
+
+/** Giờ VN — cùng quy ước với cron trong botOutbox.ts. */
+function vnNowDate() {
+  return new Date(Date.now() + 7 * 60 * 60 * 1000);
+}
 
 function toDebtReminder(row: DebtReminderRow) {
+  const config = readDebtReminder(row);
   return {
-    enabled: Boolean(row.debt_reminder_enabled),
-    time: (row.debt_reminder_time ?? "").trim() || DEBT_REMINDER_DEFAULT_TIME,
+    ...config,
+    // Kỳ kế tiếp để UI nói rõ "cách N ngày" là tính từ đâu; tắt thì hiển thị cũng vô nghĩa.
+    nextRunDate: config.enabled ? nextRunDate(config, vnNowDate()) : "",
     // Bật mà chưa liên kết Messenger thì chẳng có nơi nào nhận tin — UI cảnh báo dựa vào cờ này.
     messengerLinked: Boolean(row.thread_id),
   };
@@ -1429,14 +1453,7 @@ groups.get("/:id/debt-reminder", async (c) => {
 
   await ensureBotTables(c.env.DB);
 
-  const row = await c.env.DB.prepare(
-    `SELECT g.debt_reminder_enabled, g.debt_reminder_time, l.thread_id
-     FROM groups g
-     LEFT JOIN bot_thread_links l ON l.group_id = g.id
-     WHERE g.id = ?`
-  )
-    .bind(id)
-    .first<DebtReminderRow>();
+  const row = await c.env.DB.prepare(DEBT_REMINDER_SELECT).bind(id).first<DebtReminderRow>();
   if (!row) return c.json({ error: "Group not found" }, 404);
 
   return c.json(toDebtReminder(row));
@@ -1448,33 +1465,86 @@ groups.put("/:id/debt-reminder", async (c) => {
   const membership = await getMembership(c, id);
   if (membership !== "admin") return c.json({ error: "Forbidden" }, 403);
 
-  const body = await c.req.json<{ enabled?: boolean; time?: string }>().catch(() => null);
+  const body = await c.req
+    .json<{ enabled?: boolean; time?: string; cycle?: string; intervalDays?: number; weekday?: number }>()
+    .catch(() => null);
   if (!body) return c.json({ error: "Invalid JSON body" }, 400);
 
   const time = (body.time ?? "").trim() || DEBT_REMINDER_DEFAULT_TIME;
-  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) {
+  if (!isValidReminderTime(time)) {
     return c.json({ error: 'Giờ nhắc phải theo dạng "HH:MM", ví dụ 20:00' }, 400);
   }
 
+  // Không dùng normalize* cho input: gõ sai thì báo lỗi rõ, im lặng đổi sang mặc định dễ gây hiểu nhầm.
+  const cycle = (body.cycle ?? "").trim() || "daily";
+  if (!(DEBT_REMINDER_CYCLES as string[]).includes(cycle)) {
+    return c.json({ error: `Chu kỳ nhắc phải là một trong: ${DEBT_REMINDER_CYCLES.join(", ")}` }, 400);
+  }
+
+  const rawInterval = Math.trunc(Number(body.intervalDays ?? DEBT_REMINDER_DEFAULT_INTERVAL_DAYS));
+  if (
+    cycle === "every_n_days" &&
+    (!Number.isFinite(rawInterval) ||
+      rawInterval < DEBT_REMINDER_MIN_INTERVAL_DAYS ||
+      rawInterval > DEBT_REMINDER_MAX_INTERVAL_DAYS)
+  ) {
+    return c.json(
+      {
+        error: `Số ngày giữa hai lần nhắc phải từ ${DEBT_REMINDER_MIN_INTERVAL_DAYS} đến ${DEBT_REMINDER_MAX_INTERVAL_DAYS}`,
+      },
+      400
+    );
+  }
+
+  const rawWeekday = Math.trunc(Number(body.weekday ?? DEBT_REMINDER_DEFAULT_WEEKDAY));
+  if (cycle === "weekly" && (!Number.isFinite(rawWeekday) || rawWeekday < 0 || rawWeekday > 6)) {
+    return c.json({ error: "Thứ trong tuần phải từ 0 (Chủ nhật) đến 6 (Thứ 7)" }, 400);
+  }
+
+  // Chu kỳ đang chọn không dùng tới hai giá trị này thì client gửi gì cũng kệ — nhưng vẫn phải
+  // ghi số hợp lệ, không để NaN rơi xuống cột.
+  const intervalDays = normalizeIntervalDays(rawInterval);
+  const weekday = normalizeWeekday(rawWeekday);
+
   await ensureBotTables(c.env.DB);
 
-  const result = await c.env.DB.prepare(
-    "UPDATE groups SET debt_reminder_enabled = ?, debt_reminder_time = ?, updated_at = ? WHERE id = ?"
+  const before = await c.env.DB.prepare(DEBT_REMINDER_SELECT).bind(id).first<DebtReminderRow>();
+  if (!before) return c.json({ error: "Group not found" }, 404);
+
+  // Mốc chỉ reset khi nhịp thật sự đổi — sửa mỗi giờ nhắc thì "cách N ngày" không bị nhảy kỳ.
+  const previous = readDebtReminder(before);
+  const keepAnchor =
+    previous.anchorDate && previous.cycle === cycle && previous.intervalDays === intervalDays;
+  const anchorDate = keepAnchor ? (previous.anchorDate as string) : vnDateString(vnNowDate());
+
+  await c.env.DB.prepare(
+    `UPDATE groups SET debt_reminder_enabled = ?, debt_reminder_time = ?, debt_reminder_cycle = ?,
+      debt_reminder_interval_days = ?, debt_reminder_weekday = ?, debt_reminder_anchor_date = ?, updated_at = ?
+     WHERE id = ?`
   )
-    .bind(body.enabled ? 1 : 0, time, new Date().toISOString(), id)
+    .bind(
+      body.enabled ? 1 : 0,
+      time,
+      cycle,
+      intervalDays,
+      weekday,
+      anchorDate,
+      new Date().toISOString(),
+      id
+    )
     .run();
-  if (!result.meta?.changes) return c.json({ error: "Group not found" }, 404);
 
-  const row = await c.env.DB.prepare(
-    `SELECT g.debt_reminder_enabled, g.debt_reminder_time, l.thread_id
-     FROM groups g
-     LEFT JOIN bot_thread_links l ON l.group_id = g.id
-     WHERE g.id = ?`
-  )
-    .bind(id)
-    .first<DebtReminderRow>();
-
-  return c.json(toDebtReminder(row ?? {}));
+  return c.json(
+    toDebtReminder({
+      thread_id: before.thread_id,
+      debt_reminder_enabled: body.enabled ? 1 : 0,
+      debt_reminder_time: time,
+      debt_reminder_cycle: cycle,
+      debt_reminder_interval_days: intervalDays,
+      debt_reminder_weekday: weekday,
+      debt_reminder_anchor_date: anchorDate,
+    })
+  );
 });
 
 // Chatbot chạy bằng AI agent (tool-calling) — bật/tắt theo từng nhóm. Chỉ admin nhóm.

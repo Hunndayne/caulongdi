@@ -23,7 +23,7 @@ import {
 import { api } from "@/api/client";
 import { useSession } from "@/lib/auth-client";
 import { isAdminUser } from "@/lib/permissions";
-import { cn, formatCurrency } from "@/lib/utils";
+import { cn, formatCurrency, formatDate } from "@/lib/utils";
 import { useGroupsStore } from "@/stores/groupsStore";
 import { Avatar } from "@/components/shared/Avatar";
 import { Badge } from "@/components/ui/badge";
@@ -31,7 +31,15 @@ import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { EmptyState } from "@/components/shared/EmptyState";
-import type { GroupBotAgent, GroupDebtReminder, GroupInvite, GroupMember, GroupPaymentSettings, GroupSearchResult } from "@/types";
+import type {
+  DebtReminderCycle,
+  GroupBotAgent,
+  GroupDebtReminder,
+  GroupInvite,
+  GroupMember,
+  GroupPaymentSettings,
+  GroupSearchResult,
+} from "@/types";
 import banksData from "@/lib/banks.json";
 
 const banks = (banksData as any).data.filter((b: any) => b.transferSupported === 1);
@@ -52,6 +60,38 @@ const TIMO_OUTCOME_LABELS: Record<string, { label: string; className: string }> 
 // Backend có thể thêm outcome mới — không map được thì hiện thẳng giá trị gốc.
 function timoOutcomeLabel(outcome: string) {
   return TIMO_OUTCOME_LABELS[outcome] ?? { label: outcome, className: "text-gray-500" };
+}
+
+// Chu kỳ nhắc công nợ — giá trị phải khớp worker/src/debtReminder.ts.
+const DEBT_CYCLE_OPTIONS: { value: DebtReminderCycle; label: string }[] = [
+  { value: "daily", label: "Hằng ngày" },
+  { value: "every_n_days", label: "Cách vài ngày" },
+  { value: "weekly", label: "Hằng tuần" },
+  { value: "monthly_end", label: "Cuối tháng" },
+];
+
+// Index = Date.getDay(): 0 = Chủ nhật.
+const WEEKDAY_LABELS = ["Chủ nhật", "Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7"];
+
+// Chọn sẵn vài mốc thay vì ô nhập tự do — nằm trong khoảng 2..30 mà worker chấp nhận.
+const DEBT_INTERVAL_OPTIONS = [2, 3, 4, 5, 6, 7, 10, 14, 15, 21, 30];
+
+/** Câu mô tả nhịp nhắc, ghép vào "Đang nhắc <...> lúc 20:00". */
+function describeDebtCycle(settings: {
+  cycle: DebtReminderCycle;
+  intervalDays: number;
+  weekday: number;
+}) {
+  switch (settings.cycle) {
+    case "every_n_days":
+      return `${settings.intervalDays} ngày một lần`;
+    case "weekly":
+      return `mỗi ${WEEKDAY_LABELS[settings.weekday] ?? "tuần"} hằng tuần`;
+    case "monthly_end":
+      return "vào ngày cuối mỗi tháng";
+    default:
+      return "hằng ngày";
+  }
 }
 
 function formatTimoTime(value: string | null) {
@@ -105,6 +145,9 @@ export default function MembersPage() {
   const [timoPot, setTimoPot] = useState<GroupPaymentSettings | null>(null);
   const [debtReminder, setDebtReminder] = useState<GroupDebtReminder | null>(null);
   const [debtReminderTime, setDebtReminderTime] = useState("20:00");
+  const [debtReminderCycle, setDebtReminderCycle] = useState<DebtReminderCycle>("daily");
+  const [debtReminderInterval, setDebtReminderInterval] = useState(3);
+  const [debtReminderWeekday, setDebtReminderWeekday] = useState(1);
   const [debtReminderSaving, setDebtReminderSaving] = useState(false);
   const [botAgent, setBotAgent] = useState<GroupBotAgent | null>(null);
   const [botAgentSaving, setBotAgentSaving] = useState(false);
@@ -133,6 +176,20 @@ export default function MembersPage() {
   const canDeleteGroup = Boolean(
     activeGroup && (activeGroup.ownerUserId === currentUserId || isAdminUser(session?.user))
   );
+  // Số ngày đã lưu có thể nằm ngoài danh sách gợi ý (đặt qua API) — chèn thêm để select
+  // không âm thầm hiện sai giá trị.
+  const debtIntervalOptions = DEBT_INTERVAL_OPTIONS.includes(debtReminderInterval)
+    ? DEBT_INTERVAL_OPTIONS
+    : [...DEBT_INTERVAL_OPTIONS, debtReminderInterval].sort((a, b) => a - b);
+  // Chỉ so trường có ý nghĩa với chu kỳ đang chọn — đổi "cách mấy ngày" khi đang để Hằng tuần
+  // thì chẳng có gì để lưu.
+  const debtReminderDirty = Boolean(
+    debtReminder &&
+      (debtReminderTime !== debtReminder.time ||
+        debtReminderCycle !== debtReminder.cycle ||
+        (debtReminderCycle === "every_n_days" && debtReminderInterval !== debtReminder.intervalDays) ||
+        (debtReminderCycle === "weekly" && debtReminderWeekday !== debtReminder.weekday))
+  );
 
   useEffect(() => {
     fetchGroups();
@@ -153,6 +210,9 @@ export default function MembersPage() {
     setDebtReminder(null);
     setDebtReminderTime("20:00");
     setBotAgent(null);
+    setDebtReminderCycle("daily");
+    setDebtReminderInterval(3);
+    setDebtReminderWeekday(1);
     setGroupBankBin("");
     setGroupBankAccountNumber("");
     setGroupBankAccountName("");
@@ -181,7 +241,7 @@ export default function MembersPage() {
     api.getDebtReminder(activeGroupId)
       .then((settings) => {
         setDebtReminder(settings);
-        setDebtReminderTime(settings.time);
+        applyDebtReminderForm(settings);
       })
       .catch(() => {});
 
@@ -324,14 +384,28 @@ export default function MembersPage() {
     }
   };
 
-  const handleSaveDebtReminder = async (enabled: boolean, time: string) => {
+  // Form và giá trị đã lưu tách nhau (còn nút "Lưu thay đổi") nên đồng bộ lại ở một chỗ.
+  const applyDebtReminderForm = (settings: GroupDebtReminder) => {
+    setDebtReminderTime(settings.time);
+    setDebtReminderCycle(settings.cycle);
+    setDebtReminderInterval(settings.intervalDays);
+    setDebtReminderWeekday(settings.weekday);
+  };
+
+  const handleSaveDebtReminder = async (enabled: boolean) => {
     if (!activeGroupId) return;
     setDebtReminderSaving(true);
     setError(null);
     try {
-      const saved = await api.saveDebtReminder(activeGroupId, { enabled, time });
+      const saved = await api.saveDebtReminder(activeGroupId, {
+        enabled,
+        time: debtReminderTime,
+        cycle: debtReminderCycle,
+        intervalDays: debtReminderInterval,
+        weekday: debtReminderWeekday,
+      });
       setDebtReminder(saved);
-      setDebtReminderTime(saved.time);
+      applyDebtReminderForm(saved);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Không lưu được cài đặt nhắc công nợ");
     } finally {
@@ -944,7 +1018,7 @@ export default function MembersPage() {
                 Nhắc công nợ qua Messenger
               </div>
               <p className="text-xs text-gray-500">
-                Mỗi ngày vào giờ đã đặt, bot đăng vào group chat danh sách ai còn nợ bao nhiêu.
+                Đến kỳ đã đặt, bot đăng vào group chat danh sách ai còn nợ bao nhiêu.
                 Cả nhóm sạch nợ thì bot im lặng, không nhắn gì.
               </p>
               {debtReminder && !debtReminder.messengerLinked && (
@@ -953,18 +1027,72 @@ export default function MembersPage() {
                   mục "Kết nối Messenger" phía trên trước nhé.
                 </p>
               )}
+              <div className="grid gap-2 sm:grid-cols-2">
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium text-gray-700">Chu kỳ nhắc</span>
+                  <select
+                    value={debtReminderCycle}
+                    onChange={(event) => setDebtReminderCycle(event.target.value as DebtReminderCycle)}
+                    className="w-full rounded-lg border border-gray-200 px-2.5 py-1.5 text-sm text-gray-900"
+                  >
+                    {DEBT_CYCLE_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                {debtReminderCycle === "every_n_days" && (
+                  <label className="block">
+                    <span className="mb-1 block text-xs font-medium text-gray-700">Cách mấy ngày</span>
+                    <select
+                      value={debtReminderInterval}
+                      onChange={(event) => setDebtReminderInterval(Number(event.target.value))}
+                      className="w-full rounded-lg border border-gray-200 px-2.5 py-1.5 text-sm text-gray-900"
+                    >
+                      {debtIntervalOptions.map((days) => (
+                        <option key={days} value={days}>
+                          {days} ngày một lần
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+
+                {debtReminderCycle === "weekly" && (
+                  <label className="block">
+                    <span className="mb-1 block text-xs font-medium text-gray-700">Vào thứ</span>
+                    <select
+                      value={debtReminderWeekday}
+                      onChange={(event) => setDebtReminderWeekday(Number(event.target.value))}
+                      className="w-full rounded-lg border border-gray-200 px-2.5 py-1.5 text-sm text-gray-900"
+                    >
+                      {WEEKDAY_LABELS.map((label, index) => (
+                        <option key={label} value={index}>
+                          {label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium text-gray-700">Giờ nhắc</span>
+                  <input
+                    type="time"
+                    value={debtReminderTime}
+                    onChange={(event) => setDebtReminderTime(event.target.value)}
+                    className="w-full rounded-lg border border-gray-200 px-2.5 py-1.5 text-sm text-gray-900"
+                  />
+                </label>
+              </div>
               <div className="flex flex-wrap items-center gap-2">
-                <input
-                  type="time"
-                  value={debtReminderTime}
-                  onChange={(event) => setDebtReminderTime(event.target.value)}
-                  className="rounded-lg border border-gray-200 px-2.5 py-1.5 text-sm text-gray-900"
-                />
                 <Button
                   size="sm"
                   variant={debtReminder?.enabled ? "default" : "outline"}
                   disabled={debtReminderSaving}
-                  onClick={() => handleSaveDebtReminder(!debtReminder?.enabled, debtReminderTime)}
+                  onClick={() => handleSaveDebtReminder(!debtReminder?.enabled)}
                 >
                   {debtReminderSaving
                     ? "Đang lưu..."
@@ -972,20 +1100,21 @@ export default function MembersPage() {
                       ? "Đang bật — bấm để tắt"
                       : "Bật nhắc"}
                 </Button>
-                {debtReminder?.enabled && debtReminderTime !== debtReminder.time && (
+                {debtReminder?.enabled && debtReminderDirty && (
                   <Button
                     size="sm"
                     variant="outline"
                     disabled={debtReminderSaving}
-                    onClick={() => handleSaveDebtReminder(true, debtReminderTime)}
+                    onClick={() => handleSaveDebtReminder(true)}
                   >
-                    Lưu giờ mới
+                    Lưu thay đổi
                   </Button>
                 )}
               </div>
               {debtReminder?.enabled && (
                 <p className="text-xs text-gray-400">
-                  Đang nhắc hằng ngày lúc {debtReminder.time} (giờ Việt Nam).
+                  Đang nhắc {describeDebtCycle(debtReminder)} lúc {debtReminder.time} (giờ Việt Nam).
+                  {debtReminder.nextRunDate && ` Kỳ tới: ${formatDate(debtReminder.nextRunDate)}.`}
                 </p>
               )}
             </div>

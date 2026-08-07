@@ -5,6 +5,14 @@
 
 import { Env } from "./types";
 import { ensureBotTables } from "./db/botTables";
+import {
+  DEBT_REMINDER_WINDOW_MINUTES,
+  DebtReminderColumns,
+  minutesOfDay,
+  readDebtReminder,
+  shouldRemindOn,
+  timeToMinutes,
+} from "./debtReminder";
 
 // Cron chạy mỗi 10' (wrangler.toml); cửa sổ 40' + dedupe ⇒ tin nhắc đến tay
 // khoảng 30–40 phút trước giờ chơi.
@@ -109,11 +117,7 @@ export async function enqueueSessionReminders(env: Env): Promise<number> {
 
 // --- Nhắc công nợ định kỳ ---
 
-const DEBT_REMINDER_DEFAULT_TIME = "20:00";
-// Cron chạy 10'/lần; cửa sổ 30' cho cron lỡ nhịp vẫn kịp, dedupe theo ngày lo phần chỉ gửi 1 lần.
-const DEBT_REMINDER_WINDOW_MINUTES = 30;
-
-type DebtGroupRow = { id: string; name: string; debt_reminder_time: string | null };
+type DebtGroupRow = DebtReminderColumns & { id: string; name: string };
 
 type MemberDebtRow = {
   member_name: string;
@@ -132,12 +136,6 @@ function formatMoneyVn(amount: number) {
   }).format(Math.round(Number(amount) || 0));
 }
 
-/** "HH:MM" hợp lệ thì trả lại, không thì dùng mặc định. */
-function normalizeReminderTime(value: string | null): string {
-  const t = (value ?? "").trim();
-  return /^([01]\d|2[0-3]):[0-5]\d$/.test(t) ? t : DEBT_REMINDER_DEFAULT_TIME;
-}
-
 /**
  * Cron: nhắc công nợ còn lại của từng thành viên vào group chat.
  * Chỉ nhóm đã bật trong Cài đặt nhóm VÀ đã liên kết thread Messenger mới nhận.
@@ -147,10 +145,11 @@ export async function enqueueDebtReminders(env: Env): Promise<number> {
 
   const now = vnNowDate();
   const today = now.toISOString().slice(0, 10);
-  const nowMin = now.getUTCHours() * 60 + now.getUTCMinutes();
+  const nowMin = minutesOfDay(now);
 
   const groups = await env.DB.prepare(
-    `SELECT g.id, g.name, g.debt_reminder_time
+    `SELECT g.id, g.name, g.debt_reminder_time, g.debt_reminder_cycle,
+      g.debt_reminder_interval_days, g.debt_reminder_weekday, g.debt_reminder_anchor_date
      FROM groups g
      JOIN bot_thread_links l ON l.group_id = g.id
      WHERE g.debt_reminder_enabled = 1`
@@ -158,8 +157,11 @@ export async function enqueueDebtReminders(env: Env): Promise<number> {
 
   let queued = 0;
   for (const group of groups.results ?? []) {
-    const [hh, mm] = normalizeReminderTime(group.debt_reminder_time).split(":");
-    const targetMin = Number(hh) * 60 + Number(mm);
+    const config = readDebtReminder(group);
+    // Hôm nay không thuộc chu kỳ (cách N ngày / thứ trong tuần / cuối tháng) thì bỏ qua luôn.
+    if (!shouldRemindOn(config, now)) continue;
+
+    const targetMin = timeToMinutes(config.time);
     // Cố tình KHÔNG cho cửa sổ vắt qua nửa đêm: giữ dedupe key gọn trong đúng một ngày.
     if (nowMin < targetMin || nowMin >= targetMin + DEBT_REMINDER_WINDOW_MINUTES) continue;
 

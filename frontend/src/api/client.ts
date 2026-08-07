@@ -20,6 +20,7 @@ import type {
   GroupPaymentSettings,
   GroupDebtReminder,
   GroupBotAgent,
+  DebtReminderCycle,
   PotPayback,
   TimoPotCheckResult,
 } from "@/types";
@@ -197,10 +198,13 @@ export const api = {
   createBotLinkCode: (groupId: string) =>
     request<{ code: string; expiresAt: string; ttlSeconds: number }>(`/api/groups/${groupId}/bot-link-code`, { method: "POST" }),
 
-  // Nhắc công nợ định kỳ vào group chat — cron của worker gửi, web chỉ bật/tắt và đặt giờ.
+  // Nhắc công nợ định kỳ vào group chat — cron của worker gửi, web chỉ bật/tắt và đặt chu kỳ/giờ.
   getDebtReminder: (groupId: string) =>
     request<GroupDebtReminder>(`/api/groups/${groupId}/debt-reminder`),
-  saveDebtReminder: (groupId: string, data: { enabled: boolean; time: string }) =>
+  saveDebtReminder: (
+    groupId: string,
+    data: { enabled: boolean; time: string; cycle: DebtReminderCycle; intervalDays: number; weekday: number }
+  ) =>
     request<GroupDebtReminder>(`/api/groups/${groupId}/debt-reminder`, {
       method: "PUT",
       body: JSON.stringify(data),

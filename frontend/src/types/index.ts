@@ -102,12 +102,23 @@ export interface JoinLinkPreview {
   alreadyMember: boolean;
 }
 
-// Cài đặt thanh toán của nhóm: tài khoản nhận tiền chung + hũ Timo (tuỳ chọn) để tự xác nhận.
+/** daily: mỗi ngày • every_n_days: cách N ngày • weekly: mỗi tuần một thứ • monthly_end: ngày cuối tháng. */
+export type DebtReminderCycle = "daily" | "every_n_days" | "weekly" | "monthly_end";
+
 /** Nhắc công nợ định kỳ vào group chat Messenger (cron worker gửi, không phải web). */
 export interface GroupDebtReminder {
   enabled: boolean;
   /** Giờ Việt Nam, dạng "HH:MM". */
   time: string;
+  cycle: DebtReminderCycle;
+  /** Số ngày giữa hai lần nhắc — chỉ dùng khi cycle = every_n_days. */
+  intervalDays: number;
+  /** 0 = Chủ nhật … 6 = Thứ 7 — chỉ dùng khi cycle = weekly. */
+  weekday: number;
+  /** Mốc đếm kỳ của every_n_days, "YYYY-MM-DD". */
+  anchorDate: string | null;
+  /** Ngày nhắc kế tiếp "YYYY-MM-DD"; rỗng khi đang tắt. */
+  nextRunDate: string;
   /** Chưa liên kết Messenger thì bật cũng không có nơi nhận tin. */
   messengerLinked: boolean;
 }
@@ -117,6 +128,7 @@ export interface GroupBotAgent {
   enabled: boolean;
 }
 
+// Cài đặt thanh toán của nhóm: tài khoản nhận tiền chung + hũ Timo (tuỳ chọn) để tự xác nhận.
 export interface GroupPaymentSettings {
   bankBin: string | null;
   bankAccountNumber: string | null;
