@@ -582,10 +582,13 @@ function isUpdateCostLike(t: string): boolean {
 }
 
 // Ghi khoản chi mới: có số tiền + từ chỉ chi tiêu ("tiền sân 80k", "3 ống cầu 270k Nam trả").
+// Cũng nhận "80k cho buổi/kèo" — user gõ tắt không kèm keyword tên khoản.
 function isAddCostLike(text: string): boolean {
   if (parseMoneyVn(text) === undefined) return false;
   const t = removeDiacritics(text.toLowerCase());
-  return /\b(tien|phi|chi phi|khoan|san|nuoc|cau|bong|bill|an|nem|ve|nuoc uong|do an)\b/.test(t);
+  if (/\b(tien|phi|chi phi|khoan|san|nuoc|cau|bong|bill|an|nem|ve|nuoc uong|do an)\b/.test(t)) return true;
+  if (/\b(cho buoi|cho keo|vao buoi|vao keo)\b/.test(t)) return true;
+  return false;
 }
 
 // Lưới an toàn cho my_debts — cố tình HẸP vì AI mới là bộ phân loại chính.
@@ -1178,7 +1181,7 @@ async function resolveIntent(
   if (isUpdateCostLike(t)) {
     return { intent: "update_cost", names: [], cost: parseUpdateCostDraft(text), session: parseSessionReference(text, context) };
   }
-  if (isAddCostLike(text) && !asksForCosts(t)) {
+  if (isAddCostLike(text) && (!asksForCosts(t) || /\b(them|add|ghi)\b/.test(t))) {
     return {
       intent: "add_cost",
       names: [],
@@ -2231,7 +2234,7 @@ async function replyAddCost(
 
   let session: SessionRow | null;
   if (hasSessionSelector(selector)) {
-    const resolution = await resolveSessionForAction(env, groupId, selector, false);
+    const resolution = await resolveSessionForAction(env, groupId, selector, false, text);
     if (resolution.choices) return ambiguousSessionsReply(resolution.choices);
     session = resolution.session;
   } else {
