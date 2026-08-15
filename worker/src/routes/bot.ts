@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { Env } from "../types";
 import { ensureBotTables } from "../db/botTables";
 import { recalcSessionPayments } from "./sessions";
+import { runAgent } from "./botAgent";
 
 // Router cho Messenger userbot (server riêng gọi vào).
 // Xác thực bằng Bearer BOT_SERVICE_SECRET (DDNS nên không allowlist IP được).
@@ -36,7 +37,7 @@ type Intent =
   | "stats"
   | "chat";
 
-type SessionDraft = {
+export type SessionDraft = {
   date?: string;
   startTime?: string;
   endTime?: string;
@@ -44,7 +45,7 @@ type SessionDraft = {
   note?: string;
 };
 
-type CostDraft = {
+export type CostDraft = {
   label?: string;
   amount?: number;
   quantity?: number;
@@ -61,7 +62,7 @@ type ParsedIntent = {
   changes?: SessionDraft;
 };
 
-type BotContextMessage = {
+export type BotContextMessage = {
   role: "user" | "assistant";
   text: string;
   createdAt?: string;
@@ -83,7 +84,7 @@ type SessionRow = {
 
 export type BotReply = { ok: boolean; reply: string };
 
-type BotActor = {
+export type BotActor = {
   userId?: string;
   name?: string | null;
   // members.id đã ghép qua /alias — ưu tiên khi resolve "tôi/mình" từ Messenger.
@@ -93,6 +94,11 @@ type BotActor = {
 const SELF_NAME_TOKEN = "__ting_self__";
 const MEMBER_COLORS = ["#22c55e", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4"];
 const MAX_CONTEXT_MESSAGES_FOR_AI = 8;
+
+function isTruthyFlag(v?: string) {
+  const s = (v ?? "").trim().toLowerCase();
+  return s === "1" || s === "true" || s === "yes" || s === "on";
+}
 
 function bearerToken(header?: string | null) {
   const match = header?.match(/^Bearer\s+(.+)$/i);
@@ -109,11 +115,11 @@ function removeDiacritics(value: string) {
 }
 
 // Giờ Việt Nam (UTC+7) để hiểu "hôm nay" / "tuần này".
-function vnNow() {
+export function vnNow() {
   return new Date(Date.now() + 7 * 60 * 60 * 1000);
 }
 
-function vnToday() {
+export function vnToday() {
   return vnNow().toISOString().slice(0, 10);
 }
 
@@ -743,7 +749,7 @@ function normalizeAiTime(value: unknown): string | undefined {
 }
 
 // Danh sách tên thành viên để nhét vào prompt NLU (cùng bộ lọc với addNamesToSession).
-async function loadGroupMemberNames(env: Env, groupId: string): Promise<string[]> {
+export async function loadGroupMemberNames(env: Env, groupId: string): Promise<string[]> {
   const rows =
     (await env.DB.prepare(
       "SELECT name FROM members WHERE group_id = ? AND is_active = 1 AND is_walkin = 0 ORDER BY name LIMIT 200"
@@ -1215,7 +1221,7 @@ async function resolveIntent(
 
 // --- Truy vấn buổi chơi ---
 
-type QueryOpts = {
+export type QueryOpts = {
   date?: string;
   from?: string;
   to?: string;
@@ -1248,7 +1254,7 @@ type PaymentSummaryRow = {
   payer_marked_paid?: number | null;
 };
 
-async function querySessions(env: Env, groupId: string, opts: QueryOpts): Promise<SessionRow[]> {
+export async function querySessions(env: Env, groupId: string, opts: QueryOpts): Promise<SessionRow[]> {
   const where = ["s.group_id = ?"];
   const binds: unknown[] = [groupId];
   if (opts.date) {
@@ -1747,6 +1753,24 @@ async function handleQuery(
     actor = { ...actor, memberId: aliases.get(normalizeName(actor.name)) };
   }
 
+  // AI-agent (tool-calling) path — thử trước; null nghĩa là agent không xử lý được → rơi về intent cũ.
+  if (env.DEEPSEEK_API_KEY?.trim() && isTruthyFlag(env.BOT_AGENT_ENABLED)) {
+    try {
+      const agentReply = await runAgent(env, {
+        groupId,
+        groupName,
+        text,
+        actor,
+        context,
+        aliases,
+        groupSummary,
+      });
+      if (agentReply) return agentReply;
+    } catch (err) {
+      console.error("[bot-agent] fallback", err);
+    }
+  }
+
   const parsed = await resolveIntent(env, text, groupId, actor, context);
 
   switch (parsed.intent) {
@@ -1798,6 +1822,23 @@ export async function handleGroupBotQuery(
     .first<{ name: string }>();
   const groupName = group?.name ?? "nhom";
 
+  // AI-agent (tool-calling) path — thử trước; null nghĩa là agent không xử lý được → rơi về intent cũ.
+  if (env.DEEPSEEK_API_KEY?.trim() && isTruthyFlag(env.BOT_AGENT_ENABLED)) {
+    try {
+      const agentReply = await runAgent(env, {
+        groupId,
+        groupName,
+        text,
+        actor,
+        context,
+        groupSummary,
+      });
+      if (agentReply) return agentReply;
+    } catch (err) {
+      console.error("[bot-agent] fallback", err);
+    }
+  }
+
   const parsed = await resolveIntent(env, text, groupId, actor, context);
 
   switch (parsed.intent) {
@@ -1836,7 +1877,7 @@ export async function handleGroupBotQuery(
   }
 }
 
-async function replySessions(
+export async function replySessions(
   env: Env,
   groupId: string,
   groupName: string,
@@ -1892,7 +1933,7 @@ async function replySessions(
   return { ok: true, reply: `${header}\n\n${blocks.join("\n\n")}` };
 }
 
-async function replyMembers(env: Env, groupId: string, groupName: string): Promise<BotReply> {
+export async function replyMembers(env: Env, groupId: string, groupName: string): Promise<BotReply> {
   const result = await env.DB
     .prepare("SELECT name FROM members WHERE group_id = ? AND is_active = 1 AND is_walkin = 0 ORDER BY name COLLATE NOCASE")
     .bind(groupId)
@@ -1903,7 +1944,7 @@ async function replyMembers(env: Env, groupId: string, groupName: string): Promi
   return { ok: true, reply: `👥 Thành viên nhóm ${groupName} (${members.length}):\n${list}` };
 }
 
-async function replyAttendees(
+export async function replyAttendees(
   env: Env,
   groupId: string,
   groupName: string,
@@ -1958,7 +1999,7 @@ function formatPaymentStatus(payment: PaymentSummaryRow) {
   return "chưa trả";
 }
 
-async function replyCosts(
+export async function replyCosts(
   env: Env,
   groupId: string,
   groupName: string,
@@ -2034,7 +2075,7 @@ async function replyCosts(
 
 // Xác nhận "đã trả tiền" là thao tác nhạy cảm (đúng người, đúng khoản, đúng chiều nợ)
 // — bot KHÔNG tự làm, chỉ đưa link đến trang buổi trên web.
-async function replyMarkPaid(
+export async function replyMarkPaid(
   env: Env,
   groupId: string,
   groupName: string,
@@ -2070,7 +2111,7 @@ type DebtRow = {
 
 // Công nợ CHÉO BUỔI của MỘT người ("tôi còn nợ buổi nào", "Nam nợ những buổi nào").
 // Khác replyCosts: chỗ kia là một buổi × mọi người, chỗ này là một người × mọi buổi.
-async function replyMyDebts(
+export async function replyMyDebts(
   env: Env,
   groupId: string,
   groupName: string,
@@ -2213,7 +2254,7 @@ function resolveSelfMember(
   return null;
 }
 
-async function replyAddCost(
+export async function replyAddCost(
   env: Env,
   groupId: string,
   groupName: string,
@@ -2346,7 +2387,7 @@ type CostEditRow = {
   consumer_ids: string | null;
 };
 
-async function replyUpdateCost(
+export async function replyUpdateCost(
   env: Env,
   groupId: string,
   groupName: string,
@@ -2491,7 +2532,7 @@ async function replyUpdateCost(
   return { ok: true, reply: lines.join("\n") };
 }
 
-async function replyCreateSession(
+export async function replyCreateSession(
   env: Env,
   groupId: string,
   groupName: string,
@@ -2803,7 +2844,7 @@ async function replyAddWalkin(
   return { ok: true, reply: lines.join("\n") };
 }
 
-async function replyAddMembers(
+export async function replyAddMembers(
   env: Env,
   groupId: string,
   groupName: string,
@@ -2838,7 +2879,7 @@ async function replyAddMembers(
   return { ok: true, reply: `${header}${formatAddOutcome(outcome)}` };
 }
 
-async function replyRemoveMembers(
+export async function replyRemoveMembers(
   env: Env,
   groupId: string,
   groupName: string,
@@ -2960,7 +3001,7 @@ function parseStatsPeriod(text: string): { from: string; to: string; label: stri
   return { from, to, label: "tháng này" };
 }
 
-async function replyStats(env: Env, groupId: string, groupName: string, text: string): Promise<BotReply> {
+export async function replyStats(env: Env, groupId: string, groupName: string, text: string): Promise<BotReply> {
   const { from, to, label } = parseStatsPeriod(text);
 
   const [sessionRow, costRow, topRows] = await Promise.all([
@@ -3000,7 +3041,7 @@ async function replyStats(env: Env, groupId: string, groupName: string, text: st
   return { ok: true, reply: lines.join("\n") };
 }
 
-async function replyUpdateSession(
+export async function replyUpdateSession(
   env: Env,
   groupId: string,
   groupName: string,
@@ -3065,7 +3106,7 @@ function isCancelConfirmation(text: string, context?: BotContextMessage[]): bool
   return Boolean(lastAssistant?.text.includes("đồng ý hủy"));
 }
 
-async function replyCancelSession(
+export async function replyCancelSession(
   env: Env,
   groupId: string,
   groupName: string,

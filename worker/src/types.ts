@@ -20,6 +20,7 @@ export interface Env {
   DEEPSEEK_API_KEY?: string;
   DEEPSEEK_MODEL?: string;
   DEEPSEEK_BASE_URL?: string;
+  BOT_AGENT_ENABLED?: string;
 }
 
 export type AppRole = 'admin' | 'member';
