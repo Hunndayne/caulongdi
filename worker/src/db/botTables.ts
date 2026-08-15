@@ -91,6 +91,10 @@ export async function ensureBotTables(db: D1Database) {
   await ensureColumn(db, "groups", "debt_reminder_enabled", "INTEGER NOT NULL DEFAULT 0");
   await ensureColumn(db, "groups", "debt_reminder_time", "TEXT");
 
+  // Chatbot chạy bằng AI agent (tool-calling) thay cho phân loại intent cứng — bật/tắt theo từng
+  // nhóm trong Cài đặt nhóm. Mặc định TẮT: nhóm đang chạy vẫn dùng luồng cũ tới khi tự bật.
+  await ensureColumn(db, "groups", "bot_agent_enabled", "INTEGER NOT NULL DEFAULT 0");
+
   ensured = true;
 }
 

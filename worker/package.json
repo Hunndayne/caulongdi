@@ -48,7 +48,9 @@
     "db:patch:timo-pot": "wrangler d1 execute caulong --local --file=src/db/patch-timo-pot.sql",
     "db:patch:timo-pot:prod": "wrangler d1 execute caulong --remote --file=src/db/patch-timo-pot.sql",
     "db:patch:pot-payback": "wrangler d1 execute caulong --local --file=src/db/patch-pot-payback.sql",
-    "db:patch:pot-payback:prod": "wrangler d1 execute caulong --remote --file=src/db/patch-pot-payback.sql"
+    "db:patch:pot-payback:prod": "wrangler d1 execute caulong --remote --file=src/db/patch-pot-payback.sql",
+    "db:patch:bot-agent": "wrangler d1 execute caulong --local --file=src/db/patch-bot-agent.sql",
+    "db:patch:bot-agent:prod": "wrangler d1 execute caulong --remote --file=src/db/patch-bot-agent.sql"
   },
   "dependencies": {
     "better-auth": "^1.2.7",

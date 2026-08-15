@@ -112,6 +112,11 @@ export interface GroupDebtReminder {
   messengerLinked: boolean;
 }
 
+export interface GroupBotAgent {
+  /** Bật chatbot chạy bằng AI agent (tool-calling) thay cho phân loại intent cứng. */
+  enabled: boolean;
+}
+
 export interface GroupPaymentSettings {
   bankBin: string | null;
   bankAccountNumber: string | null;

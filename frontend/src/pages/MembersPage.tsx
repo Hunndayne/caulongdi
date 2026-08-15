@@ -31,7 +31,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { EmptyState } from "@/components/shared/EmptyState";
-import type { GroupDebtReminder, GroupInvite, GroupMember, GroupPaymentSettings, GroupSearchResult } from "@/types";
+import type { GroupBotAgent, GroupDebtReminder, GroupInvite, GroupMember, GroupPaymentSettings, GroupSearchResult } from "@/types";
 import banksData from "@/lib/banks.json";
 
 const banks = (banksData as any).data.filter((b: any) => b.transferSupported === 1);
@@ -106,6 +106,8 @@ export default function MembersPage() {
   const [debtReminder, setDebtReminder] = useState<GroupDebtReminder | null>(null);
   const [debtReminderTime, setDebtReminderTime] = useState("20:00");
   const [debtReminderSaving, setDebtReminderSaving] = useState(false);
+  const [botAgent, setBotAgent] = useState<GroupBotAgent | null>(null);
+  const [botAgentSaving, setBotAgentSaving] = useState(false);
   const [groupBankBin, setGroupBankBin] = useState("");
   const [groupBankAccountNumber, setGroupBankAccountNumber] = useState("");
   const [groupBankAccountName, setGroupBankAccountName] = useState("");
@@ -150,6 +152,7 @@ export default function MembersPage() {
     setTimoPot(null);
     setDebtReminder(null);
     setDebtReminderTime("20:00");
+    setBotAgent(null);
     setGroupBankBin("");
     setGroupBankAccountNumber("");
     setGroupBankAccountName("");
@@ -180,6 +183,10 @@ export default function MembersPage() {
         setDebtReminder(settings);
         setDebtReminderTime(settings.time);
       })
+      .catch(() => {});
+
+    api.getBotAgent(activeGroupId)
+      .then(setBotAgent)
       .catch(() => {});
   }, [activeGroupId, canManageGroup]);
 
@@ -329,6 +336,20 @@ export default function MembersPage() {
       setError(err instanceof Error ? err.message : "Không lưu được cài đặt nhắc công nợ");
     } finally {
       setDebtReminderSaving(false);
+    }
+  };
+
+  const handleSaveBotAgent = async (enabled: boolean) => {
+    if (!activeGroupId) return;
+    setBotAgentSaving(true);
+    setError(null);
+    try {
+      const saved = await api.saveBotAgent(activeGroupId, enabled);
+      setBotAgent(saved);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Không lưu được cài đặt chatbot AI");
+    } finally {
+      setBotAgentSaving(false);
     }
   };
 
@@ -965,6 +986,39 @@ export default function MembersPage() {
               {debtReminder?.enabled && (
                 <p className="text-xs text-gray-400">
                   Đang nhắc hằng ngày lúc {debtReminder.time} (giờ Việt Nam).
+                </p>
+              )}
+            </div>
+          )}
+
+          {canManageGroup && (
+            <div className="space-y-2 border-t border-gray-100 pt-4">
+              <div className="flex items-center gap-2 text-sm font-semibold text-gray-900">
+                <Bot size={16} className="text-green-600" />
+                Chatbot AI agent (thử nghiệm)
+              </div>
+              <p className="text-xs text-gray-500">
+                Bật để bot hiểu và xử lý câu tự nhiên bằng AI agent (tự gọi công cụ, làm được yêu
+                cầu nhiều bước) thay cho luồng nhận lệnh cứng. Thao tác hủy buổi / xóa khoản chi luôn
+                được hỏi xác nhận trước. Tắt thì bot chạy như cũ.
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  size="sm"
+                  variant={botAgent?.enabled ? "default" : "outline"}
+                  disabled={botAgentSaving || !botAgent}
+                  onClick={() => handleSaveBotAgent(!botAgent?.enabled)}
+                >
+                  {botAgentSaving
+                    ? "Đang lưu..."
+                    : botAgent?.enabled
+                      ? "Đang bật — bấm để tắt"
+                      : "Bật chatbot AI"}
+                </Button>
+              </div>
+              {botAgent?.enabled && (
+                <p className="text-xs text-gray-400">
+                  Bot đang dùng AI agent. Nếu trả lời sai/chậm, tắt đi là quay lại luồng cũ ngay.
                 </p>
               )}
             </div>
