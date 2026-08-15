@@ -95,9 +95,17 @@ const SELF_NAME_TOKEN = "__ting_self__";
 const MEMBER_COLORS = ["#22c55e", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4"];
 const MAX_CONTEXT_MESSAGES_FOR_AI = 8;
 
-function isTruthyFlag(v?: string) {
-  const s = (v ?? "").trim().toLowerCase();
-  return s === "1" || s === "true" || s === "yes" || s === "on";
+// Luồng AI agent (tool-calling) bật/tắt theo TỪNG NHÓM trong Cài đặt nhóm (groups.bot_agent_enabled),
+// không dùng env toàn hệ thống nữa. Thiếu cột (DB cũ) hoặc lỗi → coi như tắt, rơi về intent cũ.
+async function isBotAgentEnabled(env: Env, groupId: string): Promise<boolean> {
+  try {
+    const row = await env.DB.prepare("SELECT bot_agent_enabled FROM groups WHERE id = ?")
+      .bind(groupId)
+      .first<{ bot_agent_enabled?: number | null }>();
+    return Boolean(row?.bot_agent_enabled);
+  } catch {
+    return false;
+  }
 }
 
 function bearerToken(header?: string | null) {
@@ -1754,7 +1762,7 @@ async function handleQuery(
   }
 
   // AI-agent (tool-calling) path — thử trước; null nghĩa là agent không xử lý được → rơi về intent cũ.
-  if (env.DEEPSEEK_API_KEY?.trim() && isTruthyFlag(env.BOT_AGENT_ENABLED)) {
+  if (env.DEEPSEEK_API_KEY?.trim() && (await isBotAgentEnabled(env, groupId))) {
     try {
       const agentReply = await runAgent(env, {
         groupId,
@@ -1823,7 +1831,7 @@ export async function handleGroupBotQuery(
   const groupName = group?.name ?? "nhom";
 
   // AI-agent (tool-calling) path — thử trước; null nghĩa là agent không xử lý được → rơi về intent cũ.
-  if (env.DEEPSEEK_API_KEY?.trim() && isTruthyFlag(env.BOT_AGENT_ENABLED)) {
+  if (env.DEEPSEEK_API_KEY?.trim() && (await isBotAgentEnabled(env, groupId))) {
     try {
       const agentReply = await runAgent(env, {
         groupId,

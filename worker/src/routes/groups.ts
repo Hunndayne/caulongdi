@@ -1477,4 +1477,42 @@ groups.put("/:id/debt-reminder", async (c) => {
   return c.json(toDebtReminder(row ?? {}));
 });
 
+// Chatbot chạy bằng AI agent (tool-calling) — bật/tắt theo từng nhóm. Chỉ admin nhóm.
+groups.get("/:id/bot-agent", async (c) => {
+  const { id } = c.req.param();
+
+  const membership = await getMembership(c, id);
+  if (membership !== "admin") return c.json({ error: "Forbidden" }, 403);
+
+  await ensureBotTables(c.env.DB);
+
+  const row = await c.env.DB.prepare("SELECT bot_agent_enabled FROM groups WHERE id = ?")
+    .bind(id)
+    .first<{ bot_agent_enabled?: number | null }>();
+  if (!row) return c.json({ error: "Group not found" }, 404);
+
+  return c.json({ enabled: Boolean(row.bot_agent_enabled) });
+});
+
+groups.put("/:id/bot-agent", async (c) => {
+  const { id } = c.req.param();
+
+  const membership = await getMembership(c, id);
+  if (membership !== "admin") return c.json({ error: "Forbidden" }, 403);
+
+  const body = await c.req.json<{ enabled?: boolean }>().catch(() => null);
+  if (!body) return c.json({ error: "Invalid JSON body" }, 400);
+
+  await ensureBotTables(c.env.DB);
+
+  const result = await c.env.DB.prepare(
+    "UPDATE groups SET bot_agent_enabled = ?, updated_at = ? WHERE id = ?"
+  )
+    .bind(body.enabled ? 1 : 0, new Date().toISOString(), id)
+    .run();
+  if (!result.meta?.changes) return c.json({ error: "Group not found" }, 404);
+
+  return c.json({ enabled: Boolean(body.enabled) });
+});
+
 export default groups;

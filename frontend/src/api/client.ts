@@ -19,6 +19,7 @@ import type {
   SendChatMessageResponse,
   GroupPaymentSettings,
   GroupDebtReminder,
+  GroupBotAgent,
   PotPayback,
   TimoPotCheckResult,
 } from "@/types";
@@ -203,6 +204,15 @@ export const api = {
     request<GroupDebtReminder>(`/api/groups/${groupId}/debt-reminder`, {
       method: "PUT",
       body: JSON.stringify(data),
+    }),
+
+  // Chatbot AI agent (tool-calling) — bật/tắt theo từng nhóm.
+  getBotAgent: (groupId: string) =>
+    request<GroupBotAgent>(`/api/groups/${groupId}/bot-agent`),
+  saveBotAgent: (groupId: string, enabled: boolean) =>
+    request<GroupBotAgent>(`/api/groups/${groupId}/bot-agent`, {
+      method: "PUT",
+      body: JSON.stringify({ enabled }),
     }),
 
   // Profiles
