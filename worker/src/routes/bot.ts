@@ -95,6 +95,19 @@ const SELF_NAME_TOKEN = "__ting_self__";
 const MEMBER_COLORS = ["#22c55e", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4"];
 const MAX_CONTEXT_MESSAGES_FOR_AI = 8;
 
+// Messenger KHÔNG render Markdown → bỏ cú pháp Markdown để không lòi ra ký tự thô (**, #, `, [](...)).
+// Chỉ dùng cho đầu ra Messenger; web chat giữ nguyên. Bảo thủ: chỉ đụng cú pháp chắc chắn là Markdown,
+// không đụng dấu * / _ đơn lẻ để tránh làm hỏng số tiền hay chữ thường.
+function stripMarkdownForMessenger(text: string): string {
+  return text
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1 ($2)") // [text](url) -> text (url)
+    .replace(/\*\*([^*]+)\*\*/g, "$1") // **đậm** -> đậm
+    .replace(/__([^_]+)__/g, "$1") // __đậm__ -> đậm
+    .replace(/`{1,3}([^`]+)`{1,3}/g, "$1") // `code` -> code
+    .replace(/^\s{0,3}#{1,6}\s+/gm, "") // # tiêu đề -> bỏ dấu #
+    .replace(/^\s*[-*]\s+/gm, "• "); // gạch đầu dòng -> •
+}
+
 // Luồng AI agent (tool-calling) bật/tắt theo TỪNG NHÓM trong Cài đặt nhóm (groups.bot_agent_enabled),
 // không dùng env toàn hệ thống nữa. Thiếu cột (DB cũ) hoặc lỗi → coi như tắt, rơi về intent cũ.
 async function isBotAgentEnabled(env: Env, groupId: string): Promise<boolean> {
@@ -3321,7 +3334,8 @@ bot.get("/outbox/all", async (c) => {
   const rows = await c.env.DB.prepare(
     "SELECT id, thread_id, text FROM bot_outbox WHERE sent_at IS NULL ORDER BY created_at ASC LIMIT 20"
   ).all<{ id: string; thread_id: string; text: string }>();
-  return c.json({ messages: rows.results ?? [] });
+  const messages = (rows.results ?? []).map((m) => ({ ...m, text: stripMarkdownForMessenger(m.text) }));
+  return c.json({ messages });
 });
 
 bot.get("/outbox", async (c) => {
@@ -3333,7 +3347,8 @@ bot.get("/outbox", async (c) => {
   )
     .bind(threadId)
     .all<{ id: string; text: string }>();
-  return c.json({ messages: rows.results ?? [] });
+  const messages = (rows.results ?? []).map((m) => ({ ...m, text: stripMarkdownForMessenger(m.text) }));
+  return c.json({ messages });
 });
 
 bot.post("/outbox/ack", async (c) => {
@@ -3523,16 +3538,15 @@ bot.post("/message", async (c) => {
   const groupSummary = groupId ? await getGroupSummaryText(c.env.DB, groupId) : undefined;
 
   const senderName = body.senderName?.trim() || null;
-  return c.json(
-    await handleQuery(
-      c.env,
-      threadId,
-      text,
-      { name: senderName },
-      context.length ? context : undefined,
-      groupSummary
-    )
+  const result = await handleQuery(
+    c.env,
+    threadId,
+    text,
+    { name: senderName },
+    context.length ? context : undefined,
+    groupSummary
   );
+  return c.json({ ...result, reply: stripMarkdownForMessenger(result.reply) });
 });
 
 export default bot;
