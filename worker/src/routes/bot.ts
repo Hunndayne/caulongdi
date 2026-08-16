@@ -3334,7 +3334,8 @@ bot.get("/outbox/all", async (c) => {
   const rows = await c.env.DB.prepare(
     "SELECT id, thread_id, text FROM bot_outbox WHERE sent_at IS NULL ORDER BY created_at ASC LIMIT 20"
   ).all<{ id: string; thread_id: string; text: string }>();
-  return c.json({ messages: rows.results ?? [] });
+  const messages = (rows.results ?? []).map((m) => ({ ...m, text: stripMarkdownForMessenger(m.text) }));
+  return c.json({ messages });
 });
 
 bot.get("/outbox", async (c) => {
@@ -3346,7 +3347,8 @@ bot.get("/outbox", async (c) => {
   )
     .bind(threadId)
     .all<{ id: string; text: string }>();
-  return c.json({ messages: rows.results ?? [] });
+  const messages = (rows.results ?? []).map((m) => ({ ...m, text: stripMarkdownForMessenger(m.text) }));
+  return c.json({ messages });
 });
 
 bot.post("/outbox/ack", async (c) => {
