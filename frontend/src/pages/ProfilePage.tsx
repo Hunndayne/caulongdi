@@ -54,7 +54,7 @@ export default function ProfilePage() {
   const [mcpLabel, setMcpLabel] = useState("");
   const [mcpCreating, setMcpCreating] = useState(false);
   const [mcpNewToken, setMcpNewToken] = useState<{ id: string; label: string; token: string } | null>(null);
-  const [mcpCopied, setMcpCopied] = useState(false);
+  const [mcpCopied, setMcpCopied] = useState<"token" | "url" | null>(null);
   const [mcpError, setMcpError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -120,7 +120,7 @@ export default function ProfilePage() {
     setMcpCreating(true);
     setMcpError(null);
     setMcpNewToken(null);
-    setMcpCopied(false);
+    setMcpCopied(null);
     try {
       const created = await api.createMcpToken(mcpLabel.trim());
       setMcpNewToken({ id: created.id, label: created.label, token: created.token });
@@ -144,11 +144,11 @@ export default function ProfilePage() {
     }
   };
 
-  const handleCopyMcpToken = async (token: string) => {
+  const handleCopyMcpToken = async (value: string, key: "token" | "url") => {
     try {
-      await navigator.clipboard.writeText(token);
-      setMcpCopied(true);
-      setTimeout(() => setMcpCopied(false), 2000);
+      await navigator.clipboard.writeText(value);
+      setMcpCopied(key);
+      setTimeout(() => setMcpCopied(null), 2000);
     } catch {
       // clipboard bị chặn (http/iframe) — người dùng vẫn có thể copy thủ công từ ô input.
     }
@@ -294,6 +294,10 @@ export default function ProfilePage() {
             Server URL: <span className="font-mono">{`${window.location.origin}/mcp`}</span>
           </div>
           <div>Authentication: Bearer token (tạo bên dưới, dán vào phần auth của app AI)</div>
+          <div>
+            App không đặt được header (Gemini, ChatGPT connectors...)? Dùng URL kèm sẵn token{" "}
+            <span className="font-mono">{`${window.location.origin}/mcp/<token>`}</span> hiện sau khi tạo.
+          </div>
         </div>
 
         {mcpError && (
@@ -307,8 +311,24 @@ export default function ProfilePage() {
             </div>
             <div className="flex gap-2">
               <Input readOnly value={mcpNewToken.token} className="font-mono text-xs" onFocus={(e) => e.target.select()} />
-              <Button variant="outline" size="sm" onClick={() => handleCopyMcpToken(mcpNewToken.token)}>
-                {mcpCopied ? <Check size={16} className="text-green-600" /> : <Copy size={16} />}
+              <Button variant="outline" size="sm" onClick={() => handleCopyMcpToken(mcpNewToken.token, "token")}>
+                {mcpCopied === "token" ? <Check size={16} className="text-green-600" /> : <Copy size={16} />}
+              </Button>
+            </div>
+            <div className="text-sm font-medium text-green-800">URL cho app không đặt được header (Gemini...):</div>
+            <div className="flex gap-2">
+              <Input
+                readOnly
+                value={`${window.location.origin}/mcp/${mcpNewToken.token}`}
+                className="font-mono text-xs"
+                onFocus={(e) => e.target.select()}
+              />
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => handleCopyMcpToken(`${window.location.origin}/mcp/${mcpNewToken.token}`, "url")}
+              >
+                {mcpCopied === "url" ? <Check size={16} className="text-green-600" /> : <Copy size={16} />}
               </Button>
             </div>
           </div>

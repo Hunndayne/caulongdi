@@ -5,7 +5,7 @@
 // botAgent.ts, lọc theo allowlist (tra cứu + tạo buổi/ghi khoản chi) và bơm thêm
 // tham số "group" để chọn nhóm khi user thuộc nhiều nhóm.
 
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import type { Env } from "../types";
 import { ensureMcpTables } from "../db/mcpTables";
 import { buildTools, executeTool, type RunAgentArgs } from "./botAgent";
@@ -56,13 +56,23 @@ async function sha256Hex(input: string): Promise<string> {
 }
 
 // --- Xác thực: Bearer ttmcp_... -> user (token lưu hash, thu hồi tức thì qua revoked_at) ---
+// Token đến từ header Authorization (chuẩn, ưu tiên) hoặc path /mcp/<token> — cho các app
+// không đặt được custom header (Gemini, ChatGPT connectors...). Lưu ý: token trong path
+// sẽ hiện trong access log của Cloudflare nếu bật observability.
 
-async function authenticate(
+async function resolveToken(
   env: Env,
-  authorization: string | undefined
+  authorization: string | undefined,
+  pathToken?: string
 ): Promise<{ userId: string; tokenHash: string } | null> {
-  const token = authorization?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
-  if (!token?.startsWith("ttmcp_")) return null;
+  const headerToken = authorization?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
+  const token =
+    headerToken?.startsWith("ttmcp_") === true
+      ? headerToken
+      : pathToken?.startsWith("ttmcp_") === true
+        ? pathToken
+        : null;
+  if (!token) return null;
   await ensureMcpTables(env.DB);
   const tokenHash = await sha256Hex(token);
   const row = await env.DB.prepare(
@@ -229,8 +239,9 @@ function rpcError(id: string | number | null, code: number, message: string) {
 
 const mcp = new Hono<{ Bindings: Env }>();
 
-mcp.post("/", async (c) => {
-  const auth = await authenticate(c.env, c.req.header("Authorization"));
+// Handler dùng chung cho POST /mcp (Bearer header) và POST /mcp/<token> (token trong path).
+const jsonRpcHandler = async (c: Context<{ Bindings: Env }>) => {
+  const auth = await resolveToken(c.env, c.req.header("Authorization"), c.req.param("token"));
   if (!auth) return c.json({ error: "Unauthorized" }, 401);
 
   let body: JsonRpcRequest;
@@ -284,10 +295,17 @@ mcp.post("/", async (c) => {
     default:
       return c.json(rpcError(body.id, -32601, `Method not found: ${body.method ?? ""}`));
   }
-});
+};
+
+const notAllowed = (c: Context<{ Bindings: Env }>) => c.text("Method Not Allowed", 405);
+
+mcp.post("/", jsonRpcHandler);
+mcp.post("/:token", jsonRpcHandler);
 
 // Stateless server: không có kênh SSE cho GET, không có session để xoá.
-mcp.get("/", (c) => c.text("Method Not Allowed", 405));
-mcp.delete("/", (c) => c.text("Method Not Allowed", 405));
+mcp.get("/", notAllowed);
+mcp.get("/:token", notAllowed);
+mcp.delete("/", notAllowed);
+mcp.delete("/:token", notAllowed);
 
 export default mcp;
