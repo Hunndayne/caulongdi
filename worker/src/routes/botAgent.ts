@@ -82,7 +82,7 @@ type DeepSeekChatResponse = {
   }>;
 };
 
-type ToolDef = {
+export type ToolDef = {
   type: "function";
   function: {
     name: string;
@@ -229,7 +229,7 @@ const SESSION_REF_SCHEMA = {
   },
 } as const;
 
-function buildTools(): ToolDef[] {
+export function buildTools(): ToolDef[] {
   return [
     {
       type: "function",
@@ -495,7 +495,7 @@ function buildTools(): ToolDef[] {
 
 // --- Thực thi tool: map tên tool -> hàm reply* đã có sẵn trong bot.ts ---
 
-async function executeTool(
+export async function executeTool(
   env: Env,
   args: RunAgentArgs,
   name: string,

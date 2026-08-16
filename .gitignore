@@ -7,4 +7,6 @@ dist/
 .env.*
 !.env.example
 .claude
+.zcode/
+.dev.vars
 /docs

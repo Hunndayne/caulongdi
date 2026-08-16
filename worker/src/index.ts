@@ -13,6 +13,8 @@ import profilesRouter from "./routes/profiles";
 import groupsRouter from "./routes/groups";
 import paymentWebhooksRouter from "./routes/paymentWebhooks";
 import botRouter from "./routes/bot";
+import mcpTokensRouter from "./routes/mcpTokens";
+import mcpRouter from "./routes/mcp";
 import { enqueueSessionReminders, enqueueDebtReminders } from "./botOutbox";
 import { pollStalePots } from "./timoPot";
 
@@ -238,6 +240,11 @@ app.route("/api/stats", statsRouter);
 app.route("/api/chat", chatRouter);
 app.route("/api/profiles", profilesRouter);
 app.route("/api/groups", groupsRouter);
+app.route("/api/mcp-tokens", mcpTokensRouter);
+
+// MCP server cho app AI ngoài: tự xác thực bằng Bearer token (sinh ở /api/mcp-tokens),
+// không qua cookie auth — giống cơ chế /api/bot.
+app.route("/mcp", mcpRouter);
 
 export default {
   fetch: app.fetch,

@@ -128,6 +128,22 @@ export interface GroupBotAgent {
   enabled: boolean;
 }
 
+// Token MCP (kết nối app AI ngoài vào /mcp) — token = danh tính user, truy cập mọi nhóm của họ.
+export interface McpToken {
+  id: string;
+  label: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+}
+
+/** Kết quả tạo token: plaintext chỉ hiện đúng lần này. */
+export interface McpTokenCreated {
+  id: string;
+  label: string;
+  token: string;
+}
+
 // Cài đặt thanh toán của nhóm: tài khoản nhận tiền chung + hũ Timo (tuỳ chọn) để tự xác nhận.
 export interface GroupPaymentSettings {
   bankBin: string | null;

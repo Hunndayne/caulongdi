@@ -23,6 +23,8 @@ import type {
   DebtReminderCycle,
   PotPayback,
   TimoPotCheckResult,
+  McpToken,
+  McpTokenCreated,
 } from "@/types";
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
@@ -218,6 +220,13 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ enabled }),
     }),
+
+  // Token MCP — kết nối app AI ngoài (Claude Desktop, ChatGPT, Cursor...) vào /mcp.
+  listMcpTokens: () => request<McpToken[]>("/api/mcp-tokens"),
+  createMcpToken: (label: string) =>
+    request<McpTokenCreated>("/api/mcp-tokens", { method: "POST", body: JSON.stringify({ label }) }),
+  revokeMcpToken: (id: string) =>
+    request<{ ok: boolean }>(`/api/mcp-tokens/${id}`, { method: "DELETE" }),
 
   // Profiles
   getProfiles: (groupId: string) => request<UserProfile[]>(`/api/profiles?groupId=${encodeURIComponent(groupId)}`),
