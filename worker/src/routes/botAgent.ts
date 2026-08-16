@@ -192,6 +192,7 @@ function buildSystemPrompt(groupName: string, roster: string[], selfName: string
     selfName
       ? `Người gửi tin nhắn hiện tại tên là "${selfName}" trên web. Khi họ nói tôi/mình/tui/em/anh/chị để chỉ chính họ, hãy dùng đúng chuỗi "${selfName}" cho các tham số tên liên quan (names, memberNames, payerName, consumerNames, participantNames).`
       : "Chưa xác định được người gửi ứng với thành viên nào trên web — nếu bắt buộc cần biết chính xác họ là ai (ví dụ ghi công nợ), hỏi lại hoặc gợi ý họ dùng lệnh /alias <tên trên web>.",
+    'QUY TẮC VỀ THANH TOÁN/CÔNG NỢ: bạn KHÔNG có khả năng đánh dấu/chốt việc trả hay nhận tiền — việc đó chỉ làm được trên web. Vì vậy TUYỆT ĐỐI không nói kiểu "đã xác nhận", "đã ghi nhận", "tao nhận đủ rồi", "đã chốt" cho bất kỳ khoản trả/nhận tiền nào. Khi ai đó báo "tôi đã trả" / "tôi nhận được tiền của X rồi", chỉ được: (1) đọc lại trạng thái ĐANG LƯU (ai đã bấm "đã báo chuyển", ai còn nợ) bằng tool, và (2) nhắc rằng muốn chốt thì tự xác nhận trên web (đưa link buổi). Không được diễn giải trạng thái cũ thành như thể bạn vừa xác nhận.',
     'QUY TẮC XÁC NHẬN CHO THAO TÁC NGUY HIỂM: hai tool "cancel_session" (hủy buổi) và "update_cost" khi xoá khoản chi (deleteCost=true) không thể hoàn tác. Lần đầu người dùng yêu cầu, gọi tool đó với confirmed=false (hoặc bỏ trống) để lấy thông tin buổi/khoản chi, rồi TỰ VIẾT một câu hỏi ngắn gọn xác nhận lại với người dùng — KHÔNG tự ý thực hiện luôn. CHỈ khi người dùng đã đồng ý rõ ràng ở tin nhắn sau đó (xem lại các lượt hội thoại trước) mới gọi LẠI đúng tool đó với confirmed=true để thực sự hủy/xóa. Các thao tác ghi khác (thêm/rút người, ghi chi phí, tạo/sửa buổi, sửa khoản chi không xoá) thực hiện luôn, không cần hỏi xác nhận trước.',
     groupSummary
       ? `Tóm tắt phong cách/ngữ cảnh chat của nhóm: ${groupSummary}. Có thể bắt chước tông giọng này (mức đùa giỡn, thân mật, teencode, emoji...) khi hợp lý.`
@@ -481,7 +482,8 @@ function buildTools(): ToolDef[] {
       type: "function",
       function: {
         name: "mark_paid",
-        description: 'Người dùng báo đã trả/đã chuyển khoản công nợ của một buổi ("tôi trả Nam rồi", "đã chuyển khoản").',
+        description:
+          'Người dùng báo đã trả / đã chuyển / đã NHẬN được tiền công nợ của một buổi ("tôi trả Nam rồi", "đã chuyển khoản", "tao nhận được tiền của X rồi"). LƯU Ý: tool này CHỈ trả về hướng dẫn — nó KHÔNG tự đánh dấu/chốt gì trong hệ thống. Hãy chuyển nguyên hướng dẫn (xác nhận trên web) cho người dùng, TUYỆT ĐỐI không nói rằng đã xác nhận/đã ghi nhận.',
         parameters: {
           type: "object",
           properties: { sessionRef: SESSION_REF_SCHEMA },
