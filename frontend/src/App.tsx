@@ -44,7 +44,7 @@ function Layout({ children }: { children: React.ReactNode }) {
       <Sidebar />
       <div className="min-h-screen min-w-0">
         <Topbar />
-        <main className="min-h-screen px-3.5 py-[18px] pb-[110px] min-[769px]:px-7 min-[769px]:py-6 min-[769px]:pb-12">
+        <main className="min-h-screen px-3.5 py-[18px] pb-[calc(env(safe-area-inset-bottom,0px)+110px)] min-[769px]:px-7 min-[769px]:py-6 min-[769px]:pb-12">
           <div className={isWidePage ? undefined : "mx-auto max-w-2xl"}>{children}</div>
         </main>
       </div>

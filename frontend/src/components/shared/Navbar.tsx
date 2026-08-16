@@ -23,30 +23,29 @@ const navItems = [
   { to: "/profile", icon: UserCircle, label: "Hồ sơ" },
 ];
 
-const liquidGlassShell: CSSProperties = {
-  backdropFilter: "url(#liquid-glass-distort) blur(8px) saturate(210%)",
-  WebkitBackdropFilter: "url(#liquid-glass-distort) blur(8px) saturate(210%)",
+// Safari/WebKit và Firefox không áp dụng được tham chiếu SVG filter url(#...)
+// trong backdrop-filter (WebKit bug 245510) — cả chuỗi khai báo bị vứt bỏ,
+// làm mất luôn blur/saturate và navbar thành trong suốt. Với trình duyệt không
+// hỗ trợ, chỉ dùng filter function để vẫn giữ hiệu ứng kính mờ.
+const supportsBackdropSvgFilter = () => {
+  if (typeof CSS === "undefined" || !CSS.supports) return false;
+  return (
+    CSS.supports("backdrop-filter", "url(#f) blur(1px)") ||
+    CSS.supports("-webkit-backdrop-filter", "url(#f) blur(1px)")
+  );
 };
 
-const liquidGlassPill: CSSProperties = {
-  backdropFilter: "url(#liquid-glass-pill-distort) blur(4px) saturate(180%)",
-  WebkitBackdropFilter: "url(#liquid-glass-pill-distort) blur(4px) saturate(180%)",
+const glassBackdrop = (filterId: string, blur: string, saturate: string): CSSProperties => {
+  const functions = `${blur} ${saturate}`;
+  const value = supportsBackdropSvgFilter() ? `url(#${filterId}) ${functions}` : functions;
+  return { backdropFilter: value, WebkitBackdropFilter: value };
 };
 
-const mobileTopbarGlass: CSSProperties = {
-  backdropFilter: "url(#liquid-glass-distort) blur(8px) saturate(210%)",
-  WebkitBackdropFilter: "url(#liquid-glass-distort) blur(8px) saturate(210%)",
-};
-
-const sidebarGlassShell: CSSProperties = {
-  backdropFilter: "url(#liquid-glass-distort) blur(16px) saturate(180%)",
-  WebkitBackdropFilter: "url(#liquid-glass-distort) blur(16px) saturate(180%)",
-};
-
-const sidebarGlassPill: CSSProperties = {
-  backdropFilter: "url(#liquid-glass-pill-distort) blur(8px) saturate(150%)",
-  WebkitBackdropFilter: "url(#liquid-glass-pill-distort) blur(8px) saturate(150%)",
-};
+const liquidGlassShell = glassBackdrop("liquid-glass-distort", "blur(8px)", "saturate(210%)");
+const liquidGlassPill = glassBackdrop("liquid-glass-pill-distort", "blur(4px)", "saturate(180%)");
+const mobileTopbarGlass = glassBackdrop("liquid-glass-distort", "blur(8px)", "saturate(210%)");
+const sidebarGlassShell = glassBackdrop("liquid-glass-distort", "blur(16px)", "saturate(180%)");
+const sidebarGlassPill = glassBackdrop("liquid-glass-pill-distort", "blur(8px)", "saturate(150%)");
 
 function LiquidGlassFilter() {
   return (
@@ -168,7 +167,7 @@ export function BottomNav() {
     <>
       <LiquidGlassFilter />
       <nav
-        className="fixed before:pointer-events-none before:absolute before:inset-0 before:rounded-full before:bg-[linear-gradient(180deg,rgba(255,255,255,.38)_0%,rgba(255,255,255,.05)_30%,rgba(255,255,255,.015)_66%,rgba(255,255,255,.14)_100%)] before:content-[''] bottom-6 left-1/2 z-40 w-[calc(100%-16px)] max-w-[420px] -translate-x-1/2 rounded-full border border-white/30 bg-white/[.025] p-[7px] shadow-[0_18px_52px_rgba(24,24,27,.12),0_4px_16px_rgba(24,24,27,.06),inset_0_1px_0_rgba(255,255,255,.55),inset_0_0_0_1px_rgba(255,255,255,.06),inset_0_-1px_0_rgba(24,24,27,.025)] min-[390px]:w-[calc(100%-24px)] min-[769px]:hidden"
+        className="fixed before:pointer-events-none before:absolute before:inset-0 before:rounded-full before:bg-[linear-gradient(180deg,rgba(255,255,255,.38)_0%,rgba(255,255,255,.05)_30%,rgba(255,255,255,.015)_66%,rgba(255,255,255,.14)_100%)] before:content-[''] bottom-[calc(env(safe-area-inset-bottom,0px)+1.5rem)] left-1/2 z-40 w-[calc(100%-16px)] max-w-[420px] -translate-x-1/2 rounded-full border border-white/30 bg-white/[.025] p-[7px] shadow-[0_18px_52px_rgba(24,24,27,.12),0_4px_16px_rgba(24,24,27,.06),inset_0_1px_0_rgba(255,255,255,.55),inset_0_0_0_1px_rgba(255,255,255,.06),inset_0_-1px_0_rgba(24,24,27,.025)] min-[390px]:w-[calc(100%-24px)] min-[769px]:hidden"
         style={liquidGlassShell}
         aria-label="Điều hướng"
       >
