@@ -151,7 +151,17 @@ app.use(
     origin: (origin) => origin,
     credentials: true,
     allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allowHeaders: ["Content-Type", "Authorization"],
+    // Content-Type/Authorization cho web app + bot; các header MCP (Streamable HTTP) để client
+    // AI chạy trên trình duyệt qua được preflight — thiếu mcp-protocol-version là bị chặn cứng.
+    allowHeaders: [
+      "Content-Type",
+      "Authorization",
+      "Accept",
+      "Mcp-Protocol-Version",
+      "Mcp-Session-Id",
+      "Last-Event-Id",
+    ],
+    exposeHeaders: ["Mcp-Session-Id", "WWW-Authenticate"],
   })
 );
 
