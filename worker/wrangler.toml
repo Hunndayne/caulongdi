@@ -9,7 +9,8 @@ directory = "../frontend/dist"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
 # "/mcp" cho URL gốc; "/mcp/*" cho dạng /mcp/<token> (app không đặt được header).
-run_worker_first = ["/api/*", "/sessions/*", "/mcp", "/mcp/*"]
+# "/.well-known/*" + "/oauth/*": discovery + luồng OAuth phải chạy worker, không để Assets nuốt.
+run_worker_first = ["/api/*", "/sessions/*", "/mcp", "/mcp/*", "/.well-known/*", "/oauth/*"]
 
 [ai]
 binding = "AI"
