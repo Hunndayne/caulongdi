@@ -7,6 +7,8 @@
 //              replyCreateSession, replyUpdateSession, replyCancelSession, replyStats,
 //              replyCosts, replyAddCost, replyUpdateCost, replyMarkPaid, replyMyDebts,
 //              replySessions
+//   khác:      SELF_NAME_TOKEN, isSelfReference (để đổi cách tự xưng -> token self, dùng lại
+//              resolver alias/actor sẵn có trong reply*)
 //
 // Không dùng thêm bất kỳ symbol nào khác từ bot.ts (kể cả SELF_NAME_TOKEN, normalizeName,
 // resolveSessionForAction...) — mọi thứ còn thiếu được cài lại cục bộ ở file này, hoặc lách qua
@@ -38,6 +40,8 @@ import {
   replyMarkPaid,
   replyMyDebts,
   replySessions,
+  SELF_NAME_TOKEN,
+  isSelfReference,
 } from "./bot";
 
 export interface RunAgentArgs {
@@ -507,6 +511,25 @@ function buildTools(): ToolDef[] {
   ];
 }
 
+// Đổi mọi cách người gửi TỰ CHỈ MÌNH ("tôi/mình/tui/t..." hoặc chính tên Messenger của họ) thành
+// SELF_NAME_TOKEN, để các hàm reply* dùng lại đúng cơ chế resolve alias/actor cũ (đã chạy ổn trước
+// đây: /alias -> actor.memberId) thay vì để agent tự đoán tên web rồi thêm nhầm/không khớp.
+function selfifyNames(names: string[], args: RunAgentArgs): string[] {
+  const senderNorm = normalizeSimple(args.actor?.name ?? "");
+  return names.map((n) => {
+    const norm = normalizeSimple(n);
+    if (n === SELF_NAME_TOKEN || isSelfReference(n) || (senderNorm && norm === senderNorm)) {
+      return SELF_NAME_TOKEN;
+    }
+    return n;
+  });
+}
+
+function selfifyName(name: string | undefined, args: RunAgentArgs): string | undefined {
+  if (!name) return name;
+  return selfifyNames([name], args)[0];
+}
+
 // --- Thực thi tool: map tên tool -> hàm reply* đã có sẵn trong bot.ts ---
 
 async function executeTool(
@@ -547,7 +570,7 @@ async function executeTool(
     }
 
     case "get_member_debts": {
-      const names = asStrArr(a.memberNames);
+      const names = selfifyNames(asStrArr(a.memberNames), args);
       const result = await replyMyDebts(env, groupId, groupName, actor, names, aliases);
       return result.reply;
     }
@@ -559,14 +582,14 @@ async function executeTool(
     }
 
     case "add_members": {
-      const names = asStrArr(a.names);
+      const names = selfifyNames(asStrArr(a.names), args);
       const selector = sessionRefFrom(a.sessionRef);
       const result = await replyAddMembers(env, groupId, groupName, names, actor, selector, aliases, text, context);
       return result.reply;
     }
 
     case "remove_members": {
-      const names = asStrArr(a.names);
+      const names = selfifyNames(asStrArr(a.names), args);
       const selector = sessionRefFrom(a.sessionRef);
       const result = await replyRemoveMembers(env, groupId, groupName, names, actor, selector, aliases, text, context);
       return result.reply;
@@ -579,7 +602,7 @@ async function executeTool(
         endTime: asStr(a.endTime),
         venue: asStr(a.venue),
       };
-      const names = asStrArr(a.participantNames);
+      const names = selfifyNames(asStrArr(a.participantNames), args);
       const result = await replyCreateSession(env, groupId, groupName, draft, actor, names, aliases);
       return result.reply;
     }
@@ -616,12 +639,13 @@ async function executeTool(
     }
 
     case "add_cost": {
+      const consumers = selfifyNames(asStrArr(a.consumerNames), args);
       const cost: CostDraft = {
         label: asStr(a.label),
         amount: asNum(a.amount),
         quantity: asNum(a.quantity),
-        payerName: asStr(a.payerName),
-        consumerNames: asStrArr(a.consumerNames).length ? asStrArr(a.consumerNames) : undefined,
+        payerName: selfifyName(asStr(a.payerName), args),
+        consumerNames: consumers.length ? consumers : undefined,
       };
       const selector = sessionRefFrom(a.sessionRef);
       const result = await replyAddCost(env, groupId, groupName, text, actor, cost, selector, aliases);
@@ -629,11 +653,12 @@ async function executeTool(
     }
 
     case "update_cost": {
+      const consumers = selfifyNames(asStrArr(a.consumerNames), args);
       const cost: CostDraft = {
         label: asStr(a.label),
         amount: asNum(a.amount),
-        payerName: asStr(a.payerName),
-        consumerNames: asStrArr(a.consumerNames).length ? asStrArr(a.consumerNames) : undefined,
+        payerName: selfifyName(asStr(a.payerName), args),
+        consumerNames: consumers.length ? consumers : undefined,
       };
       const selector = sessionRefFrom(a.sessionRef);
       const deleteCost = asBool(a.deleteCost);

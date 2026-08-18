@@ -91,7 +91,7 @@ export type BotActor = {
   memberId?: string;
 };
 
-const SELF_NAME_TOKEN = "__ting_self__";
+export const SELF_NAME_TOKEN = "__ting_self__";
 const MEMBER_COLORS = ["#22c55e", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4"];
 const MAX_CONTEXT_MESSAGES_FOR_AI = 8;
 
@@ -468,7 +468,7 @@ function extractAddTargetSegment(text: string): string {
   return match?.[1]?.trim() || text.trim();
 }
 
-function isSelfReference(value: string): boolean {
+export function isSelfReference(value: string): boolean {
   return /^(toi|minh|tui|em|anh|chi|tao|me|t)$/.test(normalizeName(value));
 }
 
