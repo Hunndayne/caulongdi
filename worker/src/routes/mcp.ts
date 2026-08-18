@@ -14,8 +14,8 @@ import { vnNow } from "./bot";
 const SUPPORTED_PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26"];
 const LATEST_PROTOCOL_VERSION = "2025-06-18";
 
-// v1: tra cứu + 2 thao tác ghi an toàn nhất. Chưa mở sửa/xoá chi phí, huỷ buổi,
-// mark_paid, thêm/xoá thành viên.
+// v1: tra cứu + thao tác ghi an toàn (tạo buổi, ghi chi phí, thêm người vào buổi).
+// Chưa mở sửa/xoá chi phí, huỷ buổi, mark_paid, rút thành viên.
 const MCP_TOOL_ALLOWLIST = new Set([
   "find_sessions",
   "get_session_attendees",
@@ -25,6 +25,7 @@ const MCP_TOOL_ALLOWLIST = new Set([
   "get_stats",
   "create_session",
   "add_cost",
+  "add_members",
 ]);
 
 const GROUP_PARAM = {
