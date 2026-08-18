@@ -15,6 +15,7 @@ import paymentWebhooksRouter from "./routes/paymentWebhooks";
 import botRouter from "./routes/bot";
 import mcpTokensRouter from "./routes/mcpTokens";
 import mcpRouter from "./routes/mcp";
+import { oauthWellKnown, oauthRoutes } from "./routes/mcpOAuth";
 import { enqueueSessionReminders, enqueueDebtReminders } from "./botOutbox";
 import { pollStalePots } from "./timoPot";
 
@@ -255,6 +256,12 @@ app.route("/api/mcp-tokens", mcpTokensRouter);
 // MCP server cho app AI ngoài: tự xác thực bằng Bearer token (sinh ở /api/mcp-tokens),
 // không qua cookie auth — giống cơ chế /api/bot.
 app.route("/mcp", mcpRouter);
+
+// OAuth 2.1 cho connector web (ChatGPT/Claude.ai/Gemini web) — discovery + đăng ký + cấp token.
+// Đặt NGOÀI middleware /api/* (không dùng cookie-auth cho token/register); /oauth/authorize tự
+// đọc session Better Auth để biết user.
+app.route("/.well-known", oauthWellKnown);
+app.route("/oauth", oauthRoutes);
 
 export default {
   fetch: app.fetch,

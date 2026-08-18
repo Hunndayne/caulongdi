@@ -60,27 +60,42 @@ async function sha256Hex(input: string): Promise<string> {
 // không đặt được custom header (Gemini, ChatGPT connectors...). Lưu ý: token trong path
 // sẽ hiện trong access log của Cloudflare nếu bật observability.
 
+// Token tĩnh (ttmcp_, sinh ở /api/mcp-tokens) HOẶC access token OAuth (ttoat_, sinh ở /oauth/token).
+function extractToken(authorization: string | undefined, pathToken?: string): string | null {
+  const header = authorization?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
+  for (const t of [header, pathToken]) {
+    if (t && (t.startsWith("ttmcp_") || t.startsWith("ttoat_"))) return t;
+  }
+  return null;
+}
+
 async function resolveToken(
   env: Env,
   authorization: string | undefined,
   pathToken?: string
-): Promise<{ userId: string; tokenHash: string } | null> {
-  const headerToken = authorization?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
-  const token =
-    headerToken?.startsWith("ttmcp_") === true
-      ? headerToken
-      : pathToken?.startsWith("ttmcp_") === true
-        ? pathToken
-        : null;
+): Promise<{ userId: string; tokenHash: string; kind: "static" | "oauth" } | null> {
+  const token = extractToken(authorization, pathToken);
   if (!token) return null;
   await ensureMcpTables(env.DB);
   const tokenHash = await sha256Hex(token);
+
+  if (token.startsWith("ttmcp_")) {
+    const row = await env.DB.prepare(
+      "SELECT user_id FROM mcp_tokens WHERE token_hash = ? AND revoked_at IS NULL"
+    )
+      .bind(tokenHash)
+      .first<{ user_id: string }>();
+    return row ? { userId: row.user_id, tokenHash, kind: "static" } : null;
+  }
+
+  // OAuth access token: phải chưa thu hồi và còn hạn.
   const row = await env.DB.prepare(
-    "SELECT user_id FROM mcp_tokens WHERE token_hash = ? AND revoked_at IS NULL"
+    "SELECT user_id, expires_at FROM mcp_oauth_tokens WHERE access_hash = ? AND revoked_at IS NULL"
   )
     .bind(tokenHash)
-    .first<{ user_id: string }>();
-  return row ? { userId: row.user_id, tokenHash } : null;
+    .first<{ user_id: string; expires_at: string }>();
+  if (!row || new Date(row.expires_at).getTime() < Date.now()) return null;
+  return { userId: row.user_id, tokenHash, kind: "oauth" };
 }
 
 async function touchLastUsed(env: Env, tokenHash: string) {
@@ -242,7 +257,13 @@ const mcp = new Hono<{ Bindings: Env }>();
 // Handler dùng chung cho POST /mcp (Bearer header) và POST /mcp/<token> (token trong path).
 const jsonRpcHandler = async (c: Context<{ Bindings: Env }>) => {
   const auth = await resolveToken(c.env, c.req.header("Authorization"), c.req.param("token"));
-  if (!auth) return c.json({ error: "Unauthorized" }, 401);
+  if (!auth) {
+    // WWW-Authenticate trỏ tới protected-resource metadata: connector OAuth (ChatGPT/Claude.ai)
+    // dựa vào header này để khởi động luồng OAuth (RFC 9728).
+    const origin = new URL(c.req.url).origin;
+    c.header("WWW-Authenticate", `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource"`);
+    return c.json({ error: "Unauthorized" }, 401);
+  }
 
   let body: JsonRpcRequest;
   try {
@@ -288,7 +309,9 @@ const jsonRpcHandler = async (c: Context<{ Bindings: Env }>) => {
         );
       }
       const result = await callTool(c.env, auth.userId, name, params.arguments);
-      c.executionCtx?.waitUntil?.(touchLastUsed(c.env, auth.tokenHash).catch(() => {}));
+      if (auth.kind === "static") {
+        c.executionCtx?.waitUntil?.(touchLastUsed(c.env, auth.tokenHash).catch(() => {}));
+      }
       return c.json(rpcResult(body.id, result));
     }
 
