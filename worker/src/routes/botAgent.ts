@@ -7,6 +7,8 @@
 //              replyCreateSession, replyUpdateSession, replyCancelSession, replyStats,
 //              replyCosts, replyAddCost, replyUpdateCost, replyMarkPaid, replyMyDebts,
 //              replySessions
+//   khác:      SELF_NAME_TOKEN, isSelfReference (để đổi cách tự xưng -> token self, dùng lại
+//              resolver alias/actor sẵn có trong reply*)
 //
 // Không dùng thêm bất kỳ symbol nào khác từ bot.ts (kể cả SELF_NAME_TOKEN, normalizeName,
 // resolveSessionForAction...) — mọi thứ còn thiếu được cài lại cục bộ ở file này, hoặc lách qua
@@ -38,6 +40,8 @@ import {
   replyMarkPaid,
   replyMyDebts,
   replySessions,
+  SELF_NAME_TOKEN,
+  isSelfReference,
 } from "./bot";
 
 export interface RunAgentArgs {
@@ -150,8 +154,13 @@ function normalizeSimple(value: string): string {
 
 // Xác định tên chính xác (đúng như lưu trên web) của người gửi hiện tại, để nhét vào system
 // prompt — thay thế cho SELF_NAME_TOKEN nội bộ của bot.ts (không export nên không dùng được).
-async function resolveSelfName(env: Env, args: RunAgentArgs): Promise<string | undefined> {
+async function resolveSelfName(
+  env: Env,
+  args: RunAgentArgs,
+  roster: string[]
+): Promise<string | undefined> {
   const actor = args.actor;
+  // 1) Đã ghép member qua /alias và resolve sẵn ở handleQuery -> tên web chính xác.
   if (actor?.memberId) {
     const row = await env.DB.prepare("SELECT name FROM members WHERE id = ? AND group_id = ?")
       .bind(actor.memberId, args.groupId)
@@ -160,6 +169,7 @@ async function resolveSelfName(env: Env, args: RunAgentArgs): Promise<string | u
     if (row?.name) return row.name;
   }
   const rawName = actor?.name?.trim();
+  // 2) Tra alias map của thread (phòng khi handleQuery chưa gán memberId).
   if (rawName && args.aliases?.size) {
     const memberId = args.aliases.get(normalizeSimple(rawName));
     if (memberId) {
@@ -170,7 +180,15 @@ async function resolveSelfName(env: Env, args: RunAgentArgs): Promise<string | u
       if (row?.name) return row.name;
     }
   }
-  return rawName || undefined;
+  // 3) Tên Messenger TRÙNG một thành viên web (không cần alias) -> dùng đúng tên trong roster.
+  if (rawName) {
+    const norm = normalizeSimple(rawName);
+    const hit = roster.find((n) => normalizeSimple(n) === norm);
+    if (hit) return hit;
+  }
+  // 4) Không xác định được -> KHÔNG bịa tên Messenger thành "tên web"; trả undefined để agent
+  //    hướng người dùng gõ /alias <tên trên web> thay vì thêm nhầm một cái tên không có thật.
+  return undefined;
 }
 
 // --- System prompt ---
@@ -191,7 +209,7 @@ function buildSystemPrompt(groupName: string, roster: string[], selfName: string
       : "Nhóm hiện chưa có thành viên nào trong danh sách trên web.",
     selfName
       ? `Người gửi tin nhắn hiện tại tên là "${selfName}" trên web. Khi họ nói tôi/mình/tui/em/anh/chị để chỉ chính họ, hãy dùng đúng chuỗi "${selfName}" cho các tham số tên liên quan (names, memberNames, payerName, consumerNames, participantNames).`
-      : "Chưa xác định được người gửi ứng với thành viên nào trên web — nếu bắt buộc cần biết chính xác họ là ai (ví dụ ghi công nợ), hỏi lại hoặc gợi ý họ dùng lệnh /alias <tên trên web>.",
+      : 'Chưa xác định được người gửi này ứng với thành viên nào trên web (họ chưa ghép biệt danh). Vì vậy khi họ nói "tôi/mình/tui/em" để tự chỉ mình — ví dụ "thêm tôi vô kèo", "tôi còn nợ bao nhiêu" — TUYỆT ĐỐI không đoán/bịa tên rồi thao tác; hãy hướng dẫn họ gõ đúng cú pháp: /alias <tên của họ trong danh sách trên web> để ghép một lần, sau đó bot sẽ tự hiểu "tôi" là ai. Nếu họ nêu rõ một cái tên CÓ trong danh sách thì vẫn xử lý bình thường.',
     'QUY TẮC VỀ THANH TOÁN/CÔNG NỢ: bạn KHÔNG có khả năng đánh dấu/chốt việc trả hay nhận tiền — việc đó chỉ làm được trên web. Vì vậy TUYỆT ĐỐI không nói kiểu "đã xác nhận", "đã ghi nhận", "tao nhận đủ rồi", "đã chốt" cho bất kỳ khoản trả/nhận tiền nào. Khi ai đó báo "tôi đã trả" / "tôi nhận được tiền của X rồi", chỉ được: (1) đọc lại trạng thái ĐANG LƯU (ai đã bấm "đã báo chuyển", ai còn nợ) bằng tool, và (2) nhắc rằng muốn chốt thì tự xác nhận trên web (đưa link buổi). Không được diễn giải trạng thái cũ thành như thể bạn vừa xác nhận.',
     'QUY TẮC XÁC NHẬN CHO THAO TÁC NGUY HIỂM: hai tool "cancel_session" (hủy buổi) và "update_cost" khi xoá khoản chi (deleteCost=true) không thể hoàn tác. Lần đầu người dùng yêu cầu, gọi tool đó với confirmed=false (hoặc bỏ trống) để lấy thông tin buổi/khoản chi, rồi TỰ VIẾT một câu hỏi ngắn gọn xác nhận lại với người dùng — KHÔNG tự ý thực hiện luôn. CHỈ khi người dùng đã đồng ý rõ ràng ở tin nhắn sau đó (xem lại các lượt hội thoại trước) mới gọi LẠI đúng tool đó với confirmed=true để thực sự hủy/xóa. Các thao tác ghi khác (thêm/rút người, ghi chi phí, tạo/sửa buổi, sửa khoản chi không xoá) thực hiện luôn, không cần hỏi xác nhận trước.',
     groupSummary
@@ -493,6 +511,25 @@ export function buildTools(): ToolDef[] {
   ];
 }
 
+// Đổi mọi cách người gửi TỰ CHỈ MÌNH ("tôi/mình/tui/t..." hoặc chính tên Messenger của họ) thành
+// SELF_NAME_TOKEN, để các hàm reply* dùng lại đúng cơ chế resolve alias/actor cũ (đã chạy ổn trước
+// đây: /alias -> actor.memberId) thay vì để agent tự đoán tên web rồi thêm nhầm/không khớp.
+function selfifyNames(names: string[], args: RunAgentArgs): string[] {
+  const senderNorm = normalizeSimple(args.actor?.name ?? "");
+  return names.map((n) => {
+    const norm = normalizeSimple(n);
+    if (n === SELF_NAME_TOKEN || isSelfReference(n) || (senderNorm && norm === senderNorm)) {
+      return SELF_NAME_TOKEN;
+    }
+    return n;
+  });
+}
+
+function selfifyName(name: string | undefined, args: RunAgentArgs): string | undefined {
+  if (!name) return name;
+  return selfifyNames([name], args)[0];
+}
+
 // --- Thực thi tool: map tên tool -> hàm reply* đã có sẵn trong bot.ts ---
 
 export async function executeTool(
@@ -533,7 +570,7 @@ export async function executeTool(
     }
 
     case "get_member_debts": {
-      const names = asStrArr(a.memberNames);
+      const names = selfifyNames(asStrArr(a.memberNames), args);
       const result = await replyMyDebts(env, groupId, groupName, actor, names, aliases);
       return result.reply;
     }
@@ -545,14 +582,14 @@ export async function executeTool(
     }
 
     case "add_members": {
-      const names = asStrArr(a.names);
+      const names = selfifyNames(asStrArr(a.names), args);
       const selector = sessionRefFrom(a.sessionRef);
       const result = await replyAddMembers(env, groupId, groupName, names, actor, selector, aliases, text, context);
       return result.reply;
     }
 
     case "remove_members": {
-      const names = asStrArr(a.names);
+      const names = selfifyNames(asStrArr(a.names), args);
       const selector = sessionRefFrom(a.sessionRef);
       const result = await replyRemoveMembers(env, groupId, groupName, names, actor, selector, aliases, text, context);
       return result.reply;
@@ -565,7 +602,7 @@ export async function executeTool(
         endTime: asStr(a.endTime),
         venue: asStr(a.venue),
       };
-      const names = asStrArr(a.participantNames);
+      const names = selfifyNames(asStrArr(a.participantNames), args);
       const result = await replyCreateSession(env, groupId, groupName, draft, actor, names, aliases);
       return result.reply;
     }
@@ -602,12 +639,13 @@ export async function executeTool(
     }
 
     case "add_cost": {
+      const consumers = selfifyNames(asStrArr(a.consumerNames), args);
       const cost: CostDraft = {
         label: asStr(a.label),
         amount: asNum(a.amount),
         quantity: asNum(a.quantity),
-        payerName: asStr(a.payerName),
-        consumerNames: asStrArr(a.consumerNames).length ? asStrArr(a.consumerNames) : undefined,
+        payerName: selfifyName(asStr(a.payerName), args),
+        consumerNames: consumers.length ? consumers : undefined,
       };
       const selector = sessionRefFrom(a.sessionRef);
       const result = await replyAddCost(env, groupId, groupName, text, actor, cost, selector, aliases);
@@ -615,11 +653,12 @@ export async function executeTool(
     }
 
     case "update_cost": {
+      const consumers = selfifyNames(asStrArr(a.consumerNames), args);
       const cost: CostDraft = {
         label: asStr(a.label),
         amount: asNum(a.amount),
-        payerName: asStr(a.payerName),
-        consumerNames: asStrArr(a.consumerNames).length ? asStrArr(a.consumerNames) : undefined,
+        payerName: selfifyName(asStr(a.payerName), args),
+        consumerNames: consumers.length ? consumers : undefined,
       };
       const selector = sessionRefFrom(a.sessionRef);
       const deleteCost = asBool(a.deleteCost);
@@ -682,10 +721,8 @@ export async function runAgent(env: Env, args: RunAgentArgs): Promise<BotReply |
     const baseUrl = (env.DEEPSEEK_BASE_URL?.trim() || DEFAULT_DEEPSEEK_BASE_URL).replace(/\/+$/, "");
     const model = env.DEEPSEEK_MODEL?.trim() || DEFAULT_DEEPSEEK_MODEL;
 
-    const [roster, selfName] = await Promise.all([
-      loadGroupMemberNames(env, args.groupId).catch(() => []),
-      resolveSelfName(env, args).catch(() => undefined),
-    ]);
+    const roster = await loadGroupMemberNames(env, args.groupId).catch(() => []);
+    const selfName = await resolveSelfName(env, args, roster).catch(() => undefined);
 
     const messages: ChatMessage[] = [
       { role: "system", content: buildSystemPrompt(args.groupName, roster, selfName, args.groupSummary) },

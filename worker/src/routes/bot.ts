@@ -94,7 +94,7 @@ export type BotActor = {
   memberId?: string;
 };
 
-const SELF_NAME_TOKEN = "__ting_self__";
+export const SELF_NAME_TOKEN = "__ting_self__";
 const MEMBER_COLORS = ["#22c55e", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4"];
 const MAX_CONTEXT_MESSAGES_FOR_AI = 8;
 const MAX_COSTS_PER_MESSAGE = 20;
@@ -110,6 +110,13 @@ function stripMarkdownForMessenger(text: string): string {
     .replace(/`{1,3}([^`]+)`{1,3}/g, "$1") // `code` -> code
     .replace(/^\s{0,3}#{1,6}\s+/gm, "") // # tiêu đề -> bỏ dấu #
     .replace(/^\s*[-*]\s+/gm, "• "); // gạch đầu dòng -> •
+}
+
+// Vài lệnh "/" cố ý giữ deterministic bằng regex, KHÔNG đẩy qua AI agent: /play, /buoi (xem lịch
+// nhanh) và /alias (ghép biệt danh — cần chạy chuẩn xác để bot hiểu "tôi" là ai). /alias đã được
+// short-circuit ngay ở handler /message; ở đây chỉ cần né agent cho /play, /buoi.
+function isRegexOnlyCommand(text: string): boolean {
+  return /^\/(play|buoi)\b/i.test(text.trim());
 }
 
 // Luồng AI agent (tool-calling) bật/tắt theo TỪNG NHÓM trong Cài đặt nhóm (groups.bot_agent_enabled),
@@ -465,7 +472,7 @@ function extractAddTargetSegment(text: string): string {
   return match?.[1]?.trim() || text.trim();
 }
 
-function isSelfReference(value: string): boolean {
+export function isSelfReference(value: string): boolean {
   return /^(toi|minh|tui|em|anh|chi|tao|me|t)$/.test(normalizeName(value));
 }
 
@@ -1809,7 +1816,7 @@ async function handleQuery(
   }
 
   // AI-agent (tool-calling) path — thử trước; null nghĩa là agent không xử lý được → rơi về intent cũ.
-  if (env.DEEPSEEK_API_KEY?.trim() && (await isBotAgentEnabled(env, groupId))) {
+  if (env.DEEPSEEK_API_KEY?.trim() && !isRegexOnlyCommand(text) && (await isBotAgentEnabled(env, groupId))) {
     try {
       const agentReply = await runAgent(env, {
         groupId,
@@ -1878,7 +1885,7 @@ export async function handleGroupBotQuery(
   const groupName = group?.name ?? "nhom";
 
   // AI-agent (tool-calling) path — thử trước; null nghĩa là agent không xử lý được → rơi về intent cũ.
-  if (env.DEEPSEEK_API_KEY?.trim() && (await isBotAgentEnabled(env, groupId))) {
+  if (env.DEEPSEEK_API_KEY?.trim() && !isRegexOnlyCommand(text) && (await isBotAgentEnabled(env, groupId))) {
     try {
       const agentReply = await runAgent(env, {
         groupId,
