@@ -108,6 +108,13 @@ function stripMarkdownForMessenger(text: string): string {
     .replace(/^\s*[-*]\s+/gm, "• "); // gạch đầu dòng -> •
 }
 
+// Vài lệnh "/" cố ý giữ deterministic bằng regex, KHÔNG đẩy qua AI agent: /play, /buoi (xem lịch
+// nhanh) và /alias (ghép biệt danh — cần chạy chuẩn xác để bot hiểu "tôi" là ai). /alias đã được
+// short-circuit ngay ở handler /message; ở đây chỉ cần né agent cho /play, /buoi.
+function isRegexOnlyCommand(text: string): boolean {
+  return /^\/(play|buoi)\b/i.test(text.trim());
+}
+
 // Luồng AI agent (tool-calling) bật/tắt theo TỪNG NHÓM trong Cài đặt nhóm (groups.bot_agent_enabled),
 // không dùng env toàn hệ thống nữa. Thiếu cột (DB cũ) hoặc lỗi → coi như tắt, rơi về intent cũ.
 async function isBotAgentEnabled(env: Env, groupId: string): Promise<boolean> {
@@ -1775,7 +1782,7 @@ async function handleQuery(
   }
 
   // AI-agent (tool-calling) path — thử trước; null nghĩa là agent không xử lý được → rơi về intent cũ.
-  if (env.DEEPSEEK_API_KEY?.trim() && (await isBotAgentEnabled(env, groupId))) {
+  if (env.DEEPSEEK_API_KEY?.trim() && !isRegexOnlyCommand(text) && (await isBotAgentEnabled(env, groupId))) {
     try {
       const agentReply = await runAgent(env, {
         groupId,
@@ -1844,7 +1851,7 @@ export async function handleGroupBotQuery(
   const groupName = group?.name ?? "nhom";
 
   // AI-agent (tool-calling) path — thử trước; null nghĩa là agent không xử lý được → rơi về intent cũ.
-  if (env.DEEPSEEK_API_KEY?.trim() && (await isBotAgentEnabled(env, groupId))) {
+  if (env.DEEPSEEK_API_KEY?.trim() && !isRegexOnlyCommand(text) && (await isBotAgentEnabled(env, groupId))) {
     try {
       const agentReply = await runAgent(env, {
         groupId,
