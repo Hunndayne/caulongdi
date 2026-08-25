@@ -97,6 +97,9 @@ export type BotActor = {
 export const SELF_NAME_TOKEN = "__ting_self__";
 const MEMBER_COLORS = ["#22c55e", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4"];
 const MAX_CONTEXT_MESSAGES_FOR_AI = 8;
+// Nhận vào tối đa 20 tin để agent còn dữ liệu lục lại qua tool get_recent_messages khi cần —
+// không tốn token vì agent chỉ nhét sẵn vài tin mặc định, phần còn lại chờ model chủ động gọi.
+const MAX_CONTEXT_INGEST = 20;
 const MAX_COSTS_PER_MESSAGE = 20;
 
 // Messenger KHÔNG render Markdown → bỏ cú pháp Markdown để không lòi ra ký tự thô (**, #, `, [](...)).
@@ -3599,7 +3602,7 @@ bot.post("/message", async (c) => {
   // Context từ SQLite cục bộ của bot Python — bao gồm userName để AI biết ai nói gì.
   const context: BotContextMessage[] = (Array.isArray(body.context) ? body.context : [])
     .filter((m) => m && typeof m.text === "string" && m.text.trim())
-    .slice(-MAX_CONTEXT_MESSAGES_FOR_AI)
+    .slice(-MAX_CONTEXT_INGEST)
     .map((m) => ({
       role: m.role === "assistant" ? "assistant" as const : "user" as const,
       text: String(m.text).trim().slice(0, 500),

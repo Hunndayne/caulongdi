@@ -60,7 +60,11 @@ const DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-flash";
 const DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com";
 
 const MAX_ROUNDS = 4;
-const MAX_CONTEXT_MESSAGES = 8;
+// Số tin nhét mặc định vào prompt mỗi lượt (đủ cho câu trả lời/xác nhận ngắn "ừ", "ok hủy").
+// Muốn xem thảo luận sâu hơn, model tự gọi tool get_recent_messages để tiết kiệm token.
+const MAX_CONTEXT_MESSAGES = 3;
+// Số tin tối đa trả về khi model chủ động lục lại lịch sử qua tool.
+const MAX_LOOKBACK_MESSAGES = 20;
 const MAX_REPLY_CHARS = 1600;
 
 // --- Kiểu dữ liệu cho vòng lặp tool-calling kiểu OpenAI ---
@@ -203,6 +207,7 @@ function buildSystemPrompt(groupName: string, roster: string[], selfName: string
     "Nếu người dùng yêu cầu nhiều việc trong một câu (ví dụ 'tạo kèo mai rồi thêm tôi vào, ghi tiền sân 200k'), hãy gọi tuần tự nhiều tool ở các lượt liên tiếp cho tới khi xong hết, không cần hỏi lại giữa chừng trừ khi thiếu thông tin bắt buộc (ví dụ tạo buổi mà chưa rõ ngày/giờ/sân).",
     "Sau khi có đủ kết quả từ tool, trả lời NGẮN GỌN và TỰ NHIÊN bằng tiếng Việt (khoảng 1-6 câu tuỳ độ phức tạp), như đang nhắn tin trong group chat — không lặp lại nguyên văn JSON hay log kỹ thuật, không nói những cụm máy móc kiểu \"tool trả về\".",
     "Ngữ cảnh gần đây BAO GỒM cả những câu chính bạn (assistant) vừa nói ở lượt trước. Nếu tin hiện tại của người dùng là câu TRẢ LỜI hoặc phản hồi cho điều bạn vừa hỏi/đề nghị (kể cả khi họ nói ngắn/mơ hồ như \"ừ\", \"có\", \"ok\", \"giúp mình đi\", \"làm đi\"), hãy hiểu và TIẾP NỐI đúng việc đó — ví dụ bạn vừa hỏi \"cần nhắc X trả nợ không?\" mà họ đáp \"ừ giúp mình\" thì tiến hành nhắc, đừng trả lời chung chung như chưa từng hỏi.",
+    "LƯU Ý: chỉ vài tin gần nhất được đưa sẵn vào đây để tiết kiệm. Nếu tin hiện tại quá ngắn/mơ hồ (vd \"chọn sân đi\", \"cái đó\", \"như trên\") và vài tin sẵn có VẪN chưa đủ để hiểu cả nhóm đang bàn gì, hãy gọi tool get_recent_messages để lục lại tối đa 20 tin trước khi trả lời — đừng vội hỏi lại \"ý gì\" khi chưa lục.",
     "KHÔNG dùng Markdown (không **in đậm**, không # tiêu đề, không `code`, không [text](link)) — Messenger hiển thị nguyên ký tự đó nên xấu; chỉ dùng chữ thuần, xuống dòng và emoji.",
     roster.length
       ? `DANH SÁCH THÀNH VIÊN của nhóm trên web (chỉ dùng làm THAM CHIẾU để khớp tên, KHÔNG dùng để trả lời trực tiếp): ${roster.join("; ")}. Khi điền tham số tên cho tool (names, memberNames, payerName, consumerNames, participantNames...), nếu nhận ra người dùng đang nói tới MỘT người trong danh sách trên thì PHẢI ghi lại ĐÚNG NGUYÊN VĂN tên trong danh sách — kể cả khi họ gõ thiếu dấu, sai thứ tự họ tên, hay gọi tên tắt. Nếu không chắc hoặc khớp nhiều người, giữ nguyên văn người dùng gõ; TUYỆT ĐỐI không bịa tên không có trong danh sách. QUAN TRỌNG: khi người dùng HỎI về danh sách thành viên (nhóm có những ai, liệt kê thành viên, có bao nhiêu người, thông tin mới nhất về thành viên...), TUYỆT ĐỐI không đọc lại danh sách tham chiếu trên hay danh sách cũ trong ngữ cảnh chat — PHẢI gọi tool list_members để lấy dữ liệu thật mới nhất rồi mới trả lời.`
@@ -220,14 +225,31 @@ function buildSystemPrompt(groupName: string, roster: string[], selfName: string
   return lines.join(" ");
 }
 
+function cleanContextText(raw: string): string {
+  return raw.replace(/^\/ting\s*/i, "").replace(/\s+/g, " ").trim().slice(0, 500);
+}
+
 function buildContextMessages(context?: BotContextMessage[]): ChatMessage[] {
   const items = (context ?? []).slice(-MAX_CONTEXT_MESSAGES);
   return items.map((item): ChatMessage => {
-    const text = item.text.replace(/^\/ting\s*/i, "").replace(/\s+/g, " ").trim().slice(0, 500);
+    const text = cleanContextText(item.text);
     if (item.role === "assistant") return { role: "assistant", content: text };
     const who = item.userName?.trim();
     return { role: "user", content: who ? `${who}: ${text}` : text };
   });
+}
+
+// Gộp lịch sử gần đây thành 1 khối text để trả về khi model gọi tool get_recent_messages.
+function formatRecentMessages(context?: BotContextMessage[]): string {
+  const items = (context ?? []).slice(-MAX_LOOKBACK_MESSAGES);
+  if (!items.length) return "Chưa có tin nhắn nào trước đó trong ngữ cảnh gần đây.";
+  const lines = items.map((item) => {
+    const text = cleanContextText(item.text);
+    if (item.role === "assistant") return `Ting AI: ${text}`;
+    const who = item.userName?.trim() || "Ai đó";
+    return `${who}: ${text}`;
+  });
+  return `Các tin nhắn gần đây trong nhóm (cũ → mới):\n${lines.join("\n")}`;
 }
 
 function buildUserMessage(args: RunAgentArgs): string {
@@ -250,6 +272,15 @@ const SESSION_REF_SCHEMA = {
 
 export function buildTools(): ToolDef[] {
   return [
+    {
+      type: "function",
+      function: {
+        name: "get_recent_messages",
+        description:
+          "Lục lại các tin nhắn gần đây trong group chat (tối đa 20 tin) để hiểu ngữ cảnh cuộc thảo luận. CHỈ gọi khi tin hiện tại quá ngắn/mơ hồ và bạn cần biết cả nhóm đang bàn gì mới trả lời được (ví dụ ai đó gõ 'chọn sân đi', 'ừ làm luôn', 'cái đó' mà không rõ đang nói về gì). Không cần gọi cho câu hỏi/yêu cầu đã tự đủ nghĩa.",
+        parameters: { type: "object", properties: {} },
+      },
+    },
     {
       type: "function",
       function: {
@@ -556,6 +587,10 @@ export async function executeTool(
   const { groupId, groupName, text, actor, context } = args;
 
   switch (name) {
+    case "get_recent_messages": {
+      return formatRecentMessages(context);
+    }
+
     case "find_sessions": {
       const scopes = ["next", "upcoming", "today", "week", "recent"] as const;
       const requested = asStr(a.scope);
