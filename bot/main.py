@@ -212,6 +212,9 @@ async def _process_new_messages(
             continue
         if not _should_forward(text):
             log.info("Bỏ qua (không phải lệnh/@bot) từ %s: %r", m.get("sender") or "?", text[:80])
+            # Vẫn lưu vào lịch sử cục bộ dù không trả lời — để khi bot được gọi (lệnh/@bot)
+            # còn có ngữ cảnh cuộc thảo luận đang diễn ra (vd cả nhóm đang bàn chọn sân).
+            chat_store.store_message(thread_id, m.get("sender"), "user", text)
             continue
         if await _forward_and_reply(client, thread_id, messages, m):
             # Reply của chính mình sẽ xuất hiện ở lần đọc sau — không lọt filter
