@@ -207,6 +207,7 @@ function buildSystemPrompt(groupName: string, roster: string[], selfName: string
     roster.length
       ? `DANH SÁCH THÀNH VIÊN của nhóm trên web (chỉ dùng làm THAM CHIẾU để khớp tên, KHÔNG dùng để trả lời trực tiếp): ${roster.join("; ")}. Khi điền tham số tên cho tool (names, memberNames, payerName, consumerNames, participantNames...), nếu nhận ra người dùng đang nói tới MỘT người trong danh sách trên thì PHẢI ghi lại ĐÚNG NGUYÊN VĂN tên trong danh sách — kể cả khi họ gõ thiếu dấu, sai thứ tự họ tên, hay gọi tên tắt. Nếu không chắc hoặc khớp nhiều người, giữ nguyên văn người dùng gõ; TUYỆT ĐỐI không bịa tên không có trong danh sách. QUAN TRỌNG: khi người dùng HỎI về danh sách thành viên (nhóm có những ai, liệt kê thành viên, có bao nhiêu người, thông tin mới nhất về thành viên...), TUYỆT ĐỐI không đọc lại danh sách tham chiếu trên hay danh sách cũ trong ngữ cảnh chat — PHẢI gọi tool list_members để lấy dữ liệu thật mới nhất rồi mới trả lời.`
       : "Nhóm hiện chưa có thành viên nào trong danh sách trên web.",
+    'KHÁCH VÃNG LAI: nhóm cho phép thêm người CHƠI MỘT BUỔI mà KHÔNG cần là thành viên nhóm. Khi người dùng nói "thêm vãng lai tên X", "thêm khách X", hoặc muốn thêm một cái tên rõ ràng KHÔNG có trong danh sách thành viên vào buổi, ĐỪNG từ chối và ĐỪNG ép khớp về tên thành viên khác — hãy gọi add_members với asWalkin=true và ghi đúng tên họ gõ. Nếu có nêu người bảo lãnh thì điền refName.',
     selfName
       ? `Người gửi tin nhắn hiện tại tên là "${selfName}" trên web. Khi họ nói tôi/mình/tui/em/anh/chị để chỉ chính họ, hãy dùng đúng chuỗi "${selfName}" cho các tham số tên liên quan (names, memberNames, payerName, consumerNames, participantNames).`
       : 'Chưa xác định được người gửi này ứng với thành viên nào trên web (họ chưa ghép biệt danh). Vì vậy khi họ nói "tôi/mình/tui/em" để tự chỉ mình — ví dụ "thêm tôi vô kèo", "tôi còn nợ bao nhiêu" — TUYỆT ĐỐI không đoán/bịa tên rồi thao tác; hãy hướng dẫn họ gõ đúng cú pháp: /alias <tên của họ trong danh sách trên web> để ghép một lần, sau đó bot sẽ tự hiểu "tôi" là ai. Nếu họ nêu rõ một cái tên CÓ trong danh sách thì vẫn xử lý bình thường.',
@@ -344,14 +345,26 @@ export function buildTools(): ToolDef[] {
       type: "function",
       function: {
         name: "add_members",
-        description: "Thêm một hoặc nhiều người vào một buổi chơi (đăng ký tham gia).",
+        description:
+          "Thêm một hoặc nhiều người vào một buổi chơi (đăng ký tham gia). Có thể thêm cả KHÁCH VÃNG LAI — người KHÔNG có trong danh sách thành viên nhóm (bạn bè dẫn theo, khách một buổi). Khi người dùng nói 'thêm vãng lai', 'thêm khách', hoặc muốn thêm một cái tên rõ ràng KHÔNG có trong danh sách thành viên, hãy đặt asWalkin=true và ghi đúng tên họ gõ (đừng ép khớp về tên thành viên khác) — không cần người đó phải là thành viên nhóm trước.",
         parameters: {
           type: "object",
           properties: {
             names: {
               type: "array",
               items: { type: "string" },
-              description: "Danh sách tên (đúng nguyên văn danh sách thành viên) cần thêm vào buổi.",
+              description:
+                "Danh sách tên cần thêm vào buổi. Nếu là thành viên nhóm thì ghi đúng nguyên văn danh sách thành viên; nếu là khách vãng lai (asWalkin=true) thì ghi đúng tên người dùng gõ.",
+            },
+            asWalkin: {
+              type: "boolean",
+              description:
+                "Đặt true khi thêm khách VÃNG LAI (người không có trong danh sách thành viên nhóm). Mặc định false = thêm thành viên đã có sẵn.",
+            },
+            refName: {
+              type: "string",
+              description:
+                "Chỉ dùng khi asWalkin=true và người dùng nêu người bảo lãnh cho khách. Tên (đúng danh sách thành viên) của thành viên đứng ra bảo lãnh/gánh nợ cho khách vãng lai.",
             },
             sessionRef: SESSION_REF_SCHEMA,
           },
@@ -583,8 +596,10 @@ export async function executeTool(
 
     case "add_members": {
       const names = selfifyNames(asStrArr(a.names), args);
+      const asWalkin = asBool(a.asWalkin);
+      const refName = asStr(a.refName);
       const selector = sessionRefFrom(a.sessionRef);
-      const result = await replyAddMembers(env, groupId, groupName, names, actor, selector, aliases, text, context);
+      const result = await replyAddMembers(env, groupId, groupName, names, actor, selector, aliases, text, context, asWalkin, refName);
       return result.reply;
     }
 

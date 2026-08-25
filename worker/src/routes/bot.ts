@@ -2866,9 +2866,12 @@ async function replyAddWalkin(
   session: SessionRow,
   text: string,
   actor?: BotActor,
-  aliases?: Map<string, string>
+  aliases?: Map<string, string>,
+  preParsed?: { names: string[]; refName?: string }
 ): Promise<BotReply> {
-  const { names, refName } = parseWalkinAdd(text);
+  // Agent path truyền sẵn names/refName do model đã tách; các path còn lại tự parse từ text.
+  const { names, refName } =
+    preParsed && preParsed.names.length ? preParsed : parseWalkinAdd(text);
   if (!names.length) {
     return {
       ok: false,
@@ -2956,9 +2959,11 @@ export async function replyAddMembers(
   selector?: SessionDraft,
   aliases?: Map<string, string>,
   text?: string,
-  context?: BotContextMessage[]
+  context?: BotContextMessage[],
+  forceWalkin?: boolean,
+  walkinRefName?: string
 ): Promise<BotReply> {
-  const isWalkin = text ? mentionsWalkin(text) : false;
+  const isWalkin = forceWalkin || (text ? mentionsWalkin(text) : false);
   if (!names.length && !isWalkin) {
     return { ok: false, reply: 'Bạn muốn thêm ai? Ví dụ: "thêm An vào buổi".' };
   }
@@ -2974,7 +2979,8 @@ export async function replyAddMembers(
 
   // "vãng lai/khách" → tạo người mới cho buổi, không match thành viên sẵn có.
   if (isWalkin) {
-    return replyAddWalkin(env, groupId, groupName, session, text!, actor, aliases);
+    const preParsed = forceWalkin && names.length ? { names, refName: walkinRefName } : undefined;
+    return replyAddWalkin(env, groupId, groupName, session, text ?? "", actor, aliases, preParsed);
   }
 
   const outcome = await addNamesToSession(env, groupId, session.id, names, actor, aliases);
