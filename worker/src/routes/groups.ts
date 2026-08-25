@@ -122,27 +122,6 @@ async function getMembership(c: any, groupId: string) {
   return c.get("userRole") === "admin" ? "admin" : null;
 }
 
-async function userHasConfirmedGroupPayments(c: any, groupId: string, userId: string) {
-  const row = await c.env.DB.prepare(`
-    SELECT p.id
-    FROM payments p
-    WHERE (p.paid = 1 OR p.payer_marked_paid = 1)
-      AND (
-        p.member_id IN (
-          SELECT id FROM members WHERE group_id = ? AND user_id = ?
-        )
-        OR p.recipient_member_id IN (
-          SELECT id FROM members WHERE group_id = ? AND user_id = ?
-        )
-      )
-    LIMIT 1
-  `)
-    .bind(groupId, userId, groupId, userId)
-    .first() as { id: string } | null;
-
-  return Boolean(row);
-}
-
 async function groupHasConfirmedPayments(c: any, groupId: string) {
   const row = await c.env.DB.prepare(`
     SELECT p.id
@@ -840,30 +819,36 @@ groups.delete("/:id/members/:userId", async (c) => {
       }
     }
 
-    if (await userHasConfirmedGroupPayments(c, id, userId)) {
-      return c.json({
-        error: "This member has confirmed payments and cannot be removed from the group",
-      }, 409);
-    }
+    // Thành viên đã có lịch sử (buổi/chi phí/công nợ) KHÔNG xoá cứng để tránh làm mồ côi bản ghi,
+    // hỏng thống kê. Thay vào đó chuyển các member row đó thành vãng lai ẩn (is_walkin=1,
+    // session_id=NULL, gỡ user_id) — giữ nguyên id nên mọi session_members/costs/payments buổi cũ
+    // vẫn trỏ đúng. Row nào chưa có lịch sử thì xoá cứng. Dù thế nào vẫn gỡ khỏi group_members.
+    const referencedMembers = `
+      SELECT member_id AS id FROM session_members
+      UNION SELECT member_id FROM payments
+      UNION SELECT recipient_member_id FROM payments
+      UNION SELECT payer_id FROM costs
+      UNION SELECT consumer_id FROM costs
+    `;
 
     await c.env.DB.batch([
+      // 1) Chuyển các row có lịch sử -> vãng lai ẩn (đồng thời gỡ user_id để không còn dính tài khoản).
+      c.env.DB.prepare(`
+        UPDATE members SET is_active = 0, is_walkin = 1, session_id = NULL, user_id = NULL
+        WHERE user_id = ? AND group_id = ? AND id IN (${referencedMembers})
+      `).bind(userId, id),
+      // 2) Dọn payment chưa xác nhận của các row CÒN LẠI (sẽ xoá cứng); payment đã xác nhận giữ nguyên.
       c.env.DB.prepare(`
         DELETE FROM payments
-        WHERE member_id IN (
-          SELECT m.id
-          FROM members m
-          WHERE m.user_id = ? AND m.group_id = ?
-        )
+        WHERE paid = 0 AND payer_marked_paid = 0
+          AND member_id IN (SELECT id FROM members WHERE user_id = ? AND group_id = ?)
       `).bind(userId, id),
       c.env.DB.prepare(`
         DELETE FROM session_members
-        WHERE member_id IN (
-          SELECT m.id
-          FROM members m
-          WHERE m.user_id = ? AND m.group_id = ?
-        )
+        WHERE member_id IN (SELECT id FROM members WHERE user_id = ? AND group_id = ?)
           AND session_id IN (SELECT id FROM sessions WHERE group_id = ?)
       `).bind(userId, id, id),
+      // 3) Xoá cứng các row chưa có lịch sử (row có lịch sử đã bị gỡ user_id ở bước 1 nên không dính).
       c.env.DB.prepare("DELETE FROM members WHERE user_id = ? AND group_id = ?").bind(userId, id),
       c.env.DB.prepare("DELETE FROM group_invites WHERE group_id = ? AND invited_user_id = ?").bind(id, userId),
       c.env.DB.prepare("DELETE FROM group_members WHERE group_id = ? AND user_id = ?").bind(id, userId),
