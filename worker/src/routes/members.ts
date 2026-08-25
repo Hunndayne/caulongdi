@@ -14,20 +14,6 @@ function isMissingGroupSchema(error: unknown) {
   );
 }
 
-async function memberHasConfirmedPayments(c: any, memberId: string) {
-  const row = await c.env.DB.prepare(`
-    SELECT id
-    FROM payments
-    WHERE (paid = 1 OR payer_marked_paid = 1)
-      AND (member_id = ? OR recipient_member_id = ?)
-    LIMIT 1
-  `)
-    .bind(memberId, memberId)
-    .first() as { id: string } | null;
-
-  return Boolean(row);
-}
-
 // Vãng lai không có quyền admin toàn hệ thống riêng — quyền sửa/xoá đi theo quyền quản lý buổi sinh ra nó.
 async function canManageWalkinSession(c: any, sessionId: unknown) {
   if (c.get("userRole") === "admin") return true;
@@ -211,12 +197,30 @@ members.delete("/:id", async (c) => {
     return c.json({ error: "Forbidden" }, 403);
   }
 
-  if (await memberHasConfirmedPayments(c, id)) {
-    return c.json({
-      error: "This member has confirmed payments and cannot be deleted",
-    }, 409);
+  // Thành viên thường (không phải vãng lai) đã từng tham gia buổi/chi phí/công nợ: KHÔNG xoá cứng
+  // (sẽ làm mồ côi bản ghi, hỏng lịch sử/thống kê). Thay vào đó chuyển thành vãng lai ẩn — giữ nguyên
+  // id nên mọi session_members/costs/payments buổi cũ vẫn trỏ đúng, chỉ biến mất khỏi danh sách thành
+  // viên (các query roster đều lọc is_walkin=0). session_id=NULL để không bị dọn rác ephemeral theo buổi.
+  if (!existing.is_walkin) {
+    const historyRow = await c.env.DB
+      .prepare(
+        `SELECT 1 FROM session_members WHERE member_id = ?
+         UNION ALL SELECT 1 FROM payments WHERE member_id = ? OR recipient_member_id = ?
+         UNION ALL SELECT 1 FROM costs WHERE payer_id = ? OR consumer_id = ?
+         LIMIT 1`
+      )
+      .bind(id, id, id, id, id)
+      .first();
+    if (historyRow) {
+      await c.env.DB
+        .prepare("UPDATE members SET is_active = 0, is_walkin = 1, session_id = NULL WHERE id = ?")
+        .bind(id)
+        .run();
+      return c.json({ success: true, convertedToWalkin: true });
+    }
   }
 
+  // Chưa có lịch sử gì (hoặc vốn là vãng lai): xoá cứng cho sạch.
   // Xoá tường minh theo thứ tự, không phụ thuộc FK cascade (D1 không đảm bảo luôn bật foreign_keys)
   await c.env.DB.batch([
     c.env.DB.prepare(
