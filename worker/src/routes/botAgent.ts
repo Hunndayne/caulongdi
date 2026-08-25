@@ -205,7 +205,7 @@ function buildSystemPrompt(groupName: string, roster: string[], selfName: string
     "Ngữ cảnh gần đây BAO GỒM cả những câu chính bạn (assistant) vừa nói ở lượt trước. Nếu tin hiện tại của người dùng là câu TRẢ LỜI hoặc phản hồi cho điều bạn vừa hỏi/đề nghị (kể cả khi họ nói ngắn/mơ hồ như \"ừ\", \"có\", \"ok\", \"giúp mình đi\", \"làm đi\"), hãy hiểu và TIẾP NỐI đúng việc đó — ví dụ bạn vừa hỏi \"cần nhắc X trả nợ không?\" mà họ đáp \"ừ giúp mình\" thì tiến hành nhắc, đừng trả lời chung chung như chưa từng hỏi.",
     "KHÔNG dùng Markdown (không **in đậm**, không # tiêu đề, không `code`, không [text](link)) — Messenger hiển thị nguyên ký tự đó nên xấu; chỉ dùng chữ thuần, xuống dòng và emoji.",
     roster.length
-      ? `DANH SÁCH THÀNH VIÊN của nhóm trên web: ${roster.join("; ")}. Khi điền tham số tên cho tool (names, memberNames, payerName, consumerNames, participantNames...), nếu nhận ra người dùng đang nói tới MỘT người trong danh sách trên thì PHẢI ghi lại ĐÚNG NGUYÊN VĂN tên trong danh sách — kể cả khi họ gõ thiếu dấu, sai thứ tự họ tên, hay gọi tên tắt. Nếu không chắc hoặc khớp nhiều người, giữ nguyên văn người dùng gõ; TUYỆT ĐỐI không bịa tên không có trong danh sách.`
+      ? `DANH SÁCH THÀNH VIÊN của nhóm trên web (chỉ dùng làm THAM CHIẾU để khớp tên, KHÔNG dùng để trả lời trực tiếp): ${roster.join("; ")}. Khi điền tham số tên cho tool (names, memberNames, payerName, consumerNames, participantNames...), nếu nhận ra người dùng đang nói tới MỘT người trong danh sách trên thì PHẢI ghi lại ĐÚNG NGUYÊN VĂN tên trong danh sách — kể cả khi họ gõ thiếu dấu, sai thứ tự họ tên, hay gọi tên tắt. Nếu không chắc hoặc khớp nhiều người, giữ nguyên văn người dùng gõ; TUYỆT ĐỐI không bịa tên không có trong danh sách. QUAN TRỌNG: khi người dùng HỎI về danh sách thành viên (nhóm có những ai, liệt kê thành viên, có bao nhiêu người, thông tin mới nhất về thành viên...), TUYỆT ĐỐI không đọc lại danh sách tham chiếu trên hay danh sách cũ trong ngữ cảnh chat — PHẢI gọi tool list_members để lấy dữ liệu thật mới nhất rồi mới trả lời.`
       : "Nhóm hiện chưa có thành viên nào trong danh sách trên web.",
     selfName
       ? `Người gửi tin nhắn hiện tại tên là "${selfName}" trên web. Khi họ nói tôi/mình/tui/em/anh/chị để chỉ chính họ, hãy dùng đúng chuỗi "${selfName}" cho các tham số tên liên quan (names, memberNames, payerName, consumerNames, participantNames).`
@@ -290,7 +290,7 @@ export function buildTools(): ToolDef[] {
       type: "function",
       function: {
         name: "list_members",
-        description: "Liệt kê toàn bộ thành viên đang có trong nhóm (không gắn với buổi cụ thể nào).",
+        description: "Lấy danh sách thành viên THẬT, MỚI NHẤT của nhóm từ web (không gắn với buổi cụ thể nào). Luôn gọi tool này mỗi khi người dùng hỏi nhóm có những ai / liệt kê thành viên / có bao nhiêu người — đừng trả lời từ trí nhớ hay ngữ cảnh cũ.",
         parameters: { type: "object", properties: {} },
       },
     },
