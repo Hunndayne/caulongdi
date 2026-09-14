@@ -50,7 +50,7 @@ export const api = {
     request<Member[]>(groupId ? `/api/members?groupId=${encodeURIComponent(groupId)}` : "/api/members"),
   createMember: (data: Partial<Member>) =>
     request<Member>("/api/members", { method: "POST", body: JSON.stringify(data) }),
-  updateMember: (id: string, data: Partial<Member>) =>
+  updateMember: (id: string, data: Partial<Member> & { refMemberId?: string; avatarColor?: string; isActive?: boolean }) =>
     request<Member>(`/api/members/${id}`, { method: "PUT", body: JSON.stringify(data) }),
   deleteMember: (id: string) =>
     request<{ success: boolean }>(`/api/members/${id}`, { method: "DELETE" }),

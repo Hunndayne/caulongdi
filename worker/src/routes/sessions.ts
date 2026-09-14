@@ -2656,6 +2656,14 @@ export async function recalcSessionPayments(env: Env, sessionId: string): Promis
 
   await env.DB.prepare("DELETE FROM payments WHERE session_id = ? AND paid = 0").bind(sessionId).run();
 
+  // Vãng lai nhận tiền không có tài khoản: người ref bảo lãnh nhận thay. Nếu người trả chính
+  // là người ref của vãng lai đó thì tiền vào đúng túi người ref — coi như đã trả & đã nhận luôn.
+  const walkinRecipientRows = await env.DB.prepare(
+    "SELECT id, ref_member_id FROM members WHERE session_id = ? AND is_walkin = 1"
+  ).bind(sessionId).all<{ id: string; ref_member_id: string | null }>();
+  const walkinRefById = new Map<string, string | null>();
+  for (const row of walkinRecipientRows.results) walkinRefById.set(row.id, row.ref_member_id);
+
   const stmts: D1PreparedStatement[] = [];
   // Phần đã trả đã được cấn vào số dư ròng trong computeSessionSettlement, nên số ở đây
   // chính là phần CÒN LẠI phải chuyển.
@@ -2673,15 +2681,24 @@ export async function recalcSessionPayments(env: Env, sessionId: string): Promis
     }
     takenIds.add(paymentId);
 
+    // Vãng lai được ref bởi chính người trả → xác nhận luôn, khỏi cần ai bấm "đã nhận".
+    const recipientRefId = recipientMemberId === POT_RECIPIENT ? null : walkinRefById.get(recipientMemberId);
+    const autoConfirmed = recipientRefId != null && recipientRefId === memberId;
+    const nowIso = autoConfirmed ? new Date().toISOString() : null;
+
     stmts.push(env.DB.prepare(`
-      INSERT INTO payments (id, session_id, member_id, recipient_member_id, amount_owed, paid)
-      VALUES (?, ?, ?, ?, ?, 0)
+      INSERT INTO payments (id, session_id, member_id, recipient_member_id, amount_owed, payer_marked_paid, payer_marked_paid_at, paid, paid_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
       paymentId,
       sessionId,
       memberId,
       recipientMemberId === POT_RECIPIENT ? null : recipientMemberId,
-      amount
+      amount,
+      autoConfirmed ? 1 : 0,
+      nowIso,
+      autoConfirmed ? 1 : 0,
+      nowIso
     ));
   }
   if (stmts.length > 0) await env.DB.batch(stmts);

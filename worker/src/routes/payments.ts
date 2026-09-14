@@ -19,6 +19,8 @@ type PaymentRow = {
   managers?: string | null;
   debtor_user_id?: string | null;
   recipient_user_id?: string | null;
+  recipient_is_walkin?: number | null;
+  recipient_ref_user_id?: string | null;
 };
 
 function queueTask(c: any, task: Promise<unknown>, label: string) {
@@ -28,14 +30,14 @@ function queueTask(c: any, task: Promise<unknown>, label: string) {
   c.executionCtx?.waitUntil?.(wrappedTask);
 }
 
-async function canTogglePayment(c: any, payment: PaymentRow) {
+// Người quản lý buổi (admin site / người tạo / manager / admin nhóm) — tách riêng để
+// vừa gác quyền toggle, vừa cho phép xác nhận thay khi người nhận là vãng lai không có tài khoản.
+async function isSessionManager(c: any, payment: PaymentRow) {
   const userId = c.get("userId");
   const userRole = c.get("userRole");
 
   if (userRole === "admin") return true;
   if (payment.created_by && payment.created_by === userId) return true;
-  if (payment.debtor_user_id && payment.debtor_user_id === userId) return true;
-  if (payment.recipient_user_id && payment.recipient_user_id === userId) return true;
 
   if (payment.managers) {
     try {
@@ -59,6 +61,23 @@ async function canTogglePayment(c: any, payment: PaymentRow) {
   return groupRole?.role === "admin";
 }
 
+// Người nhận là vãng lai thì không có tài khoản để tự xác nhận: người ref bảo lãnh nhận thay.
+function isWalkinRecipientRefUser(payment: PaymentRow, userId: string) {
+  return payment.recipient_is_walkin === 1
+    && Boolean(payment.recipient_ref_user_id)
+    && payment.recipient_ref_user_id === userId;
+}
+
+async function canTogglePayment(c: any, payment: PaymentRow) {
+  const userId = c.get("userId");
+
+  if (payment.debtor_user_id && payment.debtor_user_id === userId) return true;
+  if (payment.recipient_user_id && payment.recipient_user_id === userId) return true;
+  if (isWalkinRecipientRefUser(payment, userId)) return true;
+
+  return isSessionManager(c, payment);
+}
+
 payments.post("/:id/toggle", async (c) => {
   const { id } = c.req.param();
   const row = await c.env.DB.prepare(`
@@ -69,11 +88,14 @@ payments.post("/:id/toggle", async (c) => {
       s.managers,
       s.payment_to_pot,
       debtor.user_id AS debtor_user_id,
-      recipient.user_id AS recipient_user_id
+      recipient.user_id AS recipient_user_id,
+      recipient.is_walkin AS recipient_is_walkin,
+      recipient_ref.user_id AS recipient_ref_user_id
     FROM payments p
     JOIN sessions s ON s.id = p.session_id
     LEFT JOIN members debtor ON debtor.id = p.member_id
     LEFT JOIN members recipient ON recipient.id = p.recipient_member_id
+    LEFT JOIN members recipient_ref ON recipient_ref.id = recipient.ref_member_id
     WHERE p.id = ?
   `)
     .bind(id)
@@ -86,8 +108,10 @@ payments.post("/:id/toggle", async (c) => {
   }
 
   const userId = c.get("userId");
-  const isDebtorUser = row.debtor_user_id === userId;
   const isRecipientUser = row.recipient_user_id === userId;
+  // Người trả vừa là ref của vãng lai nhận tiền → tiền vào đúng túi mình, xác nhận thẳng (paid)
+  // ở nhánh dưới thay vì chỉ "đánh dấu đã trả" rồi treo chờ chính mình xác nhận.
+  const isDebtorUser = row.debtor_user_id === userId && !isWalkinRecipientRefUser(row, userId);
 
   if (isDebtorUser) {
     if (row.payer_marked_paid === 1) {
@@ -115,7 +139,10 @@ payments.post("/:id/toggle", async (c) => {
   // Thu về hũ thì payment không có người nhận cá nhân (recipient_member_id NULL), nên người
   // quản lý nhóm/buổi xác nhận thay — canTogglePayment ở trên đã lọc quyền.
   const potMode = row.payment_to_pot === 1 && !row.recipient_member_id;
-  if (!isRecipientUser && !potMode) {
+  // Người nhận là vãng lai (không có tài khoản): ref bảo lãnh, hoặc người quản lý, xác nhận thay.
+  const walkinRecipientConfirm = row.recipient_is_walkin === 1
+    && (isWalkinRecipientRefUser(row, userId) || (await isSessionManager(c, row)));
+  if (!isRecipientUser && !potMode && !walkinRecipientConfirm) {
     return c.json({ error: "Only the payer or recipient can update this payment" }, 403);
   }
 

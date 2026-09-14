@@ -423,6 +423,7 @@ export default function SessionDetailPage() {
   const [addingWalkin, setAddingWalkin] = useState(false);
   const [editingWalkinId, setEditingWalkinId] = useState<string | null>(null);
   const [editingWalkinName, setEditingWalkinName] = useState("");
+  const [editingWalkinRefId, setEditingWalkinRefId] = useState("");
   const [busyWalkinId, setBusyWalkinId] = useState<string | null>(null);
   const [pendingAttendanceConfirmation, setPendingAttendanceConfirmation] = useState<PendingAttendanceConfirmation | null>(null);
   const [confirmingAttendanceChange, setConfirmingAttendanceChange] = useState(false);
@@ -749,16 +750,21 @@ export default function SessionDetailPage() {
   const handleOpenRenameWalkin = (member: Member) => {
     setEditingWalkinId(member.id);
     setEditingWalkinName(member.name);
+    setEditingWalkinRefId(member.ref_member_id ?? "");
   };
 
   const handleRenameWalkin = async () => {
     if (!editingWalkinId) return;
     const name = editingWalkinName.trim();
     if (!name) return;
+    if (!editingWalkinRefId) {
+      alert("Cần chọn người bảo lãnh (ref) cho vãng lai.");
+      return;
+    }
 
     setBusyWalkinId(editingWalkinId);
     try {
-      await api.updateMember(editingWalkinId, { name });
+      await api.updateMember(editingWalkinId, { name, refMemberId: editingWalkinRefId });
       setEditingWalkinId(null);
       await refresh(s.id);
     } catch (error: any) {
@@ -1593,12 +1599,22 @@ export default function SessionDetailPage() {
       return false;
     }
     if (debtor?.user_id === currentUserId) return payment.payer_marked_paid !== 1;
+    if (recipient?.is_walkin) {
+      // Vãng lai nhận tiền không có tài khoản: ref bảo lãnh (hoặc quản lý) xác nhận đã nhận thay.
+      const recipientRef = recipient.ref_member_id ? memberById.get(recipient.ref_member_id) : null;
+      if (canManageSession || recipientRef?.user_id === currentUserId) return true;
+      return false;
+    }
     if (recipient?.user_id === currentUserId) return true;
     return false;
   };
 
   const getPaymentActionLabel = (payment: Payment, debtor: Member | null, recipient: Member | null) => {
-    const isRecipientUser = Boolean(currentUserId && recipient?.user_id === currentUserId && debtor?.user_id !== currentUserId);
+    const recipientRef = recipient?.is_walkin && recipient.ref_member_id ? memberById.get(recipient.ref_member_id) : null;
+    const isRecipientUser = Boolean(currentUserId && debtor?.user_id !== currentUserId && (
+      recipient?.user_id === currentUserId ||
+      (recipient?.is_walkin && (recipientRef?.user_id === currentUserId || canManageSession))
+    ));
     const refMember = debtor?.is_walkin && debtor.ref_member_id ? memberById.get(debtor.ref_member_id) : null;
     const isDebtorUser = Boolean(currentUserId && (
       debtor?.user_id === currentUserId ||
@@ -2426,23 +2442,35 @@ export default function SessionDetailPage() {
                 // Thu về hũ: recipient_member_id là NULL, đích là tài khoản chung của nhóm.
                 const recipientName = recipient?.name
                   ?? (collectToPot ? "hũ nhóm" : payment.recipient_member_id ?? "người nhận");
-                const recipientHasBank = hasBankInfo(recipient);
+                // Người nhận là vãng lai không có tài khoản: tiền thật chảy về người ref bảo lãnh.
+                const recipientRef = recipient?.is_walkin && recipient.ref_member_id
+                  ? memberById.get(recipient.ref_member_id) ?? null
+                  : null;
+                const effectiveRecipient = recipient?.is_walkin ? recipientRef : recipient;
+                const recipientHasBank = hasBankInfo(effectiveRecipient);
                 // Thu về hũ thì không cần người nhận cá nhân — QR trỏ vào tài khoản chung của nhóm.
                 const qrRecipient = collectToPot
                   ? null
                   : (recipientHasBank
-                    ? recipient
+                    ? effectiveRecipient
                     : (fallbackRecipientMember && fallbackRecipientMember.id !== payment.member_id ? fallbackRecipientMember : null));
                 // Vãng lai không đăng nhập được nên mọi người tham gia đều thấy QR để chuyển hộ.
                 const canViewQr = Boolean(currentUserId && (debtor?.user_id === currentUserId || debtor?.is_walkin));
                 const qrData = canViewQr && debtor && (collectToPot || qrRecipient)
                   ? buildQrData(payment.id, debtor, qrRecipient, payment.amount_owed)
                   : null;
-                const fallbackNotice = !collectToPot && !recipientHasBank && qrRecipient && recipient
+                const fallbackNotice = !collectToPot && !recipientHasBank && qrRecipient && effectiveRecipient
                   ? `Người ứng tiền chưa cập nhật STK, tạm chuyển qua ${qrRecipient.name}.`
                   : null;
+                // Vãng lai nhận tiền thì người xác nhận đã nhận chính là người ref bảo lãnh.
+                const confirmerName = recipient?.is_walkin ? (recipientRef?.name ?? recipientName) : recipientName;
+                const walkinRecipientNotice = recipient?.is_walkin && !payment.paid
+                  ? (recipientRef
+                    ? `${recipientName} là vãng lai — tiền về ${recipientRef.name} (ref), ${recipientRef.name} xác nhận đã nhận.`
+                    : `${recipientName} là vãng lai chưa có ref để nhận tiền. Hãy gán ref trước.`)
+                  : null;
                 const pendingNotice = payment.payer_marked_paid && !payment.paid
-                  ? `${debtorName} đã báo đã trả, chờ ${recipientName} xác nhận đã nhận.`
+                  ? `${debtorName} đã báo đã trả, chờ ${confirmerName} xác nhận đã nhận.`
                   : null;
                 const toggleAllowed = canTogglePaymentRow(payment, debtor, recipient);
                 const showMissingQrNotice = canViewQr && !qrData && !payment.paid;
@@ -2470,6 +2498,9 @@ export default function SessionDetailPage() {
                           <div className="mt-0.5 text-sm font-semibold text-gray-800">
                             {formatCurrency(payment.amount_owed)}
                           </div>
+                          {walkinRecipientNotice && (
+                            <div className={`mt-1 text-xs ${recipientRef ? "text-gray-500" : "text-amber-600"}`}>{walkinRecipientNotice}</div>
+                          )}
                           {fallbackNotice && (
                             <div className="mt-1 text-xs text-amber-600">{fallbackNotice}</div>
                           )}
@@ -2879,21 +2910,43 @@ export default function SessionDetailPage() {
         onClose={() => {
           if (!busyWalkinId) setEditingWalkinId(null);
         }}
-        title="Sửa tên vãng lai"
+        title="Sửa vãng lai"
         className="sm:max-w-md"
       >
         <div className="space-y-4">
-          <Input
-            value={editingWalkinName}
-            onChange={(event) => setEditingWalkinName(event.target.value)}
-            placeholder="Tên vãng lai"
-            disabled={busyWalkinId === editingWalkinId}
-          />
+          <div>
+            <label className="mb-1 block text-sm font-medium text-gray-700">Tên</label>
+            <Input
+              value={editingWalkinName}
+              onChange={(event) => setEditingWalkinName(event.target.value)}
+              placeholder="Tên vãng lai"
+              disabled={busyWalkinId === editingWalkinId}
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-sm font-medium text-gray-700">Người bảo lãnh (ref)</label>
+            <select
+              value={editingWalkinRefId}
+              onChange={(event) => setEditingWalkinRefId(event.target.value)}
+              disabled={busyWalkinId === editingWalkinId}
+              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 disabled:bg-gray-100"
+            >
+              <option value="">-- Chọn người bảo lãnh --</option>
+              {walkinRefOptions
+                .filter((member) => member.id !== editingWalkinId)
+                .map((member) => (
+                  <option key={member.id} value={member.id}>{member.name}</option>
+                ))}
+            </select>
+            <p className="mt-1 text-xs text-gray-500">
+              Ref nhận tiền và xác nhận thay cho vãng lai. Đổi ref sẽ tính lại công nợ chưa xác nhận.
+            </p>
+          </div>
           <div className="flex justify-end gap-2">
             <Button variant="outline" onClick={() => setEditingWalkinId(null)} disabled={busyWalkinId === editingWalkinId}>
               Hủy
             </Button>
-            <Button onClick={handleRenameWalkin} disabled={busyWalkinId === editingWalkinId || !editingWalkinName.trim()}>
+            <Button onClick={handleRenameWalkin} disabled={busyWalkinId === editingWalkinId || !editingWalkinName.trim() || !editingWalkinRefId}>
               {busyWalkinId === editingWalkinId ? "Đang lưu..." : "Lưu"}
             </Button>
           </div>

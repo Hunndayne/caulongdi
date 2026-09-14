@@ -156,7 +156,7 @@ members.post("/", async (c) => {
 
 members.put("/:id", async (c) => {
   const { id } = c.req.param();
-  const body = await c.req.json<{ name?: string; phone?: string; avatarColor?: string; isActive?: boolean }>();
+  const body = await c.req.json<{ name?: string; phone?: string; avatarColor?: string; isActive?: boolean; refMemberId?: string }>();
   const existing = await c.env.DB.prepare("SELECT * FROM members WHERE id = ?").bind(id).first<any>();
   if (!existing) return c.json({ error: "Not found" }, 404);
 
@@ -171,17 +171,48 @@ members.put("/:id", async (c) => {
     ? existing.is_active
     : (body.isActive !== undefined ? (body.isActive ? 1 : 0) : existing.is_active);
 
+  // Chỉ vãng lai mới có người ref (người bảo lãnh). Ref phải là thành viên thật, có tài khoản,
+  // không phải vãng lai và không phải chính nó — giống lúc thêm vãng lai.
+  let nextRefMemberId = existing.ref_member_id ?? null;
+  const refChanged = Boolean(existing.is_walkin)
+    && body.refMemberId !== undefined
+    && (body.refMemberId?.trim() || null) !== (existing.ref_member_id ?? null);
+  if (refChanged) {
+    const refId = body.refMemberId?.trim();
+    if (!refId) return c.json({ error: "Cần chọn người ref (người bảo lãnh)" }, 400);
+    if (refId === id) return c.json({ error: "Vãng lai không thể tự làm ref cho chính mình" }, 400);
+    const ref = await c.env.DB.prepare("SELECT id, user_id, is_walkin FROM members WHERE id = ?")
+      .bind(refId)
+      .first<{ id: string; user_id: string | null; is_walkin: number }>();
+    if (!ref) return c.json({ error: "Người ref không tồn tại" }, 404);
+    if (ref.is_walkin) return c.json({ error: "Người ref không thể là vãng lai" }, 400);
+    if (!ref.user_id) return c.json({ error: "Người ref phải có tài khoản trong app" }, 400);
+    nextRefMemberId = refId;
+  }
+
   await c.env.DB.prepare(
-    "UPDATE members SET name = ?, phone = ?, avatar_color = ?, is_active = ? WHERE id = ?"
+    "UPDATE members SET name = ?, phone = ?, avatar_color = ?, is_active = ?, ref_member_id = ? WHERE id = ?"
   )
     .bind(
       body.name ?? existing.name,
       body.phone !== undefined ? body.phone : existing.phone,
       body.avatarColor ?? existing.avatar_color,
       nextIsActive,
+      nextRefMemberId,
       id
     )
     .run();
+
+  // Đổi ref có thể đổi người gánh nợ (chế độ 'ref') và người xác nhận/QR bên nhận,
+  // nên tính lại công nợ chưa xác nhận của buổi.
+  if (refChanged && existing.session_id) {
+    try {
+      await recalcSessionPayments(c.env, existing.session_id);
+    } catch (error) {
+      console.error("[members:put] recalc after ref change failed", error);
+    }
+  }
+
   const row = await c.env.DB.prepare("SELECT * FROM members WHERE id = ?").bind(id).first();
   return c.json(row);
 });
