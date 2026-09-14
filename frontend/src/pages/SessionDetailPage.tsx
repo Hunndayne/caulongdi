@@ -1738,7 +1738,7 @@ export default function SessionDetailPage() {
         </div>
       )}
 
-      {canManageSessionStrict && (
+      {canManageSession && (
         <div className="mb-4">
           {!showManagerSettings ? (
             <button
@@ -1752,26 +1752,34 @@ export default function SessionDetailPage() {
             <div className="space-y-3 rounded-xl border border-gray-200 bg-gray-50 p-3">
               <div className="text-xs font-semibold text-gray-700">Người tạo: {creatorName}</div>
 
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={Boolean(currentSession?.allow_all_edit)}
-                  onChange={async () => {
-                    const nextValue = currentSession?.allow_all_edit ? 0 : 1;
-                    setManagingSettings(true);
-                    try {
-                      await api.updateSession(s.id, { allow_all_edit: nextValue } as any);
-                      await refresh(s.id);
-                    } catch (error: any) {
-                      alert(error.message);
-                    } finally {
-                      setManagingSettings(false);
-                    }
-                  }}
-                  className="rounded border-gray-300"
-                />
-                <span className="text-gray-700">Cho phép tất cả thành viên chỉnh sửa</span>
-              </label>
+              {/* Bật/tắt "cho phép tất cả chỉnh sửa" là quyền của quản lý; thành viên thường
+                  chỉ được sửa các cài đặt thanh toán bên dưới khi ô này đã bật. */}
+              {canManageSessionStrict ? (
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(currentSession?.allow_all_edit)}
+                    onChange={async () => {
+                      const nextValue = currentSession?.allow_all_edit ? 0 : 1;
+                      setManagingSettings(true);
+                      try {
+                        await api.updateSession(s.id, { allow_all_edit: nextValue } as any);
+                        await refresh(s.id);
+                      } catch (error: any) {
+                        alert(error.message);
+                      } finally {
+                        setManagingSettings(false);
+                      }
+                    }}
+                    className="rounded border-gray-300"
+                  />
+                  <span className="text-gray-700">Cho phép tất cả thành viên chỉnh sửa</span>
+                </label>
+              ) : (
+                <div className="text-xs text-gray-400">
+                  Người quản lý đã cho phép tất cả thành viên chỉnh sửa các cài đặt thanh toán bên dưới.
+                </div>
+              )}
 
               <div className="space-y-1.5">
                 <label className="block text-xs font-medium text-gray-700">Tiền thu về</label>
@@ -1890,7 +1898,7 @@ export default function SessionDetailPage() {
                 </p>
               </div>
 
-              {managersList.length > 0 && (
+              {canManageSessionStrict && managersList.length > 0 && (
                 <div>
                   <div className="mb-1 text-xs text-gray-500">Đồng quản lý:</div>
                   <div className="flex flex-wrap gap-2">
@@ -1924,6 +1932,7 @@ export default function SessionDetailPage() {
                 </div>
               )}
 
+              {canManageSessionStrict && (
               <div className="flex gap-2">
                 <select
                   id="manager-select"
@@ -1984,6 +1993,7 @@ export default function SessionDetailPage() {
                   Chuyển giao
                 </Button>
               </div>
+              )}
 
               <button
                 onClick={() => setShowManagerSettings(false)}
