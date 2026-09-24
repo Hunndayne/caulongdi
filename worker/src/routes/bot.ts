@@ -823,7 +823,7 @@ async function classifyWithAI(
     'Nếu người dùng NÊU/XÁC NHẬN giờ chơi của MỘT buổi đã tồn tại dù không dùng từ "đổi/dời" (vd "giờ đánh cầu ngày 2/7 là từ 16:30 đến 18:30", "buổi mai chơi từ 7h đến 9h"), vẫn hiểu là update_session với changes.startTime/changes.endTime tương ứng — KHÔNG xếp vào chat.',
     'Nếu muốn hủy/xóa kèo/buổi thì intent là cancel_session — kể cả câu xác nhận ngắn ("đồng ý hủy", "ok hủy đi") ngay sau khi bot vừa hỏi xác nhận trong ngữ cảnh.',
     "Nếu hỏi thống kê tổng hợp NHIỀU buổi (đánh mấy buổi tháng này, ai đi nhiều nhất, tổng chi tiêu tháng/tuần/năm) thì intent là stats — khác costs (chi phí của MỘT buổi cụ thể).",
-    'Hiểu tiếng lóng cầu lông: "quánh", "đánh cầu", "đi cầu", "đi sân", "kèo" đều nói về buổi chơi.',
+    'Nhóm có thể hoạt động ở mảng bất kỳ (thể thao, ăn uống, du lịch, mua chung, đu idol...) — mọi hoạt động chung đều lưu là "buổi". Hiểu tiếng lóng: "quánh", "đánh cầu", "đi sân", "kèo", "đi ăn", "chầu", "bữa", "đợt order", "gom đơn" đều có thể nói về một buổi.',
     "Nếu người dùng hỏi ngắn kiểu lịch, lịch quánh, có lịch không, kèo nào, sân nào, mấy giờ thì intent là upcoming/next/today/week tuỳ mốc thời gian.",
     "Nếu câu hỏi lịch/buổi/kèo có hỏi ai, thành viên, người tham gia thì intent là list_attendees; chỉ dùng list_members khi hỏi danh sách thành viên của nhóm nói chung.",
     "Nếu người dùng HỎI chi phí, tổng tiền, bill, hóa đơn, công nợ, ai nợ ai, ai trả ai, chia tiền, mỗi người bao nhiêu thì intent là costs.",
@@ -833,8 +833,8 @@ async function classifyWithAI(
     'Nếu người dùng muốn ĐÁNH DẤU/XÁC NHẬN đã trả tiền/đã chuyển khoản công nợ ("tôi trả Nam rồi", "đánh dấu đã trả", "Nam chuyển cho tôi rồi") thì intent là mark_paid.',
     'Nếu người dùng hỏi công nợ của MỘT NGƯỜI trải trên NHIỀU buổi — "tôi còn nợ buổi nào", "tôi nợ bao nhiêu", "còn nợ những buổi nào", "ai nợ tôi", "Nam còn nợ gì không" — thì intent là my_debts. Nếu hỏi về người khác thì names là người đó, hỏi về chính mình thì names rỗng [].',
     'PHÂN BIỆT my_debts với costs: costs là công nợ TRONG MỘT BUỔI cụ thể ("ai nợ ai buổi hôm qua", "chi phí buổi vừa rồi"); my_debts là công nợ CÒN LẠI của một người qua MỌI buổi, không gắn với buổi nào.',
-    "Only classify today/week/upcoming/next/recent/list_attendees when the user clearly asks about badminton sessions, schedule, court, or players; casual chat that happens to mention time words must be unknown.",
-    "Bạn phân tích câu của người dùng về lịch chơi cầu lông của một nhóm và TRẢ VỀ JSON.",
+    "Only classify today/week/upcoming/next/recent/list_attendees when the user clearly asks about the group's sessions/activities, schedule, venue, or participants; casual chat that happens to mention time words must be unknown.",
+    "Bạn phân tích câu của người dùng về lịch hoạt động và chi tiêu chung của một nhóm và TRẢ VỀ JSON.",
     'Định dạng JSON: {"intent": "...", "names": ["..."], "session": {"date": "YYYY-MM-DD", "startTime": "HH:MM", "endTime": "HH:MM", "venue": "..."}, "changes": {"date": "...", "startTime": "...", "endTime": "...", "venue": "..."}, "cost": {"label": "...", "amount": 0, "quantity": 1, "payerName": "...", "consumerNames": ["..."]}, "costs": [{"label": "...", "amount": 0, "quantity": 1, "payerName": "...", "consumerNames": ["..."]}]}.',
     "intent là MỘT trong: next, upcoming, today, week, recent, list_members, list_attendees, add_member, remove_member, create_session, update_session, cancel_session, costs, add_cost, update_cost, mark_paid, stats, help, unknown.",
     "Ý nghĩa: next=buổi sắp tới gần nhất; upcoming=danh sách buổi sắp tới; today=hôm nay; week=tuần này; recent=các buổi gần đây/lịch sử;",
@@ -855,7 +855,7 @@ async function classifyWithAI(
         ]
       : []),
     "changes CHỈ điền khi intent=update_session.",
-    "session điền khi câu nói về MỘT buổi cụ thể (tạo mới hoặc tham chiếu buổi nào đó, kể cả buổi nhắc trong ngữ cảnh trước): quy đổi 'ngày mai', 'thứ 7'... thành ngày cụ thể theo hôm nay; startTime dạng 24h; venue là tên sân/địa điểm.",
+    "session điền khi câu nói về MỘT buổi cụ thể (tạo mới hoặc tham chiếu buổi nào đó, kể cả buổi nhắc trong ngữ cảnh trước): quy đổi 'ngày mai', 'thứ 7'... thành ngày cụ thể theo hôm nay; startTime dạng 24h; venue là tên địa điểm (sân, quán, cửa hàng, sàn online...).",
     "Trong session, trường nào người dùng (hoặc ngữ cảnh) KHÔNG nhắc tới thì BỎ QUA, tuyệt đối không tự đoán.",
     'Các từ "hiện tại", "bây giờ", "giờ này", "đang" chỉ là từ đệm — KHÔNG suy ra date/startTime từ chúng. Khi câu đã nêu rõ buổi (vd "buổi 18/6") thì chỉ điền date theo buổi đó, không thêm startTime trừ khi user nói giờ cụ thể.',
   ].join(" ");
@@ -967,6 +967,20 @@ async function classifyWithAI(
   return { intent, names, session, cost, costs: costs.length ? costs : undefined, changes };
 }
 
+// Vai trò chung của Ting AI: mặc định là trợ lý quản lý tài chính nhóm, rồi tự "ăn theo" mảng
+// hoạt động của nhóm (cầu lông, ăn uống, mua chung, đu idol...) suy ra từ tên/mô tả/tóm tắt nhóm.
+export function buildGroupRolePrompt(groupName: string, groupDescription?: string | null): string {
+  const description = groupDescription?.trim();
+  return [
+    `Bạn là "Ting AI" — trợ lý QUẢN LÝ TÀI CHÍNH CHUNG của nhóm "${groupName}" trên TingTing: ghi và chia các khoản chi, theo dõi ai ứng tiền - ai còn nợ, nhắc công nợ, và sắp xếp các buổi/hoạt động chung của nhóm.`,
+    description ? `Mô tả nhóm do admin đặt trên web: "${description}".` : "",
+    'Nhóm có thể hoạt động ở BẤT KỲ mảng nào: chơi thể thao (cầu lông, bóng đá...), đi ăn uống/cà phê, du lịch, mua sắm/order chung, góp tiền mua đồ hay ủng hộ idol, quỹ chung... Hãy SUY RA mảng hoạt động của nhóm từ tên nhóm, mô tả nhóm, tóm tắt nhóm (nếu có) và nội dung các buổi/khoản chi, rồi dùng từ ngữ, ví dụ và giọng điệu hợp với mảng đó — vd nhóm ăn uống thì "buổi" là bữa ăn, "địa điểm" là quán; nhóm mua chung/đu idol thì "buổi" là một đợt gom đơn/order, "địa điểm" có thể là shop hay sàn online. Nếu chưa đủ dấu hiệu, cứ đóng vai trợ lý tài chính nhóm nói chung — KHÔNG tự mặc định nhóm là nhóm cầu lông.',
+    'Trong hệ thống, mỗi hoạt động chung (kèo chơi, bữa ăn, chuyến đi, đợt mua...) được lưu là một "buổi" có ngày, giờ, địa điểm; các khoản chi và công nợ gắn vào từng buổi.',
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
 function naturalChatFallback(groupName: string, text = "", actor?: BotActor) {
   const t = normalizeName(text);
   const name = actor?.name?.trim();
@@ -983,7 +997,7 @@ function naturalChatFallback(groupName: string, text = "", actor?: BotActor) {
     return "Ok nè, cần xem lịch hay thêm ai vào buổi thì gọi mình tiếp nhé.";
   }
 
-  return `Mình đây. Hiện mình trả lời chắc nhất về lịch cầu lông của ${groupName}: buổi sắp tới, tuần này, ai tham gia, chi phí/công nợ, tạo kèo mới hoặc thêm người vào buổi.`;
+  return `Mình đây, trợ lý tài chính của ${groupName}. Mình trả lời chắc nhất về chi phí/công nợ, ai nợ ai, buổi sắp tới, ai tham gia, tạo buổi mới hoặc thêm người vào buổi.`;
 }
 
 async function replyNaturalChat(
@@ -992,7 +1006,8 @@ async function replyNaturalChat(
   text: string,
   actor?: BotActor,
   context?: BotContextMessage[],
-  groupSummary?: string
+  groupSummary?: string,
+  groupDescription?: string | null
 ): Promise<BotReply> {
   const apiKey = env.DEEPSEEK_API_KEY?.trim();
   const fallback = naturalChatFallback(groupName, text, actor);
@@ -1001,11 +1016,12 @@ async function replyNaturalChat(
   const baseUrl = (env.DEEPSEEK_BASE_URL?.trim() || DEFAULT_DEEPSEEK_BASE_URL).replace(/\/+$/, "");
   const model = env.DEEPSEEK_MODEL?.trim() || DEFAULT_DEEPSEEK_MODEL;
   const system = [
-    "Bạn là Ting AI trong group chat của một nhóm cầu lông trên TingTing.",
+    buildGroupRolePrompt(groupName, groupDescription),
+    "Bạn đang trò chuyện trong group chat của nhóm.",
     "Trả lời tự nhiên, thân thiện, vui vừa phải, bằng tiếng Việt.",
     "Ưu tiên câu trả lời ngắn gọn 1-4 câu, hợp văn cảnh chat nhóm.",
     "Tin nhắn này đã được chuyển đến bạn rồi; không bảo người dùng gõ lại /ting.",
-    "Nếu người dùng hỏi về lịch chơi, thành viên, ai tham gia, chi phí/công nợ, hoặc thêm người vào buổi nhưng bạn không có đủ dữ liệu, hãy hỏi lại ngắn gọn để làm rõ.",
+    "Nếu người dùng hỏi về lịch buổi/hoạt động, thành viên, ai tham gia, chi phí/công nợ, hoặc thêm người vào buổi nhưng bạn không có đủ dữ liệu, hãy hỏi lại ngắn gọn để làm rõ.",
     "Không tự bịa dữ liệu lịch, công nợ, thành viên nếu không được cung cấp trong tin nhắn.",
     "TUYỆT ĐỐI KHÔNG nói rằng bạn ĐÃ thực hiện/cập nhật/ghi nhận/đánh dấu bất kỳ hành động nào — bạn không có khả năng thao tác dữ liệu; nếu người dùng yêu cầu một thao tác, hãy nói bạn chưa hỗ trợ và hướng dẫn làm trên web TingTing.",
     "Nếu tóm tắt nhóm có mô tả phong cách/tính cách chat chung của nhóm, hãy bắt chước tông giọng đó (mức độ đùa giỡn, thân mật, teencode, emoji...) để hợp không khí nhóm hơn.",
@@ -1528,7 +1544,7 @@ async function pickSessionWithAI(
     .join("\n");
   const system = [
     `Hôm nay là ${vnToday()} (giờ Việt Nam).`,
-    "Người dùng đang nói tới MỘT buổi cầu lông trong DANH SÁCH cho sẵn. Hãy chọn đúng buổi đó.",
+    "Người dùng đang nói tới MỘT buổi (hoạt động chung của nhóm) trong DANH SÁCH cho sẵn. Hãy chọn đúng buổi đó.",
     "So khớp theo ngày, giờ, tên sân trong câu của người dùng (bỏ dấu, không phân biệt hoa thường).",
     'CHỈ trả về JSON: {"id": "<id buổi khớp nhất>"} hoặc {"id": null} nếu không buổi nào khớp rõ ràng hoặc còn mơ hồ.',
     "Tuyệt đối chỉ dùng id có trong danh sách, không bịa id mới.",
@@ -1806,10 +1822,11 @@ async function handleQuery(
     };
   }
 
-  const group = await env.DB.prepare("SELECT name FROM groups WHERE id = ?")
+  const group = await env.DB.prepare("SELECT name, description FROM groups WHERE id = ?")
     .bind(link.group_id)
-    .first<{ name: string }>();
+    .first<{ name: string; description: string | null }>();
   const groupName = group?.name ?? "nhóm";
+  const groupDescription = group?.description ?? null;
   const groupId = link.group_id;
 
   // Alias /alias của thread: resolve "tôi" và tên Messenger về đúng thành viên web.
@@ -1829,6 +1846,7 @@ async function handleQuery(
         context,
         aliases,
         groupSummary,
+        groupDescription,
       });
       if (agentReply) return agentReply;
     } catch (err) {
@@ -1868,7 +1886,7 @@ async function handleQuery(
     case "my_debts":
       return replyMyDebts(env, groupId, groupName, actor, parsed.names, aliases);
     case "chat":
-      return replyNaturalChat(env, groupName, text, actor, context, groupSummary);
+      return replyNaturalChat(env, groupName, text, actor, context, groupSummary, groupDescription);
     default:
       return replySessions(env, groupId, groupName, parsed.intent, parsed.session);
   }
@@ -1882,10 +1900,11 @@ export async function handleGroupBotQuery(
   context?: BotContextMessage[],
   groupSummary?: string
 ): Promise<BotReply> {
-  const group = await env.DB.prepare("SELECT name FROM groups WHERE id = ?")
+  const group = await env.DB.prepare("SELECT name, description FROM groups WHERE id = ?")
     .bind(groupId)
-    .first<{ name: string }>();
+    .first<{ name: string; description: string | null }>();
   const groupName = group?.name ?? "nhom";
+  const groupDescription = group?.description ?? null;
 
   // AI-agent (tool-calling) path — thử trước; null nghĩa là agent không xử lý được → rơi về intent cũ.
   if (env.DEEPSEEK_API_KEY?.trim() && !isRegexOnlyCommand(text) && (await isBotAgentEnabled(env, groupId))) {
@@ -1897,6 +1916,7 @@ export async function handleGroupBotQuery(
         actor,
         context,
         groupSummary,
+        groupDescription,
       });
       if (agentReply) return agentReply;
     } catch (err) {
@@ -1936,7 +1956,7 @@ export async function handleGroupBotQuery(
     case "my_debts":
       return replyMyDebts(env, groupId, groupName, actor, parsed.names, undefined);
     case "chat":
-      return replyNaturalChat(env, groupName, text, actor, context, groupSummary);
+      return replyNaturalChat(env, groupName, text, actor, context, groupSummary, groupDescription);
     default:
       return replySessions(env, groupId, groupName, parsed.intent, parsed.session);
   }
@@ -3502,11 +3522,11 @@ bot.post("/summarize", async (c) => {
   const model = c.env.DEEPSEEK_MODEL?.trim() || DEFAULT_DEEPSEEK_MODEL;
 
   const system = [
-    "Bạn phân tích đoạn chat nhóm cầu lông tiếng Việt và trả về JSON cập nhật gồm 3 trường.",
+    "Bạn phân tích đoạn chat tiếng Việt của một nhóm bạn (nhóm có thể chơi thể thao, đi ăn uống, du lịch, mua chung, đu idol...) và trả về JSON cập nhật gồm 3 trường.",
     prevSummary || prevGroupStyle
       ? "Bạn được cung cấp TÓM TẮT CŨ và PHONG CÁCH CHAT CŨ của nhóm — hãy CẬP NHẬT chúng dựa trên ĐOẠN CHAT MỚI, giữ lại thông tin quan trọng từ bản cũ."
       : "Tóm tắt nhóm và mô tả phong cách chat chung dựa trên đoạn chat dưới đây.",
-    "(1) summary: BẢN NGỮ CẢNH CHI TIẾT để CHATBOT đọc và hiểu, đủ để trả lời câu hỏi sau — GỘP cũ + mới. Ghi rõ, gạch đầu dòng, BỎ mục nào không có dữ liệu, KHÔNG bịa: nội dung/chủ đề chính đang bàn; bối cảnh quan trọng cần nhớ; các quyết định/kết luận đã chốt; thuật ngữ - tên riêng - biệt danh thành viên; việc cần làm tiếp theo; số liệu quan trọng (giờ giấc, sân bãi, tiền nong, tỉ số...). Tối đa ~2000 ký tự.",
+    "(1) summary: BẢN NGỮ CẢNH CHI TIẾT để CHATBOT đọc và hiểu, đủ để trả lời câu hỏi sau — GỘP cũ + mới. Ghi rõ, gạch đầu dòng, BỎ mục nào không có dữ liệu, KHÔNG bịa. Dòng ĐẦU TIÊN luôn là \"Mảng hoạt động: ...\" (nhóm chủ yếu làm gì chung — vd cầu lông, ăn uống, mua sắm chung, đu idol, du lịch; ghi \"chưa rõ\" nếu chưa đủ dấu hiệu). Sau đó: nội dung/chủ đề chính đang bàn; bối cảnh quan trọng cần nhớ; các quyết định/kết luận đã chốt; thuật ngữ - tên riêng - biệt danh thành viên; việc cần làm tiếp theo; số liệu quan trọng (giờ giấc, địa điểm, tiền nong, ai ứng ai nợ...). Tối đa ~2000 ký tự.",
     "(2) humanSummary: BẢN RECAP NGẮN cho NGƯỜI trong nhóm đọc lướt để hiểu nhanh chuyện gì vừa xảy ra — 2 đến 5 gạch đầu dòng, câu ngắn gọn thân thiện, tối đa ~600 ký tự.",
     "(3) groupStyle: mô tả TÍNH CÁCH/PHONG CÁCH CHAT CHUNG của cả nhóm (không phải từng người) — mức độ đùa giỡn, thân mật, hay dùng teencode/emoji, không khí chung của nhóm (tối đa 2-3 câu), để bot bắt chước tông giọng khi trả lời cho hợp không khí nhóm.",
     'Trả về JSON: {"summary": "...", "humanSummary": "...", "groupStyle": "..."}.',

@@ -939,7 +939,11 @@ export default function MembersPage() {
               </div>
               <div>
                 <label className="mb-1 block text-sm font-medium text-gray-700">Mô tả</label>
-                <Input value={editDescription} onChange={(event) => setEditDescription(event.target.value)} />
+                <Input
+                  value={editDescription}
+                  onChange={(event) => setEditDescription(event.target.value)}
+                  placeholder="Nhóm làm gì chung? VD: đánh cầu tối T3, đi ăn cuối tuần, gom order album..."
+                />
               </div>
               <Button size="sm" onClick={handleSaveGroupInfo} disabled={savingGroup || !editName.trim()}>
                 {savingGroup ? "Đang lưu..." : "Lưu thay đổi"}
@@ -1351,7 +1355,7 @@ export default function MembersPage() {
             <Input
               value={groupDescription}
               onChange={(event) => setGroupDescription(event.target.value)}
-              placeholder="Khu vực, lịch hẹn, địa điểm quen..."
+              placeholder="Nhóm làm gì chung? VD: đánh cầu tối T3, đi ăn cuối tuần, gom order album..."
             />
           </div>
           <div className="flex gap-2 pt-2">

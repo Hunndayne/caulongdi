@@ -6,7 +6,7 @@
 //              replyMembers, replyAttendees, replyAddMembers, replyRemoveMembers,
 //              replyCreateSession, replyUpdateSession, replyCancelSession, replyStats,
 //              replyCosts, replyAddCost, replyUpdateCost, replyMarkPaid, replyMyDebts,
-//              replySessions
+//              replySessions, buildGroupRolePrompt
 //   khác:      SELF_NAME_TOKEN, isSelfReference (để đổi cách tự xưng -> token self, dùng lại
 //              resolver alias/actor sẵn có trong reply*)
 //
@@ -40,6 +40,7 @@ import {
   replyMarkPaid,
   replyMyDebts,
   replySessions,
+  buildGroupRolePrompt,
   SELF_NAME_TOKEN,
   isSelfReference,
 } from "./bot";
@@ -52,6 +53,7 @@ export interface RunAgentArgs {
   context?: BotContextMessage[];
   aliases?: Map<string, string>;
   groupSummary?: string;
+  groupDescription?: string | null;
 }
 
 // deepseek-chat/deepseek-reasoner (tên cũ) bị retire hẳn sau 24/7/2026 — dùng tên model V4 mới.
@@ -197,17 +199,24 @@ async function resolveSelfName(
 
 // --- System prompt ---
 
-function buildSystemPrompt(groupName: string, roster: string[], selfName: string | undefined, groupSummary?: string): string {
+function buildSystemPrompt(
+  groupName: string,
+  roster: string[],
+  selfName: string | undefined,
+  groupSummary?: string,
+  groupDescription?: string | null
+): string {
   const now = vnNow();
   const weekdayNames = ["Chủ nhật", "Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7"];
   const lines = [
-    `Bạn là "Ting AI" — trợ lý AI trong group chat Messenger của nhóm cầu lông "${groupName}" trên TingTing.`,
+    buildGroupRolePrompt(groupName, groupDescription),
+    "Bạn đang trả lời trong group chat của nhóm.",
     `Hôm nay là ${weekdayNames[now.getUTCDay()]}, ngày ${vnToday()} (giờ Việt Nam).`,
     "Bạn có các tool (function calling) để tra cứu và thao tác DỮ LIỆU THẬT của nhóm (lịch buổi, thành viên, chi phí, công nợ). LUÔN gọi tool để lấy dữ liệu hoặc thực hiện thao tác — TUYỆT ĐỐI không tự bịa lịch, tên người, số tiền, công nợ khi chưa gọi tool.",
-    "Nếu người dùng yêu cầu nhiều việc trong một câu (ví dụ 'tạo kèo mai rồi thêm tôi vào, ghi tiền sân 200k'), hãy gọi tuần tự nhiều tool ở các lượt liên tiếp cho tới khi xong hết, không cần hỏi lại giữa chừng trừ khi thiếu thông tin bắt buộc (ví dụ tạo buổi mà chưa rõ ngày/giờ/sân).",
+    "Nếu người dùng yêu cầu nhiều việc trong một câu (ví dụ 'tạo buổi mai rồi thêm tôi vào, ghi tiền sân 200k' hay 'ghi bữa lẩu 850k Nam trả, chia đều'), hãy gọi tuần tự nhiều tool ở các lượt liên tiếp cho tới khi xong hết, không cần hỏi lại giữa chừng trừ khi thiếu thông tin bắt buộc (ví dụ tạo buổi mà chưa rõ ngày/giờ/địa điểm).",
     "Sau khi có đủ kết quả từ tool, trả lời NGẮN GỌN và TỰ NHIÊN bằng tiếng Việt (khoảng 1-6 câu tuỳ độ phức tạp), như đang nhắn tin trong group chat — không lặp lại nguyên văn JSON hay log kỹ thuật, không nói những cụm máy móc kiểu \"tool trả về\".",
     "Ngữ cảnh gần đây BAO GỒM cả những câu chính bạn (assistant) vừa nói ở lượt trước. Nếu tin hiện tại của người dùng là câu TRẢ LỜI hoặc phản hồi cho điều bạn vừa hỏi/đề nghị (kể cả khi họ nói ngắn/mơ hồ như \"ừ\", \"có\", \"ok\", \"giúp mình đi\", \"làm đi\"), hãy hiểu và TIẾP NỐI đúng việc đó — ví dụ bạn vừa hỏi \"cần nhắc X trả nợ không?\" mà họ đáp \"ừ giúp mình\" thì tiến hành nhắc, đừng trả lời chung chung như chưa từng hỏi.",
-    "LƯU Ý: chỉ vài tin gần nhất được đưa sẵn vào đây để tiết kiệm. Nếu tin hiện tại quá ngắn/mơ hồ (vd \"chọn sân đi\", \"cái đó\", \"như trên\") và vài tin sẵn có VẪN chưa đủ để hiểu cả nhóm đang bàn gì, hãy gọi tool get_recent_messages để lục lại tối đa 20 tin trước khi trả lời — đừng vội hỏi lại \"ý gì\" khi chưa lục.",
+    "LƯU Ý: chỉ vài tin gần nhất được đưa sẵn vào đây để tiết kiệm. Nếu tin hiện tại quá ngắn/mơ hồ (vd \"chọn quán đi\", \"cái đó\", \"như trên\") và vài tin sẵn có VẪN chưa đủ để hiểu cả nhóm đang bàn gì, hãy gọi tool get_recent_messages để lục lại tối đa 20 tin trước khi trả lời — đừng vội hỏi lại \"ý gì\" khi chưa lục.",
     "KHÔNG dùng Markdown (không **in đậm**, không # tiêu đề, không `code`, không [text](link)) — Messenger hiển thị nguyên ký tự đó nên xấu; chỉ dùng chữ thuần, xuống dòng và emoji.",
     roster.length
       ? `DANH SÁCH THÀNH VIÊN của nhóm trên web (chỉ dùng làm THAM CHIẾU để khớp tên, KHÔNG dùng để trả lời trực tiếp): ${roster.join("; ")}. Khi điền tham số tên cho tool (names, memberNames, payerName, consumerNames, participantNames...), nếu nhận ra người dùng đang nói tới MỘT người trong danh sách trên thì PHẢI ghi lại ĐÚNG NGUYÊN VĂN tên trong danh sách — kể cả khi họ gõ thiếu dấu, sai thứ tự họ tên, hay gọi tên tắt. Nếu không chắc hoặc khớp nhiều người, giữ nguyên văn người dùng gõ; TUYỆT ĐỐI không bịa tên không có trong danh sách. QUAN TRỌNG: khi người dùng HỎI về danh sách thành viên (nhóm có những ai, liệt kê thành viên, có bao nhiêu người, thông tin mới nhất về thành viên...), TUYỆT ĐỐI không đọc lại danh sách tham chiếu trên hay danh sách cũ trong ngữ cảnh chat — PHẢI gọi tool list_members để lấy dữ liệu thật mới nhất rồi mới trả lời.`
@@ -219,7 +228,7 @@ function buildSystemPrompt(groupName: string, roster: string[], selfName: string
     'QUY TẮC VỀ THANH TOÁN/CÔNG NỢ: bạn KHÔNG có khả năng đánh dấu/chốt việc trả hay nhận tiền — việc đó chỉ làm được trên web. Vì vậy TUYỆT ĐỐI không nói kiểu "đã xác nhận", "đã ghi nhận", "tao nhận đủ rồi", "đã chốt" cho bất kỳ khoản trả/nhận tiền nào. Khi ai đó báo "tôi đã trả" / "tôi nhận được tiền của X rồi", chỉ được: (1) đọc lại trạng thái ĐANG LƯU (ai đã bấm "đã báo chuyển", ai còn nợ) bằng tool, và (2) nhắc rằng muốn chốt thì tự xác nhận trên web (đưa link buổi). Không được diễn giải trạng thái cũ thành như thể bạn vừa xác nhận.',
     'QUY TẮC XÁC NHẬN CHO THAO TÁC NGUY HIỂM: hai tool "cancel_session" (hủy buổi) và "update_cost" khi xoá khoản chi (deleteCost=true) không thể hoàn tác. Lần đầu người dùng yêu cầu, gọi tool đó với confirmed=false (hoặc bỏ trống) để lấy thông tin buổi/khoản chi, rồi TỰ VIẾT một câu hỏi ngắn gọn xác nhận lại với người dùng — KHÔNG tự ý thực hiện luôn. CHỈ khi người dùng đã đồng ý rõ ràng ở tin nhắn sau đó (xem lại các lượt hội thoại trước) mới gọi LẠI đúng tool đó với confirmed=true để thực sự hủy/xóa. Các thao tác ghi khác (thêm/rút người, ghi chi phí, tạo/sửa buổi, sửa khoản chi không xoá) thực hiện luôn, không cần hỏi xác nhận trước.',
     groupSummary
-      ? `Tóm tắt phong cách/ngữ cảnh chat của nhóm: ${groupSummary}. Có thể bắt chước tông giọng này (mức đùa giỡn, thân mật, teencode, emoji...) khi hợp lý.`
+      ? `Tóm tắt phong cách/ngữ cảnh chat của nhóm: ${groupSummary}. Dựa vào đây (nhất là dòng "Mảng hoạt động" nếu có) để hiểu nhóm đang làm gì chung, và có thể bắt chước tông giọng này (mức đùa giỡn, thân mật, teencode, emoji...) khi hợp lý.`
       : "",
   ].filter(Boolean);
   return lines.join(" ");
@@ -262,11 +271,11 @@ function buildUserMessage(args: RunAgentArgs): string {
 const SESSION_REF_SCHEMA = {
   type: "object",
   description:
-    "Buổi cầu lông đang nói tới. Bỏ trống toàn bộ (không truyền field nào) nếu người dùng không chỉ rõ buổi nào — hệ thống sẽ tự chọn buổi gần nhất phù hợp.",
+    "Buổi (hoạt động chung của nhóm: kèo chơi, bữa ăn, chuyến đi, đợt mua...) đang nói tới. Bỏ trống toàn bộ (không truyền field nào) nếu người dùng không chỉ rõ buổi nào — hệ thống sẽ tự chọn buổi gần nhất phù hợp.",
   properties: {
     date: { type: "string", description: 'Ngày của buổi, định dạng YYYY-MM-DD, ví dụ "2026-08-20".' },
     startTime: { type: "string", description: 'Giờ bắt đầu của buổi, định dạng HH:MM 24 giờ, ví dụ "17:00".' },
-    venue: { type: "string", description: "Tên sân/địa điểm của buổi." },
+    venue: { type: "string", description: "Địa điểm của buổi (sân, quán, cửa hàng, sàn online...)." },
   },
 } as const;
 
@@ -286,7 +295,7 @@ export function buildTools(): ToolDef[] {
       function: {
         name: "find_sessions",
         description:
-          "Tra danh sách buổi chơi cầu lông theo mốc thời gian (kèo sắp tới, hôm nay, tuần này, gần đây...), hoặc theo một ngày/sân cụ thể nếu người dùng nêu rõ.",
+          "Tra danh sách buổi/hoạt động chung của nhóm theo mốc thời gian (sắp tới, hôm nay, tuần này, gần đây...), hoặc theo một ngày/địa điểm cụ thể nếu người dùng nêu rõ.",
         parameters: {
           type: "object",
           properties: {
@@ -297,7 +306,7 @@ export function buildTools(): ToolDef[] {
                 "next=buổi kế tiếp gần nhất; upcoming=các buổi sắp tới; today=hôm nay; week=tuần này; recent=các buổi gần đây/lịch sử.",
             },
             date: { type: "string", description: 'Chỉ điền khi người dùng hỏi về một ngày cụ thể, định dạng YYYY-MM-DD.' },
-            venue: { type: "string", description: "Chỉ điền khi người dùng hỏi về một sân/địa điểm cụ thể." },
+            venue: { type: "string", description: "Chỉ điền khi người dùng hỏi về một địa điểm cụ thể." },
           },
           required: ["scope"],
         },
@@ -307,13 +316,13 @@ export function buildTools(): ToolDef[] {
       type: "function",
       function: {
         name: "get_session_attendees",
-        description: "Xem ai (thành viên nào) đang tham gia một buổi chơi cụ thể.",
+        description: "Xem ai (thành viên nào) đang tham gia một buổi cụ thể.",
         parameters: {
           type: "object",
           properties: {
             date: { type: "string", description: "Ngày của buổi, định dạng YYYY-MM-DD." },
             startTime: { type: "string", description: "Giờ bắt đầu của buổi, định dạng HH:MM." },
-            venue: { type: "string", description: "Tên sân/địa điểm của buổi." },
+            venue: { type: "string", description: "Địa điểm của buổi." },
           },
         },
       },
@@ -359,7 +368,7 @@ export function buildTools(): ToolDef[] {
       type: "function",
       function: {
         name: "get_stats",
-        description: "Xem thống kê tổng hợp nhiều buổi: số buổi đã chơi, ai tham gia nhiều nhất, tổng chi tiêu theo tuần/tháng/năm.",
+        description: "Xem thống kê tổng hợp nhiều buổi: số buổi đã diễn ra, ai tham gia nhiều nhất, tổng chi tiêu theo tuần/tháng/năm.",
         parameters: {
           type: "object",
           properties: {
@@ -377,7 +386,7 @@ export function buildTools(): ToolDef[] {
       function: {
         name: "add_members",
         description:
-          "Thêm một hoặc nhiều người vào một buổi chơi (đăng ký tham gia). Có thể thêm cả KHÁCH VÃNG LAI — người KHÔNG có trong danh sách thành viên nhóm (bạn bè dẫn theo, khách một buổi). Khi người dùng nói 'thêm vãng lai', 'thêm khách', hoặc muốn thêm một cái tên rõ ràng KHÔNG có trong danh sách thành viên, hãy đặt asWalkin=true và ghi đúng tên họ gõ (đừng ép khớp về tên thành viên khác) — không cần người đó phải là thành viên nhóm trước.",
+          "Thêm một hoặc nhiều người vào một buổi (đăng ký tham gia / góp phần). Có thể thêm cả KHÁCH VÃNG LAI — người KHÔNG có trong danh sách thành viên nhóm (bạn bè dẫn theo, khách một buổi). Khi người dùng nói 'thêm vãng lai', 'thêm khách', hoặc muốn thêm một cái tên rõ ràng KHÔNG có trong danh sách thành viên, hãy đặt asWalkin=true và ghi đúng tên họ gõ (đừng ép khớp về tên thành viên khác) — không cần người đó phải là thành viên nhóm trước.",
         parameters: {
           type: "object",
           properties: {
@@ -407,7 +416,7 @@ export function buildTools(): ToolDef[] {
       type: "function",
       function: {
         name: "remove_members",
-        description: "Rút một hoặc nhiều người ra khỏi một buổi chơi (huỷ tham gia).",
+        description: "Rút một hoặc nhiều người ra khỏi một buổi (huỷ tham gia).",
         parameters: {
           type: "object",
           properties: {
@@ -426,14 +435,14 @@ export function buildTools(): ToolDef[] {
       type: "function",
       function: {
         name: "create_session",
-        description: "Tạo một buổi/kèo chơi cầu lông mới.",
+        description: "Tạo một buổi/hoạt động chung mới của nhóm (kèo chơi, bữa ăn, chuyến đi, đợt gom đơn/mua chung...).",
         parameters: {
           type: "object",
           properties: {
             date: { type: "string", description: "Ngày buổi, định dạng YYYY-MM-DD (quy đổi 'ngày mai', 'thứ 7'... theo hôm nay)." },
             startTime: { type: "string", description: "Giờ bắt đầu, định dạng HH:MM 24 giờ." },
             endTime: { type: "string", description: "Giờ kết thúc (nếu người dùng nêu), định dạng HH:MM 24 giờ." },
-            venue: { type: "string", description: "Tên sân/địa điểm." },
+            venue: { type: "string", description: "Địa điểm (sân, quán, cửa hàng, sàn online...). Với đợt mua online không có địa điểm cụ thể thì ghi tên shop/sàn." },
             participantNames: {
               type: "array",
               items: { type: "string" },
@@ -448,7 +457,7 @@ export function buildTools(): ToolDef[] {
       type: "function",
       function: {
         name: "update_session",
-        description: "Sửa thông tin (ngày/giờ bắt đầu/giờ kết thúc/sân) của một buổi ĐÃ CÓ.",
+        description: "Sửa thông tin (ngày/giờ bắt đầu/giờ kết thúc/địa điểm) của một buổi ĐÃ CÓ.",
         parameters: {
           type: "object",
           properties: {
@@ -460,7 +469,7 @@ export function buildTools(): ToolDef[] {
                 date: { type: "string", description: "Ngày mới, định dạng YYYY-MM-DD." },
                 startTime: { type: "string", description: "Giờ bắt đầu mới, định dạng HH:MM." },
                 endTime: { type: "string", description: "Giờ kết thúc mới, định dạng HH:MM." },
-                venue: { type: "string", description: "Sân/địa điểm mới." },
+                venue: { type: "string", description: "Địa điểm mới." },
               },
             },
           },
@@ -473,7 +482,7 @@ export function buildTools(): ToolDef[] {
       function: {
         name: "cancel_session",
         description:
-          "NGUY HIỂM — hủy/xoá hẳn một buổi chơi (kèm toàn bộ chi phí/công nợ của buổi đó). Không thể hoàn tác. Bắt buộc phải hỏi xác nhận người dùng trước khi thực sự thực hiện (xem QUY TẮC XÁC NHẬN).",
+          "NGUY HIỂM — hủy/xoá hẳn một buổi (kèm toàn bộ chi phí/công nợ của buổi đó). Không thể hoàn tác. Bắt buộc phải hỏi xác nhận người dùng trước khi thực sự thực hiện (xem QUY TẮC XÁC NHẬN).",
         parameters: {
           type: "object",
           properties: {
@@ -490,11 +499,11 @@ export function buildTools(): ToolDef[] {
       type: "function",
       function: {
         name: "add_cost",
-        description: "Ghi một khoản chi phí VỪA phát sinh vào một buổi (tiền sân, tiền cầu, tiền nước...).",
+        description: "Ghi một khoản chi phí VỪA phát sinh vào một buổi (tiền sân, tiền ăn, tiền hàng, phí ship, vé, quà...).",
         parameters: {
           type: "object",
           properties: {
-            label: { type: "string", description: 'Tên khoản chi, ví dụ "tiền sân", "ống cầu", "tiền ăn".' },
+            label: { type: "string", description: 'Tên khoản chi, ví dụ "tiền sân", "tiền lẩu", "album", "phí ship".' },
             amount: { type: "number", description: "Số tiền VND TUYỆT ĐỐI (không viết tắt), ví dụ 240k → 240000." },
             quantity: { type: "integer", description: "Số lượng, mặc định 1." },
             payerName: {
@@ -775,7 +784,7 @@ export async function runAgent(env: Env, args: RunAgentArgs): Promise<BotReply |
     const selfName = await resolveSelfName(env, args, roster).catch(() => undefined);
 
     const messages: ChatMessage[] = [
-      { role: "system", content: buildSystemPrompt(args.groupName, roster, selfName, args.groupSummary) },
+      { role: "system", content: buildSystemPrompt(args.groupName, roster, selfName, args.groupSummary, args.groupDescription) },
       ...buildContextMessages(args.context),
       { role: "user", content: buildUserMessage(args) },
     ];

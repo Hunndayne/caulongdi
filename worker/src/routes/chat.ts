@@ -267,8 +267,8 @@ async function generateGroupSummaryWithAI(
   if (!chatLog.trim()) return null;
 
   const system = [
-    "Bạn phân tích đoạn chat nhóm cầu lông tiếng Việt và trả về JSON gồm 3 trường.",
-    "(1) summary: BẢN NGỮ CẢNH CHI TIẾT để CHATBOT đọc và hiểu, đủ để trả lời câu sau. Ghi rõ, gạch đầu dòng, BỎ mục nào không có dữ liệu, KHÔNG bịa: nội dung/chủ đề chính đang bàn; bối cảnh quan trọng cần nhớ; các quyết định/kết luận đã chốt; thuật ngữ - tên riêng - biệt danh thành viên; việc cần làm tiếp theo; số liệu quan trọng (giờ giấc, sân bãi, tiền nong, tỉ số...). Tối đa ~2000 ký tự.",
+    "Bạn phân tích đoạn chat tiếng Việt của một nhóm bạn (nhóm có thể chơi thể thao, đi ăn uống, du lịch, mua chung, đu idol...) và trả về JSON gồm 3 trường.",
+    "(1) summary: BẢN NGỮ CẢNH CHI TIẾT để CHATBOT đọc và hiểu, đủ để trả lời câu sau. Ghi rõ, gạch đầu dòng, BỎ mục nào không có dữ liệu, KHÔNG bịa. Dòng ĐẦU TIÊN luôn là \"Mảng hoạt động: ...\" (nhóm chủ yếu làm gì chung — vd cầu lông, ăn uống, mua sắm chung, đu idol, du lịch; ghi \"chưa rõ\" nếu chưa đủ dấu hiệu). Sau đó: nội dung/chủ đề chính đang bàn; bối cảnh quan trọng cần nhớ; các quyết định/kết luận đã chốt; thuật ngữ - tên riêng - biệt danh thành viên; việc cần làm tiếp theo; số liệu quan trọng (giờ giấc, địa điểm, tiền nong, ai ứng ai nợ...). Tối đa ~2000 ký tự.",
     "(2) humanSummary: BẢN RECAP NGẮN cho NGƯỜI đọc lướt để hiểu nhanh chuyện gì vừa xảy ra — 2 đến 5 gạch đầu dòng, câu ngắn gọn thân thiện, tối đa ~600 ký tự.",
     "(3) groupStyle: mô tả TÍNH CÁCH/PHONG CÁCH CHAT CHUNG của cả nhóm (không phải từng người) — mức độ đùa giỡn, thân mật, hay dùng teencode/emoji, không khí chung (tối đa 2-3 câu), để bot bắt chước tông giọng.",
     'Trả về JSON: {"summary": "...", "humanSummary": "...", "groupStyle": "..."}.',
