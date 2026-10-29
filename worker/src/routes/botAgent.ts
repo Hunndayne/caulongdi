@@ -61,13 +61,19 @@ export interface RunAgentArgs {
 const DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-flash";
 const DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com";
 
-const MAX_ROUNDS = 4;
+const MAX_ROUNDS = 5;
 // Số tin nhét mặc định vào prompt mỗi lượt (đủ cho câu trả lời/xác nhận ngắn "ừ", "ok hủy").
 // Muốn xem thảo luận sâu hơn, model tự gọi tool get_recent_messages để tiết kiệm token.
 const MAX_CONTEXT_MESSAGES = 3;
 // Số tin tối đa trả về khi model chủ động lục lại lịch sử qua tool.
 const MAX_LOOKBACK_MESSAGES = 20;
 const MAX_REPLY_CHARS = 1600;
+const WEB_SEARCH_DEFAULT_COUNT = 5;
+const WEB_SEARCH_MAX_COUNT = 10;
+const WEB_SEARCH_QUERY_MAX_CHARS = 128;
+const WEB_SEARCH_SUMMARY_MAX_CHARS = 700;
+const WEB_FETCH_MAX_CHARS = 6000;
+const WEB_TOOL_TIMEOUT_MS = 12000;
 
 // --- Kiểu dữ liệu cho vòng lặp tool-calling kiểu OpenAI ---
 
@@ -213,6 +219,7 @@ function buildSystemPrompt(
     "Bạn đang trả lời trong group chat của nhóm.",
     `Hôm nay là ${weekdayNames[now.getUTCDay()]}, ngày ${vnToday()} (giờ Việt Nam).`,
     "Bạn có các tool (function calling) để tra cứu và thao tác DỮ LIỆU THẬT của nhóm (lịch buổi, thành viên, chi phí, công nợ). LUÔN gọi tool để lấy dữ liệu hoặc thực hiện thao tác — TUYỆT ĐỐI không tự bịa lịch, tên người, số tiền, công nợ khi chưa gọi tool.",
+    "Bạn cũng có tool web_search (tìm kiếm thông tin trực tuyến trên Internet qua DeepSeek Search API) và web_fetch (đọc chi tiết nội dung một trang web theo URL qua DeepSeek Fetch API). Khi người dùng hỏi thông tin thực tế bên ngoài nhóm (địa chỉ/giá sân bãi, tìm quán ăn/cà phê, giá món hàng mua chung, lịch sự kiện/concert, thời tiết, tin tức, tỷ giá...) hoặc gửi một đường link nhờ xem/tóm tắt, hãy chủ động gọi web_search / web_fetch để lấy thông tin mới và chính xác thay vì đoán mò. Ngược lại, mọi câu hỏi về dữ liệu nội bộ của nhóm (lịch buổi, thành viên, chi phí, công nợ) PHẢI dùng các tool nội bộ của nhóm, không dùng web_search.",
     "Nếu người dùng yêu cầu nhiều việc trong một câu (ví dụ 'tạo buổi mai rồi thêm tôi vào, ghi tiền sân 200k' hay 'ghi bữa lẩu 850k Nam trả, chia đều'), hãy gọi tuần tự nhiều tool ở các lượt liên tiếp cho tới khi xong hết, không cần hỏi lại giữa chừng trừ khi thiếu thông tin bắt buộc (ví dụ tạo buổi mà chưa rõ ngày/giờ/địa điểm).",
     "Sau khi có đủ kết quả từ tool, trả lời NGẮN GỌN và TỰ NHIÊN bằng tiếng Việt (khoảng 1-6 câu tuỳ độ phức tạp), như đang nhắn tin trong group chat — không lặp lại nguyên văn JSON hay log kỹ thuật, không nói những cụm máy móc kiểu \"tool trả về\".",
     "Ngữ cảnh gần đây BAO GỒM cả những câu chính bạn (assistant) vừa nói ở lượt trước. Nếu tin hiện tại của người dùng là câu TRẢ LỜI hoặc phản hồi cho điều bạn vừa hỏi/đề nghị (kể cả khi họ nói ngắn/mơ hồ như \"ừ\", \"có\", \"ok\", \"giúp mình đi\", \"làm đi\"), hãy hiểu và TIẾP NỐI đúng việc đó — ví dụ bạn vừa hỏi \"cần nhắc X trả nợ không?\" mà họ đáp \"ừ giúp mình\" thì tiến hành nhắc, đừng trả lời chung chung như chưa từng hỏi.",
@@ -281,6 +288,47 @@ const SESSION_REF_SCHEMA = {
 
 export function buildTools(): ToolDef[] {
   return [
+    {
+      type: "function",
+      function: {
+        name: "web_search",
+        description:
+          "Tìm kiếm thông tin thực tế trên Internet qua DeepSeek Search API. Dùng khi người dùng hỏi thông tin bên ngoài dữ liệu nhóm: tìm địa chỉ/giá sân bãi, quán ăn/cà phê, địa điểm du lịch, giá sản phẩm mua chung, lịch sự kiện/concert, thời tiết, tin tức, tỷ giá... KHÔNG dùng cho dữ liệu nội bộ nhóm (lịch buổi, thành viên, chi phí, công nợ).",
+        parameters: {
+          type: "object",
+          properties: {
+            query: {
+              type: "string",
+              description:
+                "Câu truy vấn tìm kiếm ngắn gọn, súc tích (tối đa 128 ký tự). Hỗ trợ toán tử site:, -site:, hoặc cụm từ trong ngoặc kép.",
+            },
+            count: {
+              type: "integer",
+              description: "Số kết quả muốn lấy (1 đến 10, mặc định 5).",
+            },
+          },
+          required: ["query"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "web_fetch",
+        description:
+          "Đọc nội dung chi tiết của một trang web cụ thể theo URL (chuyển thành văn bản sạch qua DeepSeek Fetch API). Dùng khi người dùng gửi trực tiếp một đường link (bài viết, menu quán, trang sản phẩm, link sự kiện...) và nhờ xem/tóm tắt/lấy thông tin, hoặc khi cần đọc sâu một URL từ kết quả web_search.",
+        parameters: {
+          type: "object",
+          properties: {
+            url: {
+              type: "string",
+              description: "Địa chỉ URL đầy đủ (bắt đầu bằng http:// hoặc https://) của trang web cần đọc.",
+            },
+          },
+          required: ["url"],
+        },
+      },
+    },
     {
       type: "function",
       function: {
@@ -583,6 +631,164 @@ function selfifyName(name: string | undefined, args: RunAgentArgs): string | und
   return selfifyNames([name], args)[0];
 }
 
+// --- DeepSeek Search & Fetch API (/v1/tools/search, /v1/tools/fetch) ---
+
+type DeepSeekSearchResultItem = {
+  rerank_score?: number;
+  title?: string;
+  url?: string;
+  snippet?: string;
+  summary?: string;
+  content?: string;
+  site_name?: string;
+};
+
+type DeepSeekSearchResponse = {
+  results?: DeepSeekSearchResultItem[];
+};
+
+type DeepSeekFetchResponse = {
+  title?: string;
+  content?: string;
+};
+
+function buildToolsEndpointUrl(baseUrl: string | undefined, endpoint: "search" | "fetch"): string {
+  const clean = (baseUrl?.trim() || DEFAULT_DEEPSEEK_BASE_URL).replace(/\/+$/, "");
+  const v1Root = clean.endsWith("/v1") ? clean : `${clean}/v1`;
+  return `${v1Root}/tools/${endpoint}`;
+}
+
+function isDisallowedFetchHost(hostname: string): boolean {
+  const h = hostname.trim().toLowerCase().replace(/^\[|\]$/g, "");
+  if (!h || h === "localhost" || h.endsWith(".local") || h.endsWith(".internal")) return true;
+  if (h === "::1" || h === "0.0.0.0" || h.startsWith("127.") || h.startsWith("10.") || h.startsWith("192.168.") || h.startsWith("169.254.")) {
+    return true;
+  }
+  const m172 = h.match(/^172\.(\d{1,3})\./);
+  if (m172) {
+    const second = Number(m172[1]);
+    if (second >= 16 && second <= 31) return true;
+  }
+  return false;
+}
+
+async function executeWebSearch(
+  env: Env,
+  rawQuery: string | undefined,
+  rawCount: number | undefined,
+  originalQuestion: string
+): Promise<string> {
+  const apiKey = env.DEEPSEEK_API_KEY?.trim();
+  if (!apiKey) return "LỖI: chưa cấu hình DEEPSEEK_API_KEY.";
+
+  const query = (rawQuery ?? "").replace(/\s+/g, " ").trim().slice(0, WEB_SEARCH_QUERY_MAX_CHARS);
+  if (!query) return "LỖI: thiếu từ khoá tìm kiếm (query).";
+
+  const count = rawCount
+    ? Math.max(1, Math.min(WEB_SEARCH_MAX_COUNT, Math.floor(rawCount)))
+    : WEB_SEARCH_DEFAULT_COUNT;
+  const oriQuestion = originalQuestion
+    .replace(/^\/ting\s*/i, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, WEB_SEARCH_QUERY_MAX_CHARS);
+
+  const resp = await fetch(buildToolsEndpointUrl(env.DEEPSEEK_BASE_URL, "search"), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      query,
+      count,
+      ...(oriQuestion ? { ori_question: oriQuestion } : {}),
+      need_content: false,
+    }),
+    signal: AbortSignal.timeout(WEB_TOOL_TIMEOUT_MS),
+  });
+
+  if (!resp.ok) {
+    console.error("[bot-agent] deepseek search http", resp.status, await resp.text().catch(() => ""));
+    return "LỖI: không gọi được công cụ tìm kiếm web lúc này.";
+  }
+
+  const data = (await resp.json()) as DeepSeekSearchResponse;
+  const results = Array.isArray(data?.results) ? data.results : [];
+  if (results.length === 0) {
+    return `Không tìm thấy kết quả nào trên web cho "${query}".`;
+  }
+
+  const blocks = results.slice(0, count).map((item, idx) => {
+    const title = (item.title ?? "").trim() || "(Không tiêu đề)";
+    const url = (item.url ?? "").trim();
+    const site = (item.site_name ?? "").trim();
+    const body = (item.summary || item.snippet || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, WEB_SEARCH_SUMMARY_MAX_CHARS);
+    const header = `[${idx + 1}] ${title}${site ? ` (${site})` : ""}`;
+    return [header, url ? `URL: ${url}` : "", body].filter(Boolean).join("\n");
+  });
+
+  return `Kết quả tìm kiếm web cho "${query}":\n\n${blocks.join("\n\n")}`;
+}
+
+async function executeWebFetch(env: Env, rawUrl: string | undefined): Promise<string> {
+  const apiKey = env.DEEPSEEK_API_KEY?.trim();
+  if (!apiKey) return "LỖI: chưa cấu hình DEEPSEEK_API_KEY.";
+
+  const urlStr = (rawUrl ?? "").trim();
+  if (!urlStr || urlStr.length > 8192) return "LỖI: URL không hợp lệ.";
+
+  let parsed: URL;
+  try {
+    parsed = new URL(urlStr);
+  } catch {
+    return "LỖI: URL không đúng định dạng.";
+  }
+
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return "LỖI: chỉ hỗ trợ URL http:// hoặc https://.";
+  }
+  if (parsed.username || parsed.password || isDisallowedFetchHost(parsed.hostname)) {
+    return "LỖI: URL không được phép truy cập.";
+  }
+
+  const resp = await fetch(buildToolsEndpointUrl(env.DEEPSEEK_BASE_URL, "fetch"), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({ url: parsed.toString() }),
+    signal: AbortSignal.timeout(WEB_TOOL_TIMEOUT_MS),
+  });
+
+  if (!resp.ok) {
+    console.error("[bot-agent] deepseek fetch http", resp.status, await resp.text().catch(() => ""));
+    return "LỖI: không đọc được nội dung trang web này (trang chặn truy cập hoặc lỗi mạng).";
+  }
+
+  const data = (await resp.json()) as DeepSeekFetchResponse;
+  const title = (data?.title ?? "").trim();
+  const content = (data?.content ?? "").trim();
+  if (!content) {
+    return `Trang web (${parsed.toString()}) không có nội dung văn bản đọc được.`;
+  }
+
+  const sliced =
+    content.length > WEB_FETCH_MAX_CHARS
+      ? `${content.slice(0, WEB_FETCH_MAX_CHARS)}\n...[đã cắt bớt nội dung dài]`
+      : content;
+
+  return [title ? `Tiêu đề: ${title}` : "", `URL: ${parsed.toString()}`, `Nội dung:\n${sliced}`]
+    .filter(Boolean)
+    .join("\n");
+}
+
 // --- Thực thi tool: map tên tool -> hàm reply* đã có sẵn trong bot.ts ---
 
 export async function executeTool(
@@ -596,6 +802,14 @@ export async function executeTool(
   const { groupId, groupName, text, actor, context } = args;
 
   switch (name) {
+    case "web_search": {
+      return executeWebSearch(env, asStr(a.query), asNum(a.count), text);
+    }
+
+    case "web_fetch": {
+      return executeWebFetch(env, asStr(a.url));
+    }
+
     case "get_recent_messages": {
       return formatRecentMessages(context);
     }
@@ -771,7 +985,7 @@ async function safeExecuteTool(
   }
 }
 
-// --- Vòng lặp chính ---
+const RAW_CONTEXT_TOOLS = new Set(["get_recent_messages", "web_search", "web_fetch"]);
 
 export async function runAgent(env: Env, args: RunAgentArgs): Promise<BotReply | null> {
   try {
@@ -800,7 +1014,7 @@ export async function runAgent(env: Env, args: RunAgentArgs): Promise<BotReply |
           model,
           messages,
           tools,
-          tool_choice: "auto",
+          tool_choice: round === MAX_ROUNDS - 1 ? "none" : "auto",
           stream: false,
         }),
       });
@@ -829,7 +1043,9 @@ export async function runAgent(env: Env, args: RunAgentArgs): Promise<BotReply |
 
       for (const call of toolCalls) {
         const content = await safeExecuteTool(env, args, call, args.aliases);
-        lastToolContent = content;
+        if (!RAW_CONTEXT_TOOLS.has(call.function?.name ?? "")) {
+          lastToolContent = content;
+        }
         messages.push({ role: "tool", tool_call_id: call.id, content });
       }
     }

@@ -1132,7 +1132,7 @@ export default function MembersPage() {
               </div>
               <p className="text-xs text-gray-500">
                 Bật để bot hiểu và xử lý câu tự nhiên bằng AI agent (tự gọi công cụ, làm được yêu
-                cầu nhiều bước) thay cho luồng nhận lệnh cứng. Thao tác hủy buổi / xóa khoản chi luôn
+                cầu nhiều bước, tìm kiếm web &amp; đọc nội dung link) thay cho luồng nhận lệnh cứng. Thao tác hủy buổi / xóa khoản chi luôn
                 được hỏi xác nhận trước. Tắt thì bot chạy như cũ.
               </p>
               <div className="flex flex-wrap items-center gap-2">
